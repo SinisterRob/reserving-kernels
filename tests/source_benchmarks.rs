@@ -5,22 +5,38 @@
 //! from primary literature (see `docs/SOURCES.md` for full citations).
 
 use reserving_kernels::{
+    aggregate_loss::{
+        FrequencyDistribution, discretize_mean_preserving, fft_aggregate_loss, panjer_recursion,
+    },
     benktander::BenktanderEngine,
+    berquist_sherman::{
+        CaseReserveTrend, DisposalInterpolation, adjust_case_reserves, adjust_paid_disposal_rate,
+    },
     bf::BornhuetterFergusonEngine,
     bootstrap_odp::{
         OdpBootstrapOptions, ProcessDistribution, ResidualAdjustment, bootstrap_odp, fit_odp,
     },
     cape_cod::CapeCodEngine,
+    capital_allocation::{
+        euler_rvar_allocation, euler_sd_allocation, euler_tvar_allocation, myers_read_allocation,
+        myers_read_from_default_ratio,
+    },
     chain_ladder::ChainLadderEngine,
+    clark_mle::{ClarkOptions, GrowthCurve, fit_clark_cape_cod, fit_clark_ldf},
     dependence::{CorrelationType, iman_conover, synchronized_odp_bootstrap},
     diagnostics::{
         cape_cod_diagnostics, mack_diagnostics,
         mack_tests::{adjacent_factor_correlation_test, calendar_year_effect_test},
         paid_incurred_reconciliation,
     },
+    generalized_cape_cod::GeneralizedCapeCodEngine,
+    glm_reserving::{GlmDesign, GlmFamily, GlmOptions, fit_glm},
     ldf::DevelopmentFactorEngine,
     mack::{self, MackTailSpec},
-    munich_chain_ladder,
+    mack_bf::{self, BfPayoutEstimator, MackBfOptions},
+    merz_wuthrich, munich_chain_ladder,
+    paid_incurred_chain::{self, PicOptions},
+    ptf_regression::{self, AccidentSpec, CalendarSpec, DevelopmentSpec, PtfOptions},
     reserve_distribution::{rvar, tvar_coherent, var_least},
     severity::SeverityDistribution,
     tail,
@@ -518,4 +534,543 @@ fn severity_ilf_dependence_and_cas_monograph_15_identities() {
     .expect("sync");
     assert_eq!(sync.failed_iterations, 0);
     assert!(sync.aggregate_summary.mean > 0.0);
+}
+
+// ===========================================================================
+// 7. Berquist & Sherman (1977) & Gluck (1997) Generalized Cape Cod
+// ===========================================================================
+
+#[test]
+fn berquist_sherman_1977_and_gluck_1997_operational_benchmarks() {
+    // --- Gluck (1997) / Friedland (2010) Ch. 10 on US Industry Auto 10x10 ---
+    let (_paid, reported, premium) = friedland_us_industry_auto();
+    let rep_factors =
+        DevelopmentFactorEngine::volume_weighted(&reported.view(), 1.0).expect("rep ldfs");
+    let cc = CapeCodEngine::project(&reported.view(), &rep_factors, &premium).expect("cc");
+    let cl = ChainLadderEngine::project(&reported.view(), &rep_factors).expect("cl");
+
+    // delta = 1.0 matches standard Stanard-Buhlmann Cape Cod identically.
+    let gcc_1 = GeneralizedCapeCodEngine::project(&reported.view(), &rep_factors, &premium, 1.0)
+        .expect("gcc delta=1");
+    for i in 0..10 {
+        assert!(close_rel(gcc_1.elr_by_origin[i], cc.elr, 1e-12));
+        assert!(close_rel(
+            gcc_1.bf_projection.reserves[i],
+            cc.bf_projection.reserves[i],
+            1e-12
+        ));
+    }
+
+    // delta -> 0+ converges to Chain Ladder identically.
+    let gcc_0 = GeneralizedCapeCodEngine::project(&reported.view(), &rep_factors, &premium, 1e-12)
+        .expect("gcc delta->0");
+    assert!(close_rel(
+        gcc_0.bf_projection.total_reserve,
+        cl.total_reserve,
+        1e-9
+    ));
+
+    // Intermediate decay (delta = 0.75) yields origin-varying ELRs responsive to recent years.
+    let gcc_mid = GeneralizedCapeCodEngine::project(&reported.view(), &rep_factors, &premium, 0.75)
+        .expect("gcc delta=0.75");
+    assert!(gcc_mid.bf_projection.total_reserve > 0.0);
+    assert!(
+        (gcc_mid.elr_by_origin[0] - gcc_mid.elr_by_origin[9]).abs() > 1e-4,
+        "expected distinct origin ELRs under decay 0.75"
+    );
+
+    // --- Berquist & Sherman (1977) / Friedland (2010) Ch. 13 ---
+    // Case-reserve strengthening + settlement-speedup benchmark with known true ultimates.
+    let n = 6usize;
+    let r_sev = 0.06_f64;
+    let base_closed = [0.22, 0.50, 0.72, 0.86, 0.95, 1.00];
+    let fast_closed = [0.30, 0.58, 0.78, 0.90, 0.97, 1.00];
+    let ult_counts = [500.0, 520.0, 540.0, 560.0, 580.0, 600.0];
+
+    let mut paid_data = vec![NAN; n * n];
+    let mut rep_data = vec![NAN; n * n];
+    let mut open_data = vec![NAN; n * n];
+    let mut closed_data = vec![NAN; n * n];
+    let mut true_ult = vec![0.0; n];
+
+    for i in 0..n {
+        let infl = (r_sev * i as f64).exp();
+        let n_i = ult_counts[i];
+        // Convex severity vs disposal rate: larger/more complex claims settle later.
+        let paid_curve = |d: f64| n_i * infl * (800.0 * d + 400.0 * d * d);
+        true_ult[i] = paid_curve(1.0);
+        for j in 0..(n - i) {
+            let idx = i * n + j;
+            let disp = if i + j == n - 1 {
+                fast_closed[j]
+            } else {
+                base_closed[j]
+            };
+            let closed = n_i * disp;
+            let open = n_i * (1.0 - disp);
+            let p = paid_curve(disp);
+            // Case adequacy jumps 30% on the latest diagonal.
+            let adequacy = if i + j == n - 1 { 1.30 } else { 1.00 };
+            let avg_case = 950.0 * infl * adequacy;
+            paid_data[idx] = p;
+            closed_data[idx] = closed;
+            open_data[idx] = open;
+            rep_data[idx] = p + open * avg_case;
+        }
+    }
+    let paid_t = Triangle::new(n, n, paid_data);
+    let rep_t = Triangle::new(n, n, rep_data);
+    let open_t = Triangle::new(n, n, open_data);
+    let closed_t = Triangle::new(n, n, closed_data);
+
+    let bs_case = adjust_case_reserves(
+        &rep_t.view(),
+        &paid_t.view(),
+        &open_t.view(),
+        CaseReserveTrend::ExponentialRate(r_sev),
+        1.0,
+        MonotonicityPolicy::AllowNegativeIncrements,
+    )
+    .expect("bs case");
+    let bs_paid = adjust_paid_disposal_rate(
+        &paid_t.view(),
+        &closed_t.view(),
+        &ult_counts,
+        None,
+        DisposalInterpolation::PiecewiseLinear,
+        1.0,
+    )
+    .expect("bs paid");
+
+    let true_total: f64 = true_ult.iter().sum();
+    let naive_paid_f = DevelopmentFactorEngine::volume_weighted(&paid_t.view(), 1.0).unwrap();
+    let naive_paid_cl = ChainLadderEngine::project(&paid_t.view(), &naive_paid_f).unwrap();
+    assert!(
+        (bs_paid.total_ultimate - true_total).abs()
+            < (naive_paid_cl.total_ultimate - true_total).abs() * 0.25,
+        "BS paid adjustment should remove settlement-speedup bias: bs={} naive={} true={}",
+        bs_paid.total_ultimate,
+        naive_paid_cl.total_ultimate,
+        true_total
+    );
+
+    let naive_rep_f = DevelopmentFactorEngine::volume_weighted(&rep_t.view(), 1.0).unwrap();
+    let naive_rep_cl = ChainLadderEngine::project(&rep_t.view(), &naive_rep_f).unwrap();
+    assert!(
+        (bs_case.total_ultimate - true_total).abs()
+            < (naive_rep_cl.total_ultimate - true_total).abs() * 0.35,
+        "BS case adjustment should remove case-strengthening bias: bs={} naive={} true={}",
+        bs_case.total_ultimate,
+        naive_rep_cl.total_ultimate,
+        true_total
+    );
+}
+
+// ===========================================================================
+// 8. Clark (2003) GenIns MLE + Mack (2008) BF MSEP
+// ===========================================================================
+
+#[test]
+fn clark_2003_genins_and_mack_2008_bf_msep_benchmarks() {
+    let genins = genins_triangle();
+
+    // --- Clark (2003) LDF on GenIns 10x10 (Loglogistic & Weibull) ---
+    let clark_ll = fit_clark_ldf(&genins.view(), &ClarkOptions::new(GrowthCurve::Loglogistic))
+        .expect("Clark Loglogistic");
+    let clark_wb = fit_clark_ldf(&genins.view(), &ClarkOptions::new(GrowthCurve::Weibull))
+        .expect("Clark Weibull");
+
+    // Verify MLE stationarity, degrees of freedom (55 - 12 = 43), and variance identity.
+    assert_eq!(clark_ll.n_observed, 55);
+    assert_eq!(clark_ll.n_params, 12);
+    assert_eq!(clark_ll.degrees_of_freedom, 43);
+    assert!(
+        clark_ll.max_grad_norm < 1e-6,
+        "grad={}",
+        clark_ll.max_grad_norm
+    );
+    assert!(
+        clark_wb.max_grad_norm < 1e-6,
+        "grad={}",
+        clark_wb.max_grad_norm
+    );
+
+    // Loglogistic carries a heavier tail than Weibull on GenIns, and both exceed CL pre-tail 18.68M.
+    assert!(
+        clark_ll.total_reserve > clark_wb.total_reserve && clark_wb.total_reserve > 18_680_000.0,
+        "LL={} WB={}",
+        clark_ll.total_reserve,
+        clark_wb.total_reserve
+    );
+    assert!(close_rel(
+        clark_ll.total_se_aggregate.powi(2),
+        clark_ll.total_process_se.powi(2) + clark_ll.total_parameter_se.powi(2),
+        1e-12
+    ));
+
+    // Scale invariance: multiplying ages by 12 (years -> months) leaves reserves & SEs invariant.
+    let mut month_opts = ClarkOptions::new(GrowthCurve::Weibull);
+    month_opts.ages = Some((0..10).map(|j| 6.0 + 12.0 * j as f64).collect());
+    let clark_wb_months = fit_clark_ldf(&genins.view(), &month_opts).expect("Clark months");
+    assert!(close_rel(
+        clark_wb.total_reserve,
+        clark_wb_months.total_reserve,
+        1e-6
+    ));
+    assert!(close_rel(
+        clark_wb.total_se_aggregate,
+        clark_wb_months.total_se_aggregate,
+        1e-6
+    ));
+    assert!(close_rel(
+        clark_wb.theta * 12.0,
+        clark_wb_months.theta,
+        1e-5
+    ));
+
+    // Clark (2003) Cape Cod on GenIns with constant exposure has 3 parameters (dof = 52)
+    // and strictly tighter parameter SE than 12-parameter LDF.
+    let unit_prem = vec![10_000_000.0; 10];
+    let clark_cc = fit_clark_cape_cod(
+        &genins.view(),
+        &unit_prem,
+        &ClarkOptions::new(GrowthCurve::Weibull),
+    )
+    .expect("Clark Cape Cod");
+    assert_eq!(clark_cc.n_params, 3);
+    assert_eq!(clark_cc.degrees_of_freedom, 52);
+    assert!(clark_cc.total_parameter_se < clark_wb.total_parameter_se);
+
+    // --- Mack (2008) Analytical BF MSEP on RAA 10x10 ---
+    let raa = raa_triangle();
+    let m_cl = mack::analyze_with_policy(
+        &raa.view(),
+        1.0,
+        MonotonicityPolicy::AllowNegativeIncrements,
+    )
+    .expect("mack RAA");
+    let prior_ult = vec![20_000.0; 10];
+    let prior_se = vec![2_000.0; 10]; // 10% a priori uncertainty
+    let m_bf = mack_bf::analyze_from_triangle(
+        &raa.view(),
+        &prior_ult,
+        &prior_se,
+        MackBfOptions {
+            payout_estimator: BfPayoutEstimator::ChainLadderImplied,
+            prior_correlation: 0.0,
+            monotonicity_policy: MonotonicityPolicy::AllowNegativeIncrements,
+        },
+    )
+    .expect("mack BF RAA");
+
+    // On RAA's youngest origin (origin 9), Mack (1993) CL SE = 24,566.3 explodes,
+    // while Mack (2008) BF prediction error is dramatically smaller.
+    assert!(
+        m_bf.standard_error[9] < m_cl.standard_error[9] * 0.5,
+        "BF SE[9]={} vs CL SE[9]={}",
+        m_bf.standard_error[9],
+        m_cl.standard_error[9]
+    );
+    assert!(close_rel(
+        m_bf.total_msep,
+        m_bf.total_process_variance + m_bf.total_estimation_variance,
+        1e-12
+    ));
+}
+
+// ===========================================================================
+// 9. Merz & Wuthrich (2008) 1-Year CDR & Merz & Wuthrich (2010) PIC
+// ===========================================================================
+
+#[test]
+fn merz_wuthrich_2008_cdr_and_2010_paid_incurred_chain_benchmarks() {
+    // --- Merz & Wuthrich (2008) on GenIns & RAA 10x10 ---
+    let genins = genins_triangle();
+    let mw_genins = merz_wuthrich::analyze(&genins.view()).expect("MW GenIns");
+    let decomp_genins =
+        merz_wuthrich::runoff_decomposition(&genins.view(), MonotonicityPolicy::Strict)
+            .expect("MW decomp GenIns");
+
+    assert!(close_rel(
+        mw_genins.total_ultimate_standard_error,
+        2_447_094.86,
+        1e-5
+    ));
+    assert!(
+        mw_genins.total_emergence_ratio > 0.50 && mw_genins.total_emergence_ratio < 0.95,
+        "emergence={}",
+        mw_genins.total_emergence_ratio
+    );
+    assert!(mw_genins.total_covariance > 0.0);
+    // Exact multi-year telescoping identity: sum_{t=1}^{9} msep(CDR_t) == msep_Mack(Ultimate).
+    assert!(close_rel(
+        decomp_genins.cumulative_cdr_msep,
+        decomp_genins.mack_ultimate_msep,
+        1e-12
+    ));
+
+    let raa = raa_triangle();
+    let decomp_raa = merz_wuthrich::runoff_decomposition(
+        &raa.view(),
+        MonotonicityPolicy::AllowNegativeIncrements,
+    )
+    .expect("MW decomp RAA");
+    assert!(close_rel(
+        decomp_raa.cumulative_cdr_msep,
+        decomp_raa.mack_ultimate_msep,
+        1e-12
+    ));
+
+    // --- Merz & Wuthrich (2010) Paid-Incurred Chain on Friedland US Industry Auto 10x10 ---
+    let (paid, reported, _) = friedland_us_industry_auto();
+    let pic = paid_incurred_chain::analyze(&paid.view(), &reported.view(), &PicOptions::default())
+        .expect("PIC Friedland");
+    let paid_f = DevelopmentFactorEngine::volume_weighted(&paid.view(), 1.0).unwrap();
+    let cl_paid = ChainLadderEngine::project(&paid.view(), &paid_f).unwrap();
+
+    // On stable US Auto, PIC total ultimate closely aligns with paid/incurred CL (within 3%)
+    // while strictly blending paid and incurred information (0 < w_i < 1 for all immature origins).
+    assert!(
+        (pic.total_ultimate - cl_paid.total_ultimate).abs() / cl_paid.total_ultimate < 0.03,
+        "PIC ult={} vs CL paid ult={}",
+        pic.total_ultimate,
+        cl_paid.total_ultimate
+    );
+    for i in 1..10 {
+        assert!(pic.incurred_weights[i] > 0.0 && pic.incurred_weights[i] < 1.0);
+        assert!(pic.standard_error[i] > 0.0);
+    }
+    assert!(pic.total_standard_error > 0.0 && pic.total_cv < 0.15);
+}
+
+// ===========================================================================
+// 10. Barnett & Zehnwirth (2000) PTF & Taylor & McGuire (2016) GLM IRLS
+// ===========================================================================
+
+#[test]
+fn barnett_zehnwirth_2000_ptf_and_taylor_mcguire_2016_glm_benchmarks() {
+    let genins = genins_triangle();
+
+    // --- Barnett & Zehnwirth (2000) PTF on GenIns 10x10 ---
+    let ptf_genins = ptf_regression::fit_ptf(
+        &genins.view(),
+        &PtfOptions {
+            accident: AccidentSpec::Constant,
+            development: DevelopmentSpec::PerPeriod,
+            calendar: CalendarSpec::ConstantRate,
+            ..PtfOptions::default()
+        },
+    )
+    .expect("PTF GenIns");
+    assert_eq!(ptf_genins.n_observed, 55);
+    assert_eq!(ptf_genins.n_params, 11); // intercept + 9 dev increments + 1 calendar rate
+    assert!(ptf_genins.r_squared > 0.75, "R2={}", ptf_genins.r_squared);
+    assert!(ptf_genins.total_reserve > 12_000_000.0 && ptf_genins.total_reserve < 30_000_000.0);
+    assert!(ptf_genins.total_standard_error > 0.0);
+
+    // --- Taylor & McGuire (2016, CAS Monograph No. 3) IRLS GLMs on GenIns ---
+    // Ch. 3: Cross-classified ODP IRLS reproduces exact fit_odp & Chain Ladder.
+    let odp_exact = fit_odp(&genins.view(), 1.0, MonotonicityPolicy::Strict).expect("fit_odp");
+    let glm_odp = fit_glm(
+        &genins.view(),
+        &GlmOptions::new(GlmFamily::Odp, GlmDesign::CrossClassified),
+    )
+    .expect("GLM ODP");
+    assert!(glm_odp.converged);
+    assert!(close_rel(glm_odp.total_reserve, 18_680_855.61, 1e-7));
+    assert!(close_rel(
+        glm_odp.pearson_dispersion,
+        odp_exact.dispersion,
+        1e-7
+    ));
+    assert!(close_rel(
+        glm_odp.total_prediction_error,
+        odp_exact.analytic_total_prediction_error,
+        1e-6
+    ));
+    let h_sum: f64 = glm_odp.leverages.iter().sum();
+    assert!((h_sum - 19.0).abs() < 1e-9);
+
+    // Ch. 4–5: Hoerl curve & Hoerl + calendar-year spline across ODP, Tweedie(1.5), Gamma, LogNormal.
+    for family in [
+        GlmFamily::Odp,
+        GlmFamily::Tweedie { power: 1.5 },
+        GlmFamily::Gamma,
+        GlmFamily::LogNormal,
+    ] {
+        let hoerl = fit_glm(
+            &genins.view(),
+            &GlmOptions::new(
+                family,
+                GlmDesign::Hoerl {
+                    per_origin_intercepts: true,
+                },
+            ),
+        )
+        .expect("Hoerl GLM");
+        assert!(hoerl.converged);
+        assert_eq!(hoerl.n_params, 12);
+        assert!(hoerl.total_reserve > 12_000_000.0 && hoerl.total_reserve < 30_000_000.0);
+        let h_tot: f64 = hoerl.leverages.iter().sum();
+        assert!((h_tot - 12.0).abs() < 1e-8);
+    }
+
+    let spline_glm = fit_glm(
+        &genins.view(),
+        &GlmOptions::new(
+            GlmFamily::Gamma,
+            GlmDesign::HoerlWithCalendarSplines {
+                per_origin_intercepts: false,
+                calendar_knots: vec![4.0, 7.0],
+            },
+        ),
+    )
+    .expect("Hoerl calendar spline GLM");
+    assert!(spline_glm.converged);
+    assert_eq!(spline_glm.n_params, 6); // intercept + 2 Hoerl + base cal + 2 hinges
+    assert!(spline_glm.total_reserve > 0.0 && spline_glm.total_prediction_error > 0.0);
+}
+
+// ===========================================================================
+// 11. Panjer (1981) / Robertson (1992) & Tasche (2008) / Myers & Read (2001)
+// ===========================================================================
+
+#[test]
+fn panjer_1981_robertson_1992_and_tasche_2008_myers_read_2001_benchmarks() {
+    // --- Klugman, Panjer & Willmot Ch. 9: Compound Poisson & NegBin Panjer vs FFT ---
+    let sev_discrete = [0.0, 0.25, 0.35, 0.25, 0.15];
+    let step = 50.0;
+
+    for freq in [
+        FrequencyDistribution::Poisson { lambda: 4.0 },
+        FrequencyDistribution::NegativeBinomial { r: 3.0, beta: 1.5 },
+        FrequencyDistribution::Binomial { m: 12, q: 0.30 },
+    ] {
+        let p = panjer_recursion(freq, &sev_discrete, step, 512).expect("panjer");
+        let f = fft_aggregate_loss(freq, &sev_discrete, step, 512, None).expect("fft");
+
+        // Exact theoretical compound moments E[S] = E[N] E[X] and Var(S).
+        assert!(close_rel(p.mean, p.exact_theoretical_mean, 1e-10));
+        assert!(close_rel(p.variance, p.exact_theoretical_variance, 1e-9));
+        // L_inf agreement between Panjer recursion and tilted radix-2 FFT.
+        let l_inf = p
+            .pmf
+            .iter()
+            .zip(f.pmf.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(l_inf < 1e-9, "L_inf={l_inf} for {freq:?}");
+    }
+
+    // Verify exponential tilting eliminates circular wrap-around aliasing on a tight grid (N = 32).
+    let tight_freq = FrequencyDistribution::Poisson { lambda: 10.0 };
+    let panjer_tight = panjer_recursion(tight_freq, &sev_discrete, step, 32).expect("p tight");
+    let fft_untilted =
+        fft_aggregate_loss(tight_freq, &sev_discrete, step, 32, Some(0.0)).expect("u tight");
+    let fft_tilted =
+        fft_aggregate_loss(tight_freq, &sev_discrete, step, 32, Some(0.4)).expect("t tight");
+    let err_untilted = panjer_tight
+        .pmf
+        .iter()
+        .zip(fft_untilted.pmf.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    let err_tilted = panjer_tight
+        .pmf
+        .iter()
+        .zip(fft_tilted.pmf.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        err_tilted < err_untilted * 1e-3 && err_tilted < 1e-6,
+        "tilted={err_tilted} untilted={err_untilted}"
+    );
+
+    // Large-grid O(N log N) tilted FFT on continuous Lognormal severity (N = 2^13 = 8192).
+    let sev_dist = SeverityDistribution::Lognormal {
+        mu: 8.5,
+        sigma: 0.75,
+    };
+    let grid_step = 500.0;
+    let sev_pmf = discretize_mean_preserving(&sev_dist, grid_step, 512).expect("disc");
+    let big_freq = FrequencyDistribution::Poisson { lambda: 25.0 };
+    let big_agg = fft_aggregate_loss(big_freq, &sev_pmf, grid_step, 8192, None).expect("big fft");
+    assert!(close_rel(
+        big_agg.mean,
+        big_agg.exact_theoretical_mean,
+        1e-5
+    ));
+    assert!(big_agg.tvar(0.95).unwrap() >= big_agg.var(0.95).unwrap());
+    assert!(big_agg.stop_loss_premium(big_agg.mean).unwrap() > 0.0);
+
+    // --- Tasche (2008) Euler & Myers & Read (2001) Multi-Line Portfolio Allocation ---
+    let genins = genins_triangle();
+    let (paid, reported, _) = friedland_us_industry_auto();
+    let b1 = bootstrap_odp(&genins.view(), 1.0, OdpBootstrapOptions::shapland(600, 111)).unwrap();
+    let b2 = bootstrap_odp(&paid.view(), 1.0, OdpBootstrapOptions::shapland(600, 222)).unwrap();
+    let b3 = bootstrap_odp(
+        &reported.view(),
+        1.0,
+        OdpBootstrapOptions::shapland(600, 333),
+    )
+    .unwrap();
+
+    // Correlate the 3 lines via Iman-Conover (Mildenhall 2006).
+    let corr = [1.0, 0.35, 0.25, 0.35, 1.0, 0.65, 0.25, 0.65, 1.0];
+    let ic = iman_conover(
+        &[
+            &b1.simulated_totals,
+            &b2.simulated_totals,
+            &b3.simulated_totals,
+        ],
+        &corr,
+        CorrelationType::SpearmanTarget,
+        42069,
+    )
+    .expect("ic 3-line");
+    let lines: Vec<&[f64]> = ic.reordered_columns.iter().map(|v| v.as_slice()).collect();
+
+    // Exact Euler TVaR full-allocation conservation & subadditivity.
+    let euler_tvar = euler_tvar_allocation(&lines, 0.90).expect("euler tvar");
+    let sum_tvar: f64 = euler_tvar.allocated_total.iter().sum();
+    assert!(close_rel(
+        sum_tvar,
+        euler_tvar.portfolio_risk_measure,
+        1e-12
+    ));
+    assert!(euler_tvar.diversification_ratio < 1.0);
+    for i in 0..3 {
+        assert!(euler_tvar.allocated_total[i] <= euler_tvar.standalone_risk_measures[i] + 1e-6);
+    }
+
+    // Exact Euler RVaR and Standard Deviation conservation.
+    let euler_rvar = euler_rvar_allocation(&lines, 0.80, 0.95).expect("euler rvar");
+    let sum_rvar: f64 = euler_rvar.allocated_total.iter().sum();
+    assert!(close_rel(
+        sum_rvar,
+        euler_rvar.portfolio_risk_measure,
+        1e-12
+    ));
+
+    let euler_sd = euler_sd_allocation(&lines, 2.0).expect("euler sd");
+    let sum_sd: f64 = euler_sd.allocated_total.iter().sum();
+    assert!(close_rel(sum_sd, euler_sd.portfolio_risk_measure, 1e-12));
+
+    // Myers & Read (2001) marginal default-put allocation at 0.5% target default-value ratio.
+    let mr = myers_read_from_default_ratio(&lines, 0.005).expect("myers read");
+    let mr_surplus_sum: f64 = mr.allocated_surplus.iter().sum();
+    let mr_assets_sum: f64 = mr.allocated_assets.iter().sum();
+    assert!(close_rel(mr_surplus_sum, mr.portfolio_surplus, 1e-12));
+    assert!(close_rel(mr_assets_sum, mr.portfolio_assets, 1e-12));
+    assert!((mr.default_value_ratio - 0.005).abs() < 1e-4);
+
+    // Direct asset-level Myers & Read matches target-ratio solution identically.
+    let mr_direct = myers_read_allocation(&lines, mr.portfolio_assets).expect("mr direct");
+    for i in 0..3 {
+        assert!(close_rel(
+            mr.allocated_surplus[i],
+            mr_direct.allocated_surplus[i],
+            1e-12
+        ));
+    }
 }

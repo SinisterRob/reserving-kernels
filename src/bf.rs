@@ -31,8 +31,8 @@ use crate::ldf::{DevelopmentFactors, cdf_from_ldf, pct_reported};
 use crate::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
-    ValidationError, validate_development_factor_slices, validate_latest_and_dev,
-    validate_monotone_cumulative, validate_nonnegative_finite_slice,
+    MonotonicityPolicy, ValidationError, validate_development_factor_slices,
+    validate_latest_and_dev, validate_monotone_cumulative, validate_nonnegative_finite_slice,
     validate_nonnegative_finite_vector, validate_triangle,
 };
 
@@ -208,7 +208,23 @@ impl BornhuetterFergusonEngine {
         factors: &DevelopmentFactors,
         expected_ultimate: &[f64],
     ) -> Result<BornhuetterFergusonProjection, ValidationError> {
-        validate_bf_inputs(cumulative, factors)?;
+        Self::project_from_expected_ultimate_with_policy(
+            cumulative,
+            factors,
+            expected_ultimate,
+            MonotonicityPolicy::Strict,
+        )
+    }
+
+    /// Project BF ultimates and reserves from explicit expected ultimate losses
+    /// under an explicit [`MonotonicityPolicy`].
+    pub fn project_from_expected_ultimate_with_policy(
+        cumulative: &TriangleView<'_>,
+        factors: &DevelopmentFactors,
+        expected_ultimate: &[f64],
+        policy: MonotonicityPolicy,
+    ) -> Result<BornhuetterFergusonProjection, ValidationError> {
+        validate_bf_inputs_with_policy(cumulative, factors, policy)?;
         validate_nonnegative_finite_vector(expected_ultimate, cumulative.n_origins)?;
 
         let latest_maturity = latest_and_maturity(cumulative, factors)?;
@@ -306,12 +322,15 @@ fn latest_and_maturity(
     })
 }
 
-fn validate_bf_inputs(
+fn validate_bf_inputs_with_policy(
     cumulative: &TriangleView<'_>,
     factors: &DevelopmentFactors,
+    policy: MonotonicityPolicy,
 ) -> Result<(), ValidationError> {
     validate_triangle(cumulative)?;
-    validate_monotone_cumulative(cumulative)?;
+    if policy == MonotonicityPolicy::Strict {
+        validate_monotone_cumulative(cumulative)?;
+    }
     validate_development_factor_slices(
         &factors.ldfs,
         &factors.cdfs,
