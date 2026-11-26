@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="reserving-kernels — Actuarial computing in Rust" width="100%" />
+</p>
+
 # reserving-kernels
 
 **Deterministic, zero-unsafe Rust numeric kernels for P&C actuarial loss reserving, 1-year Solvency II risk, GLMs, compound aggregate loss convolution, excess layer pricing, and coherent capital allocation.**
