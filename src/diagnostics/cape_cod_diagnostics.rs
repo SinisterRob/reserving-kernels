@@ -115,20 +115,26 @@ pub fn cape_cod_elr_leave_one_out(
     if latest.len() != used_premium.len() {
         return Err(ValidationError::ShapeMismatch);
     }
-
-    let total_latest: f64 = latest.iter().sum();
-    let total_used_premium: f64 = used_premium.iter().sum();
-    if !total_latest.is_finite() || !total_used_premium.is_finite() {
-        return Err(ValidationError::NotFinite);
-    }
-
-    let mut out = Vec::with_capacity(latest.len());
     for (&latest_value, &used) in latest.iter().zip(used_premium.iter()) {
         if !latest_value.is_finite() || !used.is_finite() {
             return Err(ValidationError::NotFinite);
         }
-        let leave_num = total_latest - latest_value;
-        let leave_den = total_used_premium - used;
+        if used < 0.0 {
+            return Err(ValidationError::Negative);
+        }
+    }
+
+    let n = latest.len();
+    let mut out = Vec::with_capacity(n);
+    for skip in 0..n {
+        let mut leave_num = 0.0;
+        let mut leave_den = 0.0;
+        for i in 0..n {
+            if i != skip {
+                leave_num += latest[i];
+                leave_den += used_premium[i];
+            }
+        }
         if leave_den <= 0.0 {
             return Err(ValidationError::DivideByZero("Cape Cod used premium"));
         }
@@ -182,11 +188,13 @@ pub fn cape_cod_elr_credibility_score(
     if used_premium.is_empty() {
         return Ok(stability_score);
     }
-    if used_premium
-        .iter()
-        .any(|value| !value.is_finite() || *value < 0.0)
-    {
-        return Err(ValidationError::NotFinite);
+    for &value in used_premium {
+        if !value.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        if value < 0.0 {
+            return Err(ValidationError::Negative);
+        }
     }
 
     let total_used: f64 = used_premium.iter().sum();

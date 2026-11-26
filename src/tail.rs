@@ -21,7 +21,7 @@ use crate::mack::MackTailSpec;
 use crate::validate::{ValidationError, validate_positive_finite_slice};
 
 /// Tail curve family fitted to empirical development factors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TailCurveKind {
     /// Classic Bondy method (`b = 0.5`, tail equals final observed LDF).
     Bondy,
@@ -36,7 +36,7 @@ pub enum TailCurveKind {
 }
 
 /// Result of fitting and extrapolating a parametric tail curve.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TailFit {
     /// Curve family used.
     pub curve: TailCurveKind,
@@ -63,6 +63,13 @@ pub fn bondy(ldfs: &[f64]) -> Result<TailFit, ValidationError> {
     validate_positive_finite_slice(ldfs, "LDF")?;
     let last = *ldfs.last().expect("non-empty");
     let tail_factor = last.max(1.0);
+    // Geometric Bondy decay: f_{last+m} = f_last^{0.5^m}, whose infinite product equals f_last.
+    let mut extrapolated_ldfs = Vec::with_capacity(5);
+    let mut weight = 0.5;
+    for _ in 0..5 {
+        extrapolated_ldfs.push(tail_factor.powf(weight));
+        weight *= 0.5;
+    }
     Ok(TailFit {
         curve: TailCurveKind::Bondy,
         tail_factor,
@@ -70,7 +77,7 @@ pub fn bondy(ldfs: &[f64]) -> Result<TailFit, ValidationError> {
         slope: 0.5,
         r_squared: 1.0,
         n_points_used: 1,
-        extrapolated_ldfs: vec![tail_factor.sqrt(), tail_factor.sqrt()],
+        extrapolated_ldfs,
     })
 }
 
@@ -156,6 +163,11 @@ pub fn generalized_bondy(
         }
     }
     let b = 0.5 * (lo + hi);
+    if b >= 1.0 - 1e-5 {
+        return Err(ValidationError::InvalidParameter(
+            "generalized Bondy requires decaying LDFs (b < 1.0)",
+        ));
+    }
     let (sse, c) = eval_sse(b);
 
     let y_mean = ys.iter().sum::<f64>() / ys.len() as f64;
@@ -169,10 +181,17 @@ pub fn generalized_bondy(
     let m = ys.len();
     let tail_log = c * b.powi(m as i32) / (1.0 - b);
     let tail_factor = tail_log.exp().max(1.0);
+    if !tail_factor.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
     let mut extrapolated_ldfs = Vec::with_capacity(extrap_periods);
     for step in 0..extrap_periods {
         let log_f = c * b.powi((m + step) as i32);
-        extrapolated_ldfs.push(log_f.exp());
+        let f_step = log_f.exp();
+        if !f_step.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        extrapolated_ldfs.push(f_step);
     }
 
     Ok(TailFit {
@@ -263,8 +282,14 @@ pub fn fit_exponential_decay(
     for step in 1..=extrap_periods {
         let t = (m + step) as f64;
         let f_t = 1.0 + (intercept + slope * t).exp();
+        if !f_t.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
         extrapolated_ldfs.push(f_t);
         tail_factor *= f_t;
+    }
+    if !tail_factor.is_finite() {
+        return Err(ValidationError::NotFinite);
     }
 
     Ok(TailFit {
@@ -307,15 +332,21 @@ pub fn fit_inverse_power(
         ));
     }
 
-    let a = intercept.exp();
     let m = ldfs.len();
     let mut extrapolated_ldfs = Vec::with_capacity(extrap_periods);
     let mut tail_factor = 1.0;
     for step in 1..=extrap_periods {
         let t = (m + step) as f64;
-        let f_t = 1.0 + a * t.powf(slope);
+        // Evaluate in log-space to avoid intermediate exp(intercept) overflow/underflow.
+        let f_t = 1.0 + (intercept + slope * t.ln()).exp();
+        if !f_t.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
         extrapolated_ldfs.push(f_t);
         tail_factor *= f_t;
+    }
+    if !tail_factor.is_finite() {
+        return Err(ValidationError::NotFinite);
     }
 
     Ok(TailFit {
@@ -358,16 +389,25 @@ pub fn fit_weibull(
         ));
     }
 
-    let a = intercept.exp();
     let m = ldfs.len();
     let mut extrapolated_ldfs = Vec::with_capacity(extrap_periods);
     let mut tail_factor = 1.0;
     for step in 1..=extrap_periods {
         let t = (m + step) as f64;
-        let denom = 1.0 - (-a * t.powf(slope)).exp();
-        let f_t = if denom > 0.0 { 1.0 / denom } else { 1.0 };
+        let z = (intercept + slope * t.ln()).exp();
+        let denom = -(-z).exp_m1();
+        if !(denom > 0.0) || !denom.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        let f_t = 1.0 / denom;
+        if !f_t.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
         extrapolated_ldfs.push(f_t);
         tail_factor *= f_t;
+    }
+    if !tail_factor.is_finite() {
+        return Err(ValidationError::NotFinite);
     }
 
     Ok(TailFit {
@@ -413,22 +453,22 @@ pub fn estimate_mack_tail_spec(
         }
     }
     let next_t = (sigma_sq.len() + 1) as f64;
+    let last_pos_sig = sigma_sq
+        .iter()
+        .rev()
+        .copied()
+        .find(|&v| v.is_finite() && v > 0.0)
+        .unwrap_or(0.0);
     let tail_sigma_sq = if xs_sig.len() >= 2 {
         let (a, b, _) = ols_fit(&xs_sig, &ys_sig)?;
         let extrapolated = (a + b * next_t).exp();
-        let last_pos = sigma_sq
-            .iter()
-            .rev()
-            .copied()
-            .find(|&v| v.is_finite() && v > 0.0)
-            .unwrap_or(0.0);
-        if b < 0.0 {
-            extrapolated.min(last_pos)
+        if b < 0.0 && extrapolated.is_finite() {
+            extrapolated.min(last_pos_sig)
         } else {
-            last_pos
+            last_pos_sig
         }
     } else {
-        sigma_sq.last().copied().unwrap_or(0.0).max(0.0)
+        last_pos_sig
     };
 
     let mut xs_se = Vec::new();
@@ -439,22 +479,22 @@ pub fn estimate_mack_tail_spec(
             ys_se.push(se.ln());
         }
     }
+    let last_pos_se = ldf_se
+        .iter()
+        .rev()
+        .copied()
+        .find(|&v| v.is_finite() && v > 0.0)
+        .unwrap_or(0.0);
     let tail_se = if xs_se.len() >= 2 {
         let (a, b, _) = ols_fit(&xs_se, &ys_se)?;
         let extrapolated = (a + b * next_t).exp();
-        let last_pos = ldf_se
-            .iter()
-            .rev()
-            .copied()
-            .find(|&v| v.is_finite() && v > 0.0)
-            .unwrap_or(0.0);
-        if b < 0.0 {
-            extrapolated.min(last_pos)
+        if b < 0.0 && extrapolated.is_finite() {
+            extrapolated.min(last_pos_se)
         } else {
-            last_pos
+            last_pos_se
         }
     } else {
-        ldf_se.last().copied().unwrap_or(0.0).max(0.0)
+        last_pos_se
     };
 
     Ok(MackTailSpec {

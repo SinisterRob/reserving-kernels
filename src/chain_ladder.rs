@@ -27,7 +27,7 @@ use crate::validate::{
 // ===========================================================================
 
 /// Chain-ladder projection result.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChainLadderProjection {
     /// Latest observed cumulative value by origin.
     pub latest: Vec<f64>,
@@ -164,7 +164,11 @@ pub fn project_unchecked(t: &TriangleView<'_>, ldfs: &[f64], tail: f64) -> Chain
 
     let mut latest = vec![0.0; n];
     let mut latest_dev = vec![0; n];
-    latest_observed_by_origin(t.data, t.n_origins, t.n_devs, &mut latest, &mut latest_dev);
+    for i in 0..n {
+        let d = n - 1 - i;
+        latest[i] = t.get(i, d);
+        latest_dev[i] = d;
+    }
 
     let mut ultimates = vec![0.0; n];
     project_ultimates(&latest, &latest_dev, &cdfs, &mut ultimates);

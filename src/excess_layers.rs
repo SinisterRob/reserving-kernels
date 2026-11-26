@@ -21,28 +21,37 @@ pub fn expected_layer(tail: u32, top: f64, layer: u32) -> f64 {
     let lower = limited_mean(ATTACHMENT, sigma);
     if layer == 0 {
         lower
+    } else if top <= ATTACHMENT {
+        0.0
     } else {
-        limited_mean(top, sigma) - lower
+        (limited_mean(top, sigma) - lower).max(0.0)
     }
 }
 
 /// Deterministic Monte Carlo estimate (fixed seed `2026`, $N = 65{,}536$ synchronized draws)
 /// of layer expected loss using SplitMix64 + Box–Muller normal transformation.
 pub fn simulated_layer(tail: u32, top: f64, layer: u32) -> f64 {
+    if layer != 0 && top <= ATTACHMENT {
+        return 0.0;
+    }
     let sigma = log_sd(tail);
     let log_mean = GROUND_UP_MEAN.ln() - sigma * sigma / 2.0;
     let mut state = SEED;
     let mut total = 0.0;
-    for _ in 0..SAMPLE_SIZE {
+    let pairs = SAMPLE_SIZE / 2;
+    for _ in 0..pairs {
         let radius = (-2.0 * uniform(&mut state).ln()).sqrt();
         let angle = TAU * uniform(&mut state);
-        let severity = (log_mean + sigma * radius * angle.cos()).exp();
-        let lower = severity.min(ATTACHMENT);
-        total += if layer == 0 {
-            lower
-        } else {
-            severity.min(top) - lower
-        };
+        let (sin_a, cos_a) = angle.sin_cos();
+        for z in [radius * cos_a, radius * sin_a] {
+            let severity = (log_mean + sigma * z).exp();
+            let lower = severity.min(ATTACHMENT);
+            total += if layer == 0 {
+                lower
+            } else {
+                (severity.min(top) - lower).max(0.0)
+            };
+        }
     }
     total / f64::from(SAMPLE_SIZE)
 }
@@ -55,7 +64,7 @@ pub fn exceedance_prob(tail: u32, threshold: f64) -> f64 {
     let sigma = log_sd(tail);
     let log_mean = GROUND_UP_MEAN.ln() - sigma * sigma / 2.0;
     let z = (threshold.ln() - log_mean) / sigma;
-    normal_cdf(-z)
+    crate::severity::normal_cdf_exact(-z)
 }
 
 /// Lognormal probability density function $f_X(x)$ at loss amount `x`.
@@ -71,12 +80,16 @@ pub fn severity_pdf(tail: u32, x: f64) -> f64 {
 
 /// Lognormal Limited Expected Value $E[X \wedge L]$ for ground-up mean `GROUND_UP_MEAN` and log-SD `sigma`.
 pub fn limited_mean(limit: f64, sigma: f64) -> f64 {
+    if !limit.is_finite() || !sigma.is_finite() || sigma <= 0.0 {
+        return f64::NAN;
+    }
     if limit <= 0.0 {
         return 0.0;
     }
     let log_mean = GROUND_UP_MEAN.ln() - sigma * sigma / 2.0;
     let z = (limit.ln() - log_mean) / sigma;
-    GROUND_UP_MEAN * normal_cdf(z - sigma) + limit * normal_cdf(-z)
+    GROUND_UP_MEAN * crate::severity::normal_cdf_exact(z - sigma)
+        + limit * crate::severity::normal_cdf_exact(-z)
 }
 
 fn log_sd(tail: u32) -> f64 {
@@ -85,16 +98,6 @@ fn log_sd(tail: u32) -> f64 {
         2 => 1.55,
         _ => 1.0,
     }
-}
-
-fn normal_cdf(z: f64) -> f64 {
-    let x = z.abs();
-    let t = 1.0 / (1.0 + 0.2316419 * x);
-    let polynomial = t
-        * (0.319381530
-            + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
-    let upper = INV_SQRT_TAU * (-0.5 * x * x).exp() * polynomial;
-    if z < 0.0 { upper } else { 1.0 - upper }
 }
 
 fn uniform(state: &mut u64) -> f64 {

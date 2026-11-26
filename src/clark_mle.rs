@@ -34,7 +34,7 @@
 //!   method on `R_i(psi)`, combined with process variance `sigma^2 * R_i`:
 //!   `SE_total = sqrt(ProcessVar + ParamVar)`.
 
-use crate::linalg::{invert_spd, quad_form, solve_general};
+use crate::linalg::{invert_spd, quad_form};
 use crate::triangle::{cumulative_to_incremental, latest_diagonal};
 use crate::types::TriangleView;
 use crate::validate::{
@@ -43,7 +43,7 @@ use crate::validate::{
 };
 
 /// Parametric loss-emergence growth curve `G(x; omega, theta)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GrowthCurve {
     /// Loglogistic: `G(x) = x^omega / (x^omega + theta^omega)` (heavier tail).
     Loglogistic,
@@ -93,7 +93,12 @@ impl GrowthCurve {
                 (g, dg_domega, dg_dtheta)
             }
             Self::Weibull => {
-                let v = (omega * ln_r).exp();
+                let exponent = omega * ln_r;
+                if exponent > 7.0 {
+                    // exp(-exp(7.0)) < 1e-475 underflows to 0 in f64; avoids 0.0 * inf = NaN.
+                    return (1.0, 0.0, 0.0);
+                }
+                let v = exponent.exp();
                 let surv = (-v).exp();
                 let g = -(-v).exp_m1();
                 let sv = surv * v;
@@ -106,7 +111,7 @@ impl GrowthCurve {
 }
 
 /// Configuration options for Clark (2003) MLE reserving.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ClarkOptions {
     /// Parametric growth curve family (`Loglogistic` or `Weibull`).
     pub curve: GrowthCurve,
@@ -125,6 +130,12 @@ pub struct ClarkOptions {
     pub monotonicity_policy: MonotonicityPolicy,
 }
 
+impl Default for ClarkOptions {
+    fn default() -> Self {
+        Self::loglogistic()
+    }
+}
+
 impl ClarkOptions {
     /// Standard Clark (2003) specification with midpoint ages (`0.5, 1.5, ...`)
     /// and projection to ultimate (`max_age = None`).
@@ -137,10 +148,44 @@ impl ClarkOptions {
             monotonicity_policy: MonotonicityPolicy::Strict,
         }
     }
+
+    /// Clark (2003) Loglogistic growth curve with default midpoint ages.
+    pub fn loglogistic() -> Self {
+        Self::new(GrowthCurve::Loglogistic)
+    }
+
+    /// Clark (2003) Weibull growth curve with default midpoint ages.
+    pub fn weibull() -> Self {
+        Self::new(GrowthCurve::Weibull)
+    }
+
+    /// Supply explicit development ages `0 < x_0 < ... < x_{n-1}`.
+    pub fn with_ages(mut self, ages: impl Into<Vec<f64>>) -> Self {
+        self.ages = Some(ages.into());
+        self
+    }
+
+    /// Set the average accident-date offset within period 1 (default `0.5`).
+    pub const fn with_origin_offset(mut self, origin_offset: f64) -> Self {
+        self.origin_offset = origin_offset;
+        self
+    }
+
+    /// Truncate ultimate projection at a finite maximum development age.
+    pub const fn with_max_age(mut self, max_age: f64) -> Self {
+        self.max_age = Some(max_age);
+        self
+    }
+
+    /// Set the triangle monotonicity policy.
+    pub const fn with_policy(mut self, policy: MonotonicityPolicy) -> Self {
+        self.monotonicity_policy = policy;
+        self
+    }
 }
 
 /// Full output from Clark (2003) LDF or Cape Cod parametric MLE reserving.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ClarkMleResult {
     /// Growth curve family fitted.
     pub curve: GrowthCurve,
@@ -592,7 +637,7 @@ fn profile_ll_and_grad(
     premium: Option<&[f64]>,
     curve: GrowthCurve,
 ) -> Option<(f64, [f64; 2])> {
-    if u < -6.0 || u > 4.0 || v < -12.0 || v > 12.0 {
+    if !(-6.0..=4.0).contains(&u) || !(-12.0..=12.0).contains(&v) {
         return None;
     }
     let n = prep.n;
@@ -718,14 +763,16 @@ fn optimize_growth_params(
             let mut chosen = None;
             let mut damp = 0.0_f64;
             for _ in 0..12 {
-                let m = [-h00 + damp, -h01, -h01, -h11 + damp];
-                let det = m[0] * m[3] - m[1] * m[2];
-                if m[0] > 0.0 && det > 1e-18 {
-                    if let Ok(d) = solve_general(&m, 2, &grad) {
-                        if d[0] * grad[0] + d[1] * grad[1] > 0.0 {
-                            chosen = Some([d[0], d[1]]);
-                            break;
-                        }
+                let m00 = -h00 + damp;
+                let m01 = -h01;
+                let m11 = -h11 + damp;
+                let det = m00 * m11 - m01 * m01;
+                if m00 > 0.0 && det > 1e-18 {
+                    let d0 = (m11 * grad[0] - m01 * grad[1]) / det;
+                    let d1 = (-m01 * grad[0] + m00 * grad[1]) / det;
+                    if d0.is_finite() && d1.is_finite() && d0 * grad[0] + d1 * grad[1] > 0.0 {
+                        chosen = Some([d0, d1]);
+                        break;
                     }
                 }
                 damp = if damp == 0.0 {

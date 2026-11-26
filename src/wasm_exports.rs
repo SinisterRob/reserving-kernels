@@ -39,9 +39,32 @@ static mut SE: [f64; N_MAX] = [0.0; N_MAX];
 static mut SIG: [f64; N_MAX] = [0.0; N_MAX];
 static mut INT: [f64; N_MAX] = [0.0; N_MAX];
 static mut SLP: [f64; N_MAX] = [0.0; N_MAX];
+static mut MACK_TOTAL_RESERVE: f64 = 0.0;
 
 fn clamp_n(n: u32) -> usize {
     (n as usize).min(N_MAX)
+}
+
+unsafe fn read_buf(ptr: *const f64, len: usize) -> Vec<f64> {
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        out.push(unsafe { *ptr.add(i) });
+    }
+    out
+}
+
+unsafe fn write_buf(dst: *mut f64, src: &[f64]) {
+    let take = src.len().min(N_MAX);
+    for i in 0..take {
+        unsafe { *dst.add(i) = src[i] };
+    }
+    for i in take..N_MAX {
+        unsafe { *dst.add(i) = f64::NAN };
+    }
+}
+
+fn valid_tail(tail: f64) -> bool {
+    tail.is_finite() && tail >= 1.0
 }
 
 fn tri_packed(n: usize) -> Vec<f64> {
@@ -218,11 +241,14 @@ pub extern "C" fn rk_ldf_simple_average_last_n(n: u32, last_n: u32) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rk_cdf_compute(n: u32, tail: f64) -> u32 {
     let n = clamp_n(n);
-    if n < 2 {
-        unsafe { CDF[0] = tail };
-        return n as u32;
+    if n == 0 || !valid_tail(tail) {
+        return 0;
     }
-    let ldf_slice: Vec<f64> = unsafe { LDF[..n - 1].to_vec() };
+    if n < 2 {
+        unsafe { write_cdf(&[tail]) };
+        return 1;
+    }
+    let ldf_slice = unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) };
     let cdf = ldf::cdf_from_ldf(&ldf_slice, tail);
     unsafe { write_cdf(&cdf) }
     cdf.len() as u32
@@ -233,11 +259,11 @@ pub extern "C" fn rk_cdf_compute(n: u32, tail: f64) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rk_chain_ladder(n: u32, tail: f64) -> u32 {
     let n = clamp_n(n);
-    if n == 0 {
+    if n == 0 || !valid_tail(tail) {
         return 0;
     }
     let ldf_slice: Vec<f64> = if n >= 2 {
-        unsafe { LDF[..n - 1].to_vec() }
+        unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
     } else {
         Vec::new()
     };
@@ -257,15 +283,15 @@ pub extern "C" fn rk_chain_ladder(n: u32, tail: f64) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rk_bf(n: u32, tail: f64) -> u32 {
     let n = clamp_n(n);
-    if n == 0 {
+    if n == 0 || !valid_tail(tail) {
         return 0;
     }
     let ldf_slice: Vec<f64> = if n >= 2 {
-        unsafe { LDF[..n - 1].to_vec() }
+        unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
     } else {
         Vec::new()
     };
-    let exp_slice: Vec<f64> = unsafe { EXP[..n].to_vec() };
+    let exp_slice = unsafe { read_buf(core::ptr::addr_of!(EXP).cast(), n) };
     let packed = tri_packed(n);
     let r = bf::project_unchecked(&view_of(&packed, n), &ldf_slice, tail, &exp_slice);
     let cdf = ldf::cdf_from_ldf(&ldf_slice, tail);
@@ -281,11 +307,9 @@ pub extern "C" fn rk_bf(n: u32, tail: f64) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rk_bf_expected_from_premium(n: u32, elr: f64) -> u32 {
     let n = clamp_n(n);
-    unsafe {
-        for i in 0..n {
-            EXP[i] = PREM[i] * elr;
-        }
-    }
+    let prem = unsafe { read_buf(core::ptr::addr_of!(PREM).cast(), n) };
+    let exp: Vec<f64> = prem.into_iter().map(|p| p * elr).collect();
+    unsafe { write_buf(core::ptr::addr_of_mut!(EXP).cast(), &exp) };
     n as u32
 }
 
@@ -294,15 +318,15 @@ pub extern "C" fn rk_bf_expected_from_premium(n: u32, elr: f64) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rk_cape_cod_elr(n: u32, tail: f64) -> f64 {
     let n = clamp_n(n);
-    if n == 0 {
+    if n == 0 || !valid_tail(tail) {
         return f64::NAN;
     }
     let ldf_slice: Vec<f64> = if n >= 2 {
-        unsafe { LDF[..n - 1].to_vec() }
+        unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
     } else {
         Vec::new()
     };
-    let prem_slice: Vec<f64> = unsafe { PREM[..n].to_vec() };
+    let prem_slice = unsafe { read_buf(core::ptr::addr_of!(PREM).cast(), n) };
     let packed = tri_packed(n);
     cape_cod::elr(&view_of(&packed, n), &ldf_slice, tail, &prem_slice)
 }
@@ -310,15 +334,15 @@ pub extern "C" fn rk_cape_cod_elr(n: u32, tail: f64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rk_cape_cod(n: u32, tail: f64) -> f64 {
     let n = clamp_n(n);
-    if n == 0 {
+    if n == 0 || !valid_tail(tail) {
         return f64::NAN;
     }
     let ldf_slice: Vec<f64> = if n >= 2 {
-        unsafe { LDF[..n - 1].to_vec() }
+        unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
     } else {
         Vec::new()
     };
-    let prem_slice: Vec<f64> = unsafe { PREM[..n].to_vec() };
+    let prem_slice = unsafe { read_buf(core::ptr::addr_of!(PREM).cast(), n) };
     let packed = tri_packed(n);
     let (elr, r) = cape_cod::project_unchecked(&view_of(&packed, n), &ldf_slice, tail, &prem_slice);
     let cdf = ldf::cdf_from_ldf(&ldf_slice, tail);
@@ -326,9 +350,7 @@ pub extern "C" fn rk_cape_cod(n: u32, tail: f64) -> f64 {
         write_ult(&r.ultimates);
         write_res(&r.reserves);
         write_cdf(&cdf);
-        for (i, e) in r.expected_ultimate.iter().enumerate().take(N_MAX) {
-            EXP[i] = *e;
-        }
+        write_buf(core::ptr::addr_of_mut!(EXP).cast(), &r.expected_ultimate);
     }
     elr
 }
@@ -338,18 +360,14 @@ pub extern "C" fn rk_cape_cod(n: u32, tail: f64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rk_brosius(n: u32, tail: f64) -> u32 {
     let n = clamp_n(n);
-    if n == 0 {
+    if n == 0 || !valid_tail(tail) {
         return 0;
     }
     let packed = tri_packed(n);
     let r = brosius::project_unchecked(&view_of(&packed, n), tail);
     unsafe {
-        for (i, v) in r.intercept.iter().enumerate().take(N_MAX) {
-            INT[i] = *v;
-        }
-        for (i, v) in r.slope.iter().enumerate().take(N_MAX) {
-            SLP[i] = *v;
-        }
+        write_buf(core::ptr::addr_of_mut!(INT).cast(), &r.intercept);
+        write_buf(core::ptr::addr_of_mut!(SLP).cast(), &r.slope);
         write_ult(&r.ultimate);
         write_res(&r.reserve);
     }
@@ -363,8 +381,8 @@ pub extern "C" fn rk_brosius(n: u32, tail: f64) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rk_mack(n: u32, tail: f64) -> f64 {
     let n = clamp_n(n);
-    if n == 0 {
-        return 0.0;
+    if n == 0 || !valid_tail(tail) {
+        return f64::NAN;
     }
     let packed = tri_packed(n);
     let r = mack::analyze_unchecked(&view_of(&packed, n), tail);
@@ -372,25 +390,17 @@ pub extern "C" fn rk_mack(n: u32, tail: f64) -> f64 {
         write_ldf(&r.ldf);
         write_ult(&r.ultimate);
         write_res(&r.reserve);
-        for (i, v) in r.standard_error.iter().enumerate().take(N_MAX) {
-            SE[i] = *v;
-        }
-        for (i, v) in r.sigma_sq.iter().enumerate().take(N_MAX) {
-            SIG[i] = *v;
-        }
+        write_buf(core::ptr::addr_of_mut!(SE).cast(), &r.standard_error);
+        write_buf(core::ptr::addr_of_mut!(SIG).cast(), &r.sigma_sq);
         let cdf = ldf::cdf_from_ldf(&r.ldf, tail);
         write_cdf(&cdf);
+        MACK_TOTAL_RESERVE = r.total_reserve;
     }
     r.total_standard_error
 }
 
 /// Returns the total reserve after the last Mack call.
 #[unsafe(no_mangle)]
-pub extern "C" fn rk_mack_total_reserve(n: u32) -> f64 {
-    let n = clamp_n(n);
-    let mut acc = 0.0;
-    for i in 0..n {
-        acc += unsafe { RES[i] };
-    }
-    acc
+pub extern "C" fn rk_mack_total_reserve(_n: u32) -> f64 {
+    unsafe { *core::ptr::addr_of!(MACK_TOTAL_RESERVE) }
 }

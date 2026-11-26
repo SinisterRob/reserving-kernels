@@ -99,6 +99,9 @@ pub(crate) fn normal_cdf_exact(z: f64) -> f64 {
 
 /// Complementary error function `erfc(x)` accurate to ~1e-15 (Cody 1969).
 fn erfc_approx(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
     if x < 0.0 {
         return 2.0 - erfc_approx(-x);
     }
@@ -181,7 +184,7 @@ fn erfc_approx(x: f64) -> f64 {
 
 /// Parametric P&C claim severity distributions with exact closed-form Limited
 /// Expected Values `E[X ∧ L]`, survival functions, excess ratios, and ILFs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SeverityDistribution {
     /// Lognormal `ln(X) ~ N(mu, sigma^2)` (`sigma > 0`).
     Lognormal {
@@ -229,6 +232,61 @@ pub enum SeverityDistribution {
 }
 
 impl SeverityDistribution {
+    /// Construct a Lognormal severity `ln(X) ~ N(mu, sigma^2)`.
+    pub const fn lognormal(mu: f64, sigma: f64) -> Self {
+        Self::Lognormal { mu, sigma }
+    }
+
+    /// Construct a two-parameter Pareto Type II (Lomax) severity.
+    pub const fn pareto(alpha: f64, theta: f64) -> Self {
+        Self::Pareto { alpha, theta }
+    }
+
+    /// Construct a single-parameter Pareto severity (`x >= theta`).
+    pub const fn single_parameter_pareto(alpha: f64, theta: f64) -> Self {
+        Self::SingleParameterPareto { alpha, theta }
+    }
+
+    /// Construct an Exponential severity with given `mean`.
+    pub const fn exponential(mean: f64) -> Self {
+        Self::Exponential { mean }
+    }
+
+    /// Construct a Mixed Exponential severity from weights and component means.
+    pub fn mixed_exponential(
+        weights: impl Into<Vec<f64>>,
+        means: impl Into<Vec<f64>>,
+    ) -> Self {
+        Self::MixedExponential {
+            weights: weights.into(),
+            means: means.into(),
+        }
+    }
+
+    /// Construct a Generalized Pareto (GPD) severity with shape `xi` and scale `beta`.
+    pub const fn gpd(xi: f64, beta: f64) -> Self {
+        Self::GeneralizedPareto { xi, beta }
+    }
+
+    /// Discretize onto `0, step, ..., max_index * step` via the Method of Rounding.
+    pub fn discretize_rounding(
+        &self,
+        step: f64,
+        max_index: usize,
+        capture_upper_tail: bool,
+    ) -> Result<Vec<f64>, ValidationError> {
+        crate::aggregate_loss::discretize_rounding(self, step, max_index, capture_upper_tail)
+    }
+
+    /// Discretize onto `0, step, ..., max_index * step` via mean-preserving LEV local moment matching.
+    pub fn discretize_mean_preserving(
+        &self,
+        step: f64,
+        max_index: usize,
+    ) -> Result<Vec<f64>, ValidationError> {
+        crate::aggregate_loss::discretize_mean_preserving(self, step, max_index)
+    }
+
     /// Construct a Lognormal distribution from ground-up mean and coefficient
     /// of variation `cv = sd / mean > 0`.
     pub fn lognormal_from_mean_cv(mean: f64, cv: f64) -> Result<Self, ValidationError> {
@@ -347,7 +405,7 @@ impl SeverityDistribution {
                 if xi.abs() <= 1e-12 {
                     (-x / beta).exp()
                 } else {
-                    (1.0 + xi * x / beta).powf(-1.0 / xi)
+                    (-((xi * x / beta).ln_1p()) / xi).exp()
                 }
             }
         }
@@ -369,13 +427,14 @@ impl SeverityDistribution {
                 (-0.5 * z * z).exp() / (x * sigma * TAU.sqrt())
             }
             Self::Pareto { alpha, theta } => {
-                alpha * theta.powf(*alpha) / (x + theta).powf(alpha + 1.0)
+                // Avoid intermediate theta^alpha overflow on realistic dollar scales.
+                (alpha / (x + theta)) * (theta / (x + theta)).powf(*alpha)
             }
             Self::SingleParameterPareto { alpha, theta } => {
                 if x < *theta {
                     0.0
                 } else {
-                    alpha * theta.powf(*alpha) / x.powf(alpha + 1.0)
+                    (alpha / x) * (theta / x).powf(*alpha)
                 }
             }
             Self::Exponential { mean } => (-x / mean).exp() / mean,
@@ -388,7 +447,7 @@ impl SeverityDistribution {
                 if xi.abs() <= 1e-12 {
                     (-x / beta).exp() / beta
                 } else {
-                    (1.0 + xi * x / beta).powf(-1.0 / xi - 1.0) / beta
+                    (-(1.0 / xi + 1.0) * (xi * x / beta).ln_1p()).exp() / beta
                 }
             }
         }
@@ -444,38 +503,53 @@ impl SeverityDistribution {
         let lev = match self {
             Self::Lognormal { mu, sigma } => {
                 let z = (limit.ln() - mu) / sigma;
-                let mean = (mu + 0.5 * sigma * sigma).exp();
-                mean * normal_cdf_exact(z - sigma) + limit * normal_cdf_exact(-z)
+                let cdf_shifted = normal_cdf_exact(z - sigma);
+                let term1 = if cdf_shifted == 0.0 {
+                    0.0
+                } else {
+                    (mu + 0.5 * sigma * sigma).exp() * cdf_shifted
+                };
+                term1 + limit * normal_cdf_exact(-z)
             }
             Self::Pareto { alpha, theta } => {
+                let ln_ratio = (limit / theta).ln_1p();
                 if (alpha - 1.0).abs() <= 1e-10 {
-                    theta * (1.0 + limit / theta).ln()
+                    theta * ln_ratio
                 } else {
-                    (theta / (alpha - 1.0)) * (1.0 - (theta / (limit + theta)).powf(alpha - 1.0))
+                    let am1 = alpha - 1.0;
+                    theta * -((-am1 * ln_ratio).exp_m1()) / am1
                 }
             }
             Self::SingleParameterPareto { alpha, theta } => {
                 if limit <= *theta {
                     limit
-                } else if (alpha - 1.0).abs() <= 1e-10 {
-                    theta * (1.0 + (limit / theta).ln())
                 } else {
-                    theta + (theta / (alpha - 1.0)) * (1.0 - (theta / limit).powf(alpha - 1.0))
+                    let ln_ratio = (limit / theta).ln();
+                    if (alpha - 1.0).abs() <= 1e-10 {
+                        theta * (1.0 + ln_ratio)
+                    } else {
+                        let am1 = alpha - 1.0;
+                        theta + theta * -((-am1 * ln_ratio).exp_m1()) / am1
+                    }
                 }
             }
-            Self::Exponential { mean } => mean * (1.0 - (-limit / mean).exp()),
+            Self::Exponential { mean } => mean * -((-limit / mean).exp_m1()),
             Self::MixedExponential { weights, means } => weights
                 .iter()
                 .zip(means.iter())
-                .map(|(&w, &m)| w * m * (1.0 - (-limit / m).exp()))
+                .map(|(&w, &m)| w * m * -((-limit / m).exp_m1()))
                 .sum(),
             Self::GeneralizedPareto { xi, beta } => {
                 if xi.abs() <= 1e-10 {
-                    beta * (1.0 - (-limit / beta).exp())
-                } else if (xi - 1.0).abs() <= 1e-10 {
-                    beta * (1.0 + limit / beta).ln()
+                    beta * -((-limit / beta).exp_m1())
                 } else {
-                    (beta / (1.0 - xi)) * (1.0 - (1.0 + xi * limit / beta).powf(1.0 - 1.0 / xi))
+                    let ln_u = (xi * limit / beta).ln_1p();
+                    if (xi - 1.0).abs() <= 1e-10 {
+                        beta * ln_u
+                    } else {
+                        let omx = 1.0 - xi;
+                        beta * -(((-omx / xi) * ln_u).exp_m1()) / omx
+                    }
                 }
             }
         };
@@ -485,6 +559,7 @@ impl SeverityDistribution {
     /// Expected loss in layer `[attachment, attachment + limit]`:
     /// `E[min(max(X - attachment, 0), limit)] = E[X ∧ (a + w)] - E[X ∧ a]`.
     pub fn layer_expected_loss(&self, attachment: f64, limit: f64) -> Result<f64, ValidationError> {
+        self.validate()?;
         if !attachment.is_finite() || !limit.is_finite() {
             return Err(ValidationError::NotFinite);
         }

@@ -41,7 +41,7 @@ use crate::validate::{
 // ===========================================================================
 
 /// Bornhuetter-Ferguson projection result.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BornhuetterFergusonProjection {
     /// Latest observed cumulative value by origin.
     pub latest: Vec<f64>,
@@ -228,7 +228,7 @@ impl BornhuetterFergusonEngine {
         validate_nonnegative_finite_vector(expected_ultimate, cumulative.n_origins)?;
 
         let latest_maturity = latest_and_maturity(cumulative, factors)?;
-        validate_maturity(&latest_maturity.maturity)?;
+        validate_maturity_with_policy(&latest_maturity.maturity, policy)?;
 
         let mut reserve_values = vec![0.0; cumulative.n_origins];
         bf_reserves(
@@ -236,11 +236,19 @@ impl BornhuetterFergusonEngine {
             &latest_maturity.maturity,
             &mut reserve_values,
         );
-        validate_nonnegative_finite_slice(&reserve_values)?;
+        if policy == MonotonicityPolicy::Strict {
+            validate_nonnegative_finite_slice(&reserve_values)?;
+        } else {
+            crate::validate::validate_finite_slice(&reserve_values)?;
+        }
 
         let mut ultimates = vec![0.0; cumulative.n_origins];
         bf_ultimates(&latest_maturity.latest, &reserve_values, &mut ultimates);
-        validate_nonnegative_finite_slice(&ultimates)?;
+        if policy == MonotonicityPolicy::Strict {
+            validate_nonnegative_finite_slice(&ultimates)?;
+        } else {
+            crate::validate::validate_finite_slice(&ultimates)?;
+        }
 
         let total_latest: f64 = latest_maturity.latest.iter().sum();
         let total_expected_ultimate: f64 = expected_ultimate.iter().sum();
@@ -340,12 +348,19 @@ fn validate_bf_inputs_with_policy(
     )
 }
 
-fn validate_maturity(maturity: &[f64]) -> Result<(), ValidationError> {
+fn validate_maturity_with_policy(
+    maturity: &[f64],
+    policy: MonotonicityPolicy,
+) -> Result<(), ValidationError> {
     for (index, &value) in maturity.iter().enumerate() {
         if !value.is_finite() {
             return Err(ValidationError::NotFinite);
         }
-        if !(0.0..=1.0).contains(&value) {
+        let valid = match policy {
+            MonotonicityPolicy::Strict => (0.0..=1.0).contains(&value),
+            MonotonicityPolicy::AllowNegativeIncrements => value >= 0.0,
+        };
+        if !valid {
             return Err(ValidationError::InvalidMaturity { index, value });
         }
     }

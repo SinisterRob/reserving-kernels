@@ -38,7 +38,7 @@ use crate::validate::{
 };
 
 /// Benktander–Hovinen projection result.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BenktanderProjection {
     /// Number of iterations `m` applied (`m = 1` is BF, `m = 2` is Benktander).
     pub iterations: usize,
@@ -159,7 +159,13 @@ impl BenktanderEngine {
         for i in 0..n {
             let cdf = factors.cdfs[latest_dev[i]];
             let p = 1.0 / cdf;
-            if !p.is_finite() || !(0.0..=1.0).contains(&p) {
+            let valid_p = match policy {
+                MonotonicityPolicy::Strict => p.is_finite() && (0.0..=1.0).contains(&p),
+                MonotonicityPolicy::AllowNegativeIncrements => {
+                    p.is_finite() && (0.0..2.0).contains(&p)
+                }
+            };
+            if !valid_p {
                 return Err(ValidationError::InvalidMaturity { index: i, value: p });
             }
             let q = 1.0 - p;

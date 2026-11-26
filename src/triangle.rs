@@ -65,7 +65,7 @@ pub fn incremental_to_cumulative(t: &TriangleView<'_>) -> Vec<f64> {
 #[inline]
 pub fn age_to_age(t: &TriangleView<'_>, i: usize, j: usize) -> f64 {
     let n = t.n_origins.min(t.n_devs);
-    if i + j + 1 > n - 1 {
+    if n < 2 || i >= n || j >= n || i.saturating_add(j).saturating_add(1) >= n {
         return f64::NAN;
     }
     let a = t.get(i, j);

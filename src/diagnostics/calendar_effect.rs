@@ -18,13 +18,21 @@ pub struct CalendarEffectDiagnostics {
 
 fn mean(values: &[f64]) -> f64 {
     if values.is_empty() {
-        return 0.0;
+        return f64::NAN;
     }
     values.iter().sum::<f64>() / values.len() as f64
 }
 
 /// Diagnose calendar / diagonal effects from standardized residuals.
 pub fn diagnose(t: &TriangleView<'_>, ldfs: &[f64]) -> CalendarEffectDiagnostics {
+    if t.n_origins == 0 || t.n_devs < 2 {
+        return CalendarEffectDiagnostics {
+            calendar_scores: Vec::new(),
+            strongest_calendar: None,
+            diagonal_bias_score: 0.0,
+            p_value_like_score: 1.0,
+        };
+    }
     let sigma = residual_scale_by_dev(t, ldfs);
     let standardized = standardized_residuals(t, ldfs, &sigma);
     let max_calendar = t.n_origins + t.n_devs - 2;

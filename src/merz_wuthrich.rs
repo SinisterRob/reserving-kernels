@@ -47,7 +47,7 @@ use crate::types::TriangleView;
 use crate::validate::{MonotonicityPolicy, ValidationError};
 
 /// Result of the Merz & Wüthrich (2008) 1-year CDR MSEP calculation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MerzWuthrichResult {
     /// Volume-weighted chain-ladder LDFs (length `n - 1`).
     pub ldf: Vec<f64>,
@@ -85,9 +85,22 @@ pub struct MerzWuthrichResult {
     pub total_cdr_cv: f64,
 }
 
+impl std::fmt::Display for MerzWuthrichResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "MerzWuthrich1Yr(reserve={:.2}, cdr_se={:.2}, cdr_cv={:.2}%, emergence={:.1}%)",
+            self.total_reserve,
+            self.total_cdr_standard_error,
+            self.total_cdr_cv * 100.0,
+            self.total_emergence_ratio * 100.0
+        )
+    }
+}
+
 /// Multi-year run-off decomposition of Mack's ultimate MSEP into calendar-year
 /// CDR MSEPs `t = 1, ..., n - 1`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RunoffCdrDecomposition {
     /// Calendar step `t` (`1..=n-1`) aggregate CDR MSEP (length `n - 1`).
     pub step_total_msep: Vec<f64>,

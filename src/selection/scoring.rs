@@ -3,7 +3,7 @@
 use crate::diagnostics::link_ratio_diagnostics::{LinkRatioDiagnostics, diagnose_all};
 use crate::ldf;
 use crate::selection::CandidateSelector;
-use crate::selection::backtest::{BacktestScore, backtest_selector_family};
+use crate::selection::backtest::BacktestScore;
 use crate::types::TriangleView;
 
 /// Scored selector candidate with its factor vector.
@@ -54,12 +54,18 @@ fn smoothness_score(ldfs: &[f64]) -> f64 {
     if ldfs.len() <= 1 {
         return 1.0;
     }
-    let avg_adjacent_jump = ldfs
-        .windows(2)
-        .map(|pair| (pair[1] - pair[0]).abs())
-        .sum::<f64>()
-        / (ldfs.len() - 1) as f64;
-    1.0 / (1.0 + avg_adjacent_jump)
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for pair in ldfs.windows(2) {
+        if pair[0].is_finite() && pair[1].is_finite() {
+            sum += (pair[1] - pair[0]).abs();
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return 0.0;
+    }
+    1.0 / (1.0 + sum / count as f64)
 }
 
 fn outlier_penalty(diagnostics: &[LinkRatioDiagnostics]) -> f64 {
@@ -106,24 +112,29 @@ pub fn score_selector(
     selector: CandidateSelector,
     tail: f64,
 ) -> SelectorScore {
+    let holdout = crate::selection::backtest::holdout_latest_diagonal(t);
+    score_selector_with_holdout(t, selector, tail, &holdout)
+}
+
+fn score_selector_with_holdout(
+    t: &TriangleView<'_>,
+    selector: CandidateSelector,
+    tail: f64,
+    holdout: &crate::selection::backtest::HoldoutSet,
+) -> SelectorScore {
     let ldfs = selector_ldfs(t, &selector);
     let diagnostics = diagnose_all(t, to_ldf_method(&selector));
-    let backtest = backtest_selector_family(t, std::slice::from_ref(&selector), tail)
-        .into_iter()
-        .next()
-        .unwrap_or(BacktestScore {
-            selector: selector.clone(),
-            n_held_out: 0,
-            mape: f64::NAN,
-            rmse: f64::NAN,
-            mean_error: f64::NAN,
-            predictions: Vec::new(),
-        });
+    let backtest = crate::selection::backtest::fit_predict_score(holdout, selector.clone(), tail);
 
     let stability = stability_score(&diagnostics);
     let backtest_score = backtest_component(&backtest);
     let smoothness = smoothness_score(&ldfs);
-    let outlier_penalty = outlier_penalty(&diagnostics);
+    // Manual factors are fixed by the actuary and have zero leave-one-out sensitivity.
+    let outlier_penalty = if matches!(selector, CandidateSelector::Manual(_)) {
+        0.0
+    } else {
+        outlier_penalty(&diagnostics)
+    };
     let total_score = stability + backtest_score + smoothness - outlier_penalty;
 
     SelectorScore {
@@ -137,16 +148,17 @@ pub fn score_selector(
     }
 }
 
-/// Score a family of selector candidates.
+/// Score a family of selector candidates (reusing a single holdout split).
 pub fn score_selector_family(
     t: &TriangleView<'_>,
     selectors: &[CandidateSelector],
     tail: f64,
 ) -> Vec<SelectorScore> {
+    let holdout = crate::selection::backtest::holdout_latest_diagonal(t);
     selectors
         .iter()
         .cloned()
-        .map(|selector| score_selector(t, selector, tail))
+        .map(|selector| score_selector_with_holdout(t, selector, tail, &holdout))
         .collect()
 }
 

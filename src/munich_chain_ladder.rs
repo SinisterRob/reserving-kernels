@@ -28,7 +28,7 @@ use crate::types::TriangleView;
 use crate::validate::{ValidationError, validate_tail, validate_triangle};
 
 /// Full bivariate Munich Chain Ladder result.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MunichChainLadder {
     /// Traditional univariate volume-weighted paid LDFs (length `n - 1`).
     pub paid_ldfs: Vec<f64>,
@@ -312,8 +312,16 @@ pub fn project(
     let mut incurred_reserves = vec![0.0; n];
 
     for i in 0..n {
-        paid_ultimates[i] = full_paid[i * n + (n - 1)] * paid_tail;
-        incurred_ultimates[i] = full_incurred[i * n + (n - 1)] * incurred_tail;
+        let p_end = full_paid[i * n + (n - 1)];
+        let i_end = full_incurred[i * n + (n - 1)];
+        if !p_end.is_finite() || !i_end.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        if p_end < 0.0 || i_end < 0.0 {
+            return Err(ValidationError::Negative);
+        }
+        paid_ultimates[i] = p_end * paid_tail;
+        incurred_ultimates[i] = i_end * incurred_tail;
         paid_reserves[i] = paid_ultimates[i] - paid_latest[i];
         incurred_reserves[i] = incurred_ultimates[i] - incurred_latest[i];
     }

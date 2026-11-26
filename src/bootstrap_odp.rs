@@ -50,7 +50,7 @@ use crate::validate::{
 // ===========================================================================
 
 /// Compact bootstrap configuration for the legacy [`bootstrap`] entry point.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BootstrapConfig {
     /// Number of bootstrap iterations.
     pub iterations: usize,
@@ -71,7 +71,7 @@ impl Default for BootstrapConfig {
 ///
 /// The two conventions are mutually exclusive (Shapland 2016, §3.4): do not
 /// apply both simultaneously.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ResidualAdjustment {
     /// England & Verrall (1999, 2002): multiply Pearson residuals by
     /// `sqrt(N / (N - p))` over all `N` active observed cells.
@@ -84,7 +84,7 @@ pub enum ResidualAdjustment {
 }
 
 /// Future incremental process-variance distribution for ODP bootstrap draws.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ProcessDistribution {
     /// Moment-matched Gamma: `Gamma(shape = μ* / φ, scale = φ)` with mean `μ*`
     /// and variance `φ · μ*` (England & Verrall 2002; Shapland 2016 §3.5).
@@ -97,7 +97,7 @@ pub enum ProcessDistribution {
 }
 
 /// Full configuration for [`bootstrap_odp`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OdpBootstrapOptions {
     /// Number of bootstrap iterations.
     pub iterations: usize,
@@ -147,13 +147,49 @@ impl OdpBootstrapOptions {
             monotonicity_policy: MonotonicityPolicy::Strict,
         }
     }
+
+    /// Set the number of bootstrap iterations.
+    pub const fn with_iterations(mut self, iterations: usize) -> Self {
+        self.iterations = iterations;
+        self
+    }
+
+    /// Set the deterministic PRNG seed.
+    pub const fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// Set the residual adjustment convention (`DegreesOfFreedom` vs. `HatMatrixLeverage`).
+    pub const fn with_residual_adjustment(mut self, adjustment: ResidualAdjustment) -> Self {
+        self.residual_adjustment = adjustment;
+        self
+    }
+
+    /// Set the future process-variance distribution (`Gamma`, `OverDispersedPoisson`, or `None`).
+    pub const fn with_process_distribution(mut self, dist: ProcessDistribution) -> Self {
+        self.process_distribution = dist;
+        self
+    }
+
+    /// Enable or disable centering the eligible adjusted residual pool before resampling.
+    pub const fn with_centered_residuals(mut self, center: bool) -> Self {
+        self.center_residuals = center;
+        self
+    }
+
+    /// Set the triangle monotonicity policy.
+    pub const fn with_policy(mut self, policy: MonotonicityPolicy) -> Self {
+        self.monotonicity_policy = policy;
+        self
+    }
 }
 
 /// Bootstrap reserve summary shared with the generic reserve-distribution layer.
 pub type BootstrapSummary = ReserveDistributionSummary;
 
 /// Compact bootstrap output returned by [`bootstrap`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BootstrapResult {
     /// Original chain-ladder / ODP total reserve.
     pub base_total_reserve: f64,
@@ -164,7 +200,7 @@ pub struct BootstrapResult {
 }
 
 /// Cell-level residual and hat-matrix leverage record from [`fit_odp`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OdpCellResidual {
     /// Origin row index.
     pub origin: usize,
@@ -183,7 +219,7 @@ pub struct OdpCellResidual {
 }
 
 /// Immutable ODP GLM fit, dispersion, leverages, and analytic prediction errors.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OdpFit {
     /// Number of origin rows.
     pub n_origins: usize,
@@ -230,7 +266,7 @@ pub struct OdpFit {
 
 /// Full ODP bootstrap output with fit diagnostics, per-origin distributions,
 /// and explicit failure accounting.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OdpBootstrapResult {
     /// Underlying ODP GLM fit and analytic prediction errors.
     pub fit: OdpFit,
@@ -431,46 +467,8 @@ pub(crate) fn ln_gamma(z: f64) -> f64 {
     0.5 * TAU.ln() + (x + 0.5) * t.ln() - t + sum.ln()
 }
 
-// ===========================================================================
-// Pure-Rust Symmetric Positive-Definite Cholesky Solver
-// ===========================================================================
-
-/// Compute lower-triangular Cholesky factor `L` such that `A = L * L^T`.
-pub(crate) fn cholesky_lower(a: &[f64], dim: usize) -> Result<Vec<f64>, ValidationError> {
-    let mut l = vec![0.0; dim * dim];
-    for i in 0..dim {
-        for j in 0..=i {
-            let mut sum = a[i * dim + j];
-            for k in 0..j {
-                sum -= l[i * dim + k] * l[j * dim + k];
-            }
-            if i == j {
-                if !sum.is_finite() || sum <= 1e-14 {
-                    return Err(ValidationError::InvalidParameter(
-                        "matrix is not positive definite",
-                    ));
-                }
-                l[i * dim + j] = sum.sqrt();
-            } else {
-                l[i * dim + j] = sum / l[j * dim + j];
-            }
-        }
-    }
-    Ok(l)
-}
-
-/// Solve `L * y = b` by forward substitution for lower-triangular `L`.
-pub(crate) fn solve_lower(l: &[f64], dim: usize, b: &[f64]) -> Vec<f64> {
-    let mut y = vec![0.0; dim];
-    for i in 0..dim {
-        let mut sum = b[i];
-        for k in 0..i {
-            sum -= l[i * dim + k] * y[k];
-        }
-        y[i] = sum / l[i * dim + i];
-    }
-    y
-}
+// Re-use the crate's scale-invariant Cholesky and triangular solvers.
+pub(crate) use crate::linalg::{cholesky_lower, solve_lower};
 
 // ===========================================================================
 // ODP GLM Fit (Backward Chain-Ladder Recursion + Exact Hat Matrix)
@@ -501,6 +499,11 @@ pub fn fit_odp(
     }
 
     let factors = DevelopmentFactorEngine::volume_weighted_with_policy(triangle, tail, policy)?;
+    if factors.ldfs.iter().any(|&f| !f.is_finite() || f < 1.0) {
+        return Err(ValidationError::InvalidParameter(
+            "ODP GLM requires non-negative fitted expectations (all volume-weighted LDFs >= 1.0)",
+        ));
+    }
     let observed_incremental = cumulative_to_incremental(triangle);
     let latest = latest_diagonal(triangle);
 
@@ -740,56 +743,85 @@ pub(crate) fn build_adjusted_residual_pool(
     Ok((pool, pool_mean))
 }
 
-/// Execute one ODP bootstrap iteration given a pre-sampled array of adjusted
-/// residuals (one per observed cell in `(origin, dev)` row-major order).
+/// Reusable scratch buffers and precomputed `sqrt(mu)` for zero-allocation ODP
+/// bootstrap iterations.
+pub(crate) struct OdpBootstrapScratch {
+    sqrt_mu: Vec<f64>,
+    pseudo_cum: Vec<f64>,
+    pseudo_ldfs: Vec<f64>,
+    origin_reserves: Vec<f64>,
+}
+
+impl OdpBootstrapScratch {
+    pub(crate) fn for_fit(fit: &OdpFit) -> Self {
+        let n = fit.n_origins;
+        let sqrt_mu: Vec<f64> = fit
+            .fitted_incremental
+            .iter()
+            .map(|&mu| if mu > 0.0 { mu.sqrt() } else { 0.0 })
+            .collect();
+        Self {
+            sqrt_mu,
+            pseudo_cum: vec![f64::NAN; n * n],
+            pseudo_ldfs: vec![0.0; n.saturating_sub(1)],
+            origin_reserves: vec![0.0; n],
+        }
+    }
+}
+
+/// Execute one ODP bootstrap iteration into reusable `scratch` buffers.
 ///
-/// Returns `Some(origin_reserves)` on valid refit or `None` if the pseudo-
-/// triangle has a degenerate non-positive column sum.
-pub(crate) fn run_odp_iteration_from_residuals(
+/// Returns `Some(&scratch.origin_reserves)` on valid refit or `None` if the
+/// pseudo-triangle has a degenerate non-positive column sum.
+pub(crate) fn run_odp_iteration_with_scratch<'a>(
     fit: &OdpFit,
     sampled_residuals: &[f64],
     process_distribution: ProcessDistribution,
     rng: &mut DeterministicRng,
-) -> Option<Vec<f64>> {
+    scratch: &'a mut OdpBootstrapScratch,
+) -> Option<&'a [f64]> {
     let n = fit.n_origins;
-    let mut pseudo_cum = vec![f64::NAN; n * n];
+    scratch.pseudo_cum.fill(f64::NAN);
     let mut idx = 0usize;
 
     for origin in 0..n {
         let mut running = 0.0;
+        let row_off = origin * n;
         for dev in 0..(n - origin) {
-            let mu = fit.fitted_incremental[origin * n + dev];
+            let mu = fit.fitted_incremental[row_off + dev];
             let inc = if mu > 0.0 {
                 let r = sampled_residuals[idx];
                 idx += 1;
-                mu + r * mu.sqrt()
+                mu + r * scratch.sqrt_mu[row_off + dev]
             } else {
                 0.0
             };
             running += inc;
-            pseudo_cum[origin * n + dev] = running;
+            scratch.pseudo_cum[row_off + dev] = running;
         }
     }
 
     // Refit volume-weighted LDFs on the pseudo-cumulative triangle.
-    let mut pseudo_ldfs = vec![0.0; n - 1];
-    volume_weighted_ldfs(&pseudo_cum, n, n, &mut pseudo_ldfs);
-    if pseudo_ldfs.iter().any(|f| !f.is_finite() || *f <= 0.0) {
+    volume_weighted_ldfs(&scratch.pseudo_cum, n, n, &mut scratch.pseudo_ldfs);
+    if scratch
+        .pseudo_ldfs
+        .iter()
+        .any(|f| !f.is_finite() || *f <= 0.0)
+    {
         return None;
     }
 
     // Square the pseudo-triangle forward and add process variance once per future cell.
-    let mut origin_reserves = vec![0.0; n];
     let phi = fit.dispersion;
     for origin in 0..n {
         let latest_dev = n - 1 - origin;
-        let mut prev_cum = pseudo_cum[origin * n + latest_dev];
+        let mut prev_cum = scratch.pseudo_cum[origin * n + latest_dev];
         if !prev_cum.is_finite() {
             return None;
         }
         let mut reserve_i = 0.0;
         for dev in (latest_dev + 1)..n {
-            let next_cum = prev_cum * pseudo_ldfs[dev - 1];
+            let next_cum = prev_cum * scratch.pseudo_ldfs[dev - 1];
             let future_mu = next_cum - prev_cum;
             reserve_i += sample_process_increment(future_mu, phi, process_distribution, rng);
             prev_cum = next_cum;
@@ -801,10 +833,26 @@ pub(crate) fn run_odp_iteration_from_residuals(
         if !reserve_i.is_finite() {
             return None;
         }
-        origin_reserves[origin] = reserve_i;
+        scratch.origin_reserves[origin] = reserve_i;
     }
 
-    Some(origin_reserves)
+    Some(&scratch.origin_reserves)
+}
+
+/// Execute one ODP bootstrap iteration given a pre-sampled array of adjusted
+/// residuals (one per observed cell in `(origin, dev)` row-major order).
+///
+/// Returns `Some(origin_reserves)` on valid refit or `None` if the pseudo-
+/// triangle has a degenerate non-positive column sum.
+pub(crate) fn run_odp_iteration_from_residuals(
+    fit: &OdpFit,
+    sampled_residuals: &[f64],
+    process_distribution: ProcessDistribution,
+    rng: &mut DeterministicRng,
+) -> Option<Vec<f64>> {
+    let mut scratch = OdpBootstrapScratch::for_fit(fit);
+    run_odp_iteration_with_scratch(fit, sampled_residuals, process_distribution, rng, &mut scratch)
+        .map(|slice| slice.to_vec())
 }
 
 #[inline]
@@ -814,14 +862,19 @@ fn sample_process_increment(
     dist: ProcessDistribution,
     rng: &mut DeterministicRng,
 ) -> f64 {
-    if !(phi > 0.0) || !(future_mu > 0.0) {
+    if !(phi > 0.0) || future_mu == 0.0 || !future_mu.is_finite() {
         return future_mu;
     }
-    match dist {
-        ProcessDistribution::Gamma => rng.sample_gamma(future_mu / phi, phi),
-        ProcessDistribution::OverDispersedPoisson => phi * rng.sample_poisson(future_mu / phi),
-        ProcessDistribution::None => future_mu,
-    }
+    // Per Shapland (2016) §3.5.3, preserve process variance on negative pseudo-
+    // incremental expectations by reflecting the draw: -Sample(|mu|, phi).
+    let sign = if future_mu < 0.0 { -1.0 } else { 1.0 };
+    let mag = future_mu.abs();
+    let draw = match dist {
+        ProcessDistribution::Gamma => rng.sample_gamma(mag / phi, phi),
+        ProcessDistribution::OverDispersedPoisson => phi * rng.sample_poisson(mag / phi),
+        ProcessDistribution::None => mag,
+    };
+    sign * draw
 }
 
 /// Run the full England & Verrall (1999, 2002) / Shapland (2016) ODP bootstrap.
@@ -843,17 +896,19 @@ pub fn bootstrap_odp(
     let mut simulated_totals = Vec::with_capacity(options.iterations);
     let mut simulated_by_origin = vec![Vec::with_capacity(options.iterations); n];
     let mut sampled_residuals = vec![0.0; fit.n_observed];
+    let mut scratch = OdpBootstrapScratch::for_fit(&fit);
     let mut failed_iterations = 0usize;
 
     for _ in 0..options.iterations {
         for slot in &mut sampled_residuals {
             *slot = pool[rng.next_index(pool.len())];
         }
-        if let Some(origin_reserves) = run_odp_iteration_from_residuals(
+        if let Some(origin_reserves) = run_odp_iteration_with_scratch(
             &fit,
             &sampled_residuals,
             options.process_distribution,
             &mut rng,
+            &mut scratch,
         ) {
             let total: f64 = origin_reserves.iter().sum();
             if total.is_finite() {

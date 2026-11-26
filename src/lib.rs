@@ -84,3 +84,39 @@ pub mod validate;
 pub mod wasm_exports;
 
 pub use types::{Triangle, TriangleView};
+
+/// Convenient re-exports of the most commonly used reserving types and engines.
+pub mod prelude {
+    pub use crate::aggregate_loss::{
+        AggregateLossDistribution, FrequencyDistribution, fft_aggregate_loss, panjer_recursion,
+    };
+    pub use crate::benktander::{BenktanderEngine, BenktanderProjection};
+    pub use crate::bf::{BornhuetterFergusonEngine, BornhuetterFergusonProjection};
+    pub use crate::bootstrap_odp::{
+        OdpBootstrapOptions, OdpBootstrapResult, OdpFit, ProcessDistribution, ResidualAdjustment,
+        bootstrap_odp, fit_odp,
+    };
+    pub use crate::cape_cod::{CapeCodEngine, CapeCodProjection};
+    pub use crate::capital_allocation::{
+        EulerAllocationResult, MyersReadAllocationResult, euler_rvar_allocation,
+        euler_sd_allocation, euler_tvar_allocation, myers_read_allocation,
+        myers_read_from_default_ratio,
+    };
+    pub use crate::chain_ladder::{ChainLadderEngine, ChainLadderProjection};
+    pub use crate::clark_mle::{ClarkMleResult, ClarkOptions, GrowthCurve};
+    pub use crate::dependence::{CorrelationType, ImanConoverResult, iman_conover};
+    pub use crate::diagnostics::triangle_diagnostics::TriangleDiagnostics;
+    pub use crate::glm_reserving::{GlmDesign, GlmFamily, GlmOptions, GlmReservingResult, fit_glm};
+    pub use crate::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
+    pub use crate::mack::{Mack, MackTailSpec};
+    pub use crate::mack_bf::{BfPayoutEstimator, MackBfOptions, MackBfResult};
+    pub use crate::merz_wuthrich::MerzWuthrichResult;
+    pub use crate::paid_incurred_chain::{PaidIncurredChainResult, PicOptions};
+    pub use crate::ptf_regression::{
+        AccidentSpec, CalendarSpec, DevelopmentSpec, LogNormalMeanMode, PtfOptions, PtfResult,
+    };
+    pub use crate::reserve_distribution::{rvar, tvar_coherent, var_least};
+    pub use crate::severity::SeverityDistribution;
+    pub use crate::types::{Triangle, TriangleView};
+    pub use crate::validate::{MonotonicityPolicy, ValidationError};
+}

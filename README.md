@@ -24,29 +24,21 @@ reserving-kernels = { git = "https://github.com/SinisterRob/reserving-kernels" }
 ### Example: Mack Ultimate SE, 1-Year Solvency II CDR, and Panjer/FFT Convolution
 
 ```rust
-use reserving_kernels::{
-    aggregate_loss::{FrequencyDistribution, fft_aggregate_loss, panjer_recursion},
-    mack, merz_wuthrich,
-    types::Triangle,
-};
+use reserving_kernels::prelude::*;
 
-let nan = f64::NAN;
-let triangle = Triangle::try_new(
-    4,
-    4,
-    vec![
-        100.0, 160.0, 195.0, 205.0,
-        120.0, 190.0, 232.0,   nan,
-        135.0, 218.0,   nan,   nan,
-        150.0,   nan,   nan,   nan,
-    ],
-)?;
+// Construct directly from upper-triangle rows (no manual NaN padding required)
+let triangle = Triangle::try_from_upper_rows(&[
+    &[100.0, 160.0, 195.0, 205.0],
+    &[120.0, 190.0, 232.0],
+    &[135.0, 218.0],
+    &[150.0],
+])?;
 
 // Mack (1993) ultimate chain-ladder reserve & standard error
-let m = mack::analyze(&triangle.view(), 1.0)?;
+let m = triangle.mack(1.0)?;
 
 // Merz & Wuthrich (2008) 1-year Claims Development Result (Solvency II horizon)
-let cdr = merz_wuthrich::analyze(&triangle.view())?;
+let cdr = triangle.merz_wuthrich()?;
 assert!(cdr.total_cdr_standard_error <= m.total_standard_error);
 
 // Panjer (1981) recursion vs. Robertson (1992) exponentially tilted radix-2 FFT
@@ -55,7 +47,7 @@ let severity_pmf = [0.0, 0.5, 0.3, 0.2];
 let panjer = panjer_recursion(freq, &severity_pmf, 100.0, 128)?;
 let fft = fft_aggregate_loss(freq, &severity_pmf, 100.0, 128, None)?;
 assert!((panjer.mean - fft.mean).abs() < 1e-8);
-# Ok::<(), reserving_kernels::validate::ValidationError>(())
+# Ok::<(), ValidationError>(())
 ```
 
 ## Implemented Modules

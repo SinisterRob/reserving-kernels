@@ -51,7 +51,7 @@ use crate::validate::{
 // ===========================================================================
 
 /// Severity trend specification for [`adjust_case_reserves`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum CaseReserveTrend {
     /// Continuous exponential trend rate `r` in `S_{i,j} = S_{i_max,j} * exp(-r * (i_max - i))`.
     ExponentialRate(f64),
@@ -65,7 +65,7 @@ pub enum CaseReserveTrend {
 }
 
 /// Output of the Berquist–Sherman case-reserve adequacy adjustment.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CaseReserveAdjustmentResult {
     /// Effective continuous exponential severity trend `r` used in `exp(-r * (i_max - i))`.
     pub exponential_trend_rate: f64,
@@ -246,7 +246,7 @@ fn fit_pooled_log_linear_trend(raw_avg: &[f64], n: usize) -> Result<f64, Validat
 
 /// Interpolation rule mapping adjusted closed claim counts to adjusted
 /// cumulative paid losses in [`adjust_paid_disposal_rate`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum DisposalInterpolation {
     /// Piecewise-linear interpolation along each origin's observed
     /// `(Closed_{i,k}, Paid_{i,k})` curve (anchored at `(0, 0)` below age 0).
@@ -259,7 +259,7 @@ pub enum DisposalInterpolation {
 }
 
 /// Output of the Berquist–Sherman paid disposal-rate adjustment.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PaidDisposalAdjustmentResult {
     /// Observed closed-claim disposal rate triangle (`Closed_{i,j} / N_i`).
     pub observed_disposal_rates: Triangle,
@@ -336,7 +336,7 @@ pub fn adjust_paid_disposal_rate(
                 if !d.is_finite() {
                     return Err(ValidationError::NotFinite);
                 }
-                if d < 0.0 || d > 1.0 + 1e-9 {
+                if !(0.0..=1.0 + 1e-9).contains(&d) {
                     return Err(ValidationError::InvalidMaturity {
                         index: idx,
                         value: d,
@@ -380,7 +380,9 @@ pub fn adjust_paid_disposal_rate(
     let policy = MonotonicityPolicy::AllowNegativeIncrements;
     let factors =
         DevelopmentFactorEngine::volume_weighted_with_policy(&adjusted_paid.view(), tail, policy)?;
-    let cl = ChainLadderEngine::project_with_policy(&adjusted_paid.view(), &factors, policy)?;
+    // Project ultimates and reserves from the actual cumulative paid diagonal
+    // using the disposal-rate-adjusted LDFs so Ultimate == Paid + Reserve holds.
+    let cl = ChainLadderEngine::project_with_policy(paid, &factors, policy)?;
 
     Ok(PaidDisposalAdjustmentResult {
         observed_disposal_rates: Triangle::new(n, n, obs_rates),

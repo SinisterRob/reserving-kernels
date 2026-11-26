@@ -344,3 +344,241 @@ fn larger_triangle_chain_ladder_consistency() {
         }
     }
 }
+
+// ---- Ergonomics & Sprint Regression Tests ---------------------------------
+
+#[test]
+fn ergonomic_triangle_constructors_and_fluent_methods() {
+    use reserving_kernels::prelude::*;
+
+    let from_upper = Triangle::try_from_upper_rows(&[
+        &[100.0, 160.0, 195.0, 205.0],
+        &[120.0, 190.0, 232.0],
+        &[135.0, 218.0],
+        &[150.0],
+    ])
+    .expect("upper rows");
+
+    let from_inc = Triangle::try_from_incremental_rows(&[
+        &[100.0, 60.0, 35.0, 10.0],
+        &[120.0, 70.0, 42.0],
+        &[135.0, 83.0],
+        &[150.0],
+    ])
+    .expect("incremental rows");
+
+    assert_eq!(from_upper.n(), 4);
+    assert_eq!(from_upper.latest_diagonal(), from_inc.latest_diagonal());
+    assert!(from_upper.to_string().contains("205.00"));
+    assert!(from_upper.to_string().contains('-'));
+
+    let cl = from_upper.chain_ladder(1.0).expect("cl");
+    let m = from_upper.mack(1.0).expect("mack");
+    let cdr = from_upper.merz_wuthrich().expect("mw");
+    assert!(close(cl.total_reserve, m.total_reserve, 1e-9));
+    assert!(cdr.total_cdr_standard_error <= m.total_standard_error + 1e-9);
+
+    let prem = [400.0, 450.0, 500.0, 550.0];
+    let cc = from_upper.cape_cod(&prem, 1.0).expect("cape cod");
+    assert!(cc.bf_projection.total_reserve > 0.0);
+
+    // Owned Vec<Vec<f64>> rows, origin_row, Display, fluent options, and compound shorthand.
+    let owned_rows = vec![
+        vec![100.0, 160.0, 195.0, 205.0],
+        vec![120.0, 190.0, 232.0],
+        vec![135.0, 218.0],
+        vec![150.0],
+    ];
+    let from_vecs = Triangle::try_from_rows(&owned_rows).expect("from vecs");
+    assert_eq!(from_vecs.origin_row(1), &[120.0, 190.0, 232.0]);
+    assert!(m.to_string().contains("Mack("));
+    assert!(cdr.to_string().contains("MerzWuthrich1Yr("));
+
+    let glm = from_vecs.glm(&GlmOptions::odp()).expect("glm odp");
+    assert!(close(glm.total_reserve, cl.total_reserve, 1e-6));
+
+    let sev_pmf = SeverityDistribution::exponential(100.0)
+        .discretize_mean_preserving(25.0, 16)
+        .expect("disc");
+    let agg = FrequencyDistribution::poisson(2.0)
+        .compound_fft(&sev_pmf, 25.0, 64, None)
+        .expect("fft");
+    assert!(agg.mean > 0.0);
+
+    // Serde JSON round-trip on core options and results.
+    let mack_json = serde_json::to_string(&m).expect("serialize mack");
+    let mack_rt: Mack = serde_json::from_str(&mack_json).expect("deserialize mack");
+    assert!(close(mack_rt.total_reserve, m.total_reserve, 1e-12));
+    let glm_opts = GlmOptions::tweedie(1.5).with_design(GlmDesign::Hoerl {
+        per_origin_intercepts: true,
+    });
+    let opts_rt: GlmOptions =
+        serde_json::from_str(&serde_json::to_string(&glm_opts).expect("ser")).expect("de");
+    assert_eq!(opts_rt, glm_opts);
+}
+
+#[test]
+fn regression_var_least_and_myers_read_exact_solver() {
+    use reserving_kernels::capital_allocation::myers_read_from_default_ratio;
+    use reserving_kernels::reserve_distribution::var_least;
+
+    // Least quantile F^-(0.5) on 1..=10 is 5.0 (F(5)=0.5 >= 0.5), not 6.0.
+    let xs: Vec<f64> = (1..=10).map(|v| v as f64).collect();
+    assert_eq!(var_least(&xs, 0.50).expect("var"), 5.0);
+
+    // IEEE-754 boundary check: 0.28 * 100 and 0.29 * 100 must yield 28.0 and 29.0.
+    let xs100: Vec<f64> = (1..=100).map(|v| v as f64).collect();
+    assert_eq!(var_least(&xs100, 0.28).expect("p28"), 28.0);
+    assert_eq!(var_least(&xs100, 0.29).expect("p29"), 29.0);
+
+    // Power-of-2 sample with tied maximum and tiny target default ratio must succeed.
+    let line_a: Vec<f64> = (0..16).map(|i| if i >= 14 { 500.0 } else { 10.0 * (i as f64 + 1.0) }).collect();
+    let line_b: Vec<f64> = (0..16).map(|i| if i >= 14 { 500.0 } else { 5.0 * (i as f64 + 1.0) }).collect();
+    let mr = myers_read_from_default_ratio(&[&line_a, &line_b], 1e-6).expect("myers read");
+    let sum_q: f64 = mr.allocated_surplus.iter().sum();
+    assert!(close(sum_q, mr.portfolio_surplus, 1e-9));
+}
+
+#[test]
+fn regression_severity_overflow_cancellation_and_excess_layers() {
+    use reserving_kernels::excess_layers::{expected_layer, simulated_layer};
+    use reserving_kernels::severity::SeverityDistribution;
+
+    // Pareto PDF at realistic dollar scale must not overflow theta^alpha to NaN.
+    let pareto = SeverityDistribution::Pareto {
+        alpha: 62.0,
+        theta: 100_000.0,
+    };
+    let pdf = pareto.pdf(5_000.0);
+    assert!(pdf.is_finite() && pdf > 0.0);
+
+    // GPD near xi -> 0 must match Exponential smoothly without cancellation.
+    let gpd = SeverityDistribution::GeneralizedPareto {
+        xi: 1e-11,
+        beta: 50_000.0,
+    };
+    let exp = SeverityDistribution::Exponential { mean: 50_000.0 };
+    assert!(
+        (gpd.limited_expected_value(10_000.0).expect("gpd lev")
+            - exp.limited_expected_value(10_000.0).expect("exp lev"))
+        .abs()
+            < 1e-6
+    );
+
+    // NaN must propagate through Lognormal survival.
+    let ln = SeverityDistribution::Lognormal {
+        mu: 10.0,
+        sigma: 1.0,
+    };
+    assert!(ln.survival(f64::NAN).is_nan());
+
+    // Excess layer with top <= ATTACHMENT must return 0.0, never negative.
+    assert_eq!(expected_layer(1, 50_000.0, 1), 0.0);
+    assert_eq!(simulated_layer(1, 50_000.0, 1), 0.0);
+}
+
+#[test]
+fn regression_mack_zero_cell_and_mack_bf_unbiased_process_variance() {
+    use reserving_kernels::mack_bf::{self, BfPayoutEstimator, MackBfOptions};
+    use reserving_kernels::validate::ValidationError;
+
+    // Mack must return DivideByZero when c_k == 0 && c_{k+1} > 0 instead of masking NaN SE to 0.
+    let zero_tri = Triangle::try_from_upper_rows(&[
+        &[0.0, 50.0, 100.0],
+        &[100.0, 150.0],
+        &[120.0],
+    ])
+    .expect("tri");
+    assert!(matches!(
+        zero_tri.mack(1.0),
+        Err(ValidationError::DivideByZero(_))
+    ));
+
+    // Noiseless proportional triangle with 1.2x biased prior must still yield s_sq == 0.0.
+    let clean = Triangle::try_from_upper_rows(&[
+        &[40.0, 75.0, 95.0, 100.0],
+        &[80.0, 150.0, 190.0],
+        &[120.0, 225.0],
+        &[160.0],
+    ])
+    .expect("clean");
+    let biased_prior = [120.0, 240.0, 360.0, 480.0];
+    let prior_se = [10.0, 20.0, 30.0, 40.0];
+    let bf_res = mack_bf::analyze_from_triangle(
+        &clean.view(),
+        &biased_prior,
+        &prior_se,
+        MackBfOptions {
+            payout_estimator: BfPayoutEstimator::DirectIncremental,
+            ..Default::default()
+        },
+    )
+    .expect("mack bf");
+    assert!(bf_res.process_sigma_sq.iter().all(|&s| s.abs() < 1e-12));
+}
+
+#[test]
+fn regression_ldf_tail_onlevel_dependence_and_diagnostics() {
+    use reserving_kernels::aggregate_loss::{FrequencyDistribution, panjer_recursion};
+    use reserving_kernels::dependence::spearman_correlation;
+    use reserving_kernels::diagnostics::{calendar_effect, triangle_diagnostics};
+    use reserving_kernels::ldf::{DevelopmentFactorEngine, ex_hi_lo};
+    use reserving_kernels::onlevel::parallelogram_onlevel_factor;
+    use reserving_kernels::tail;
+    use reserving_kernels::types::TriangleView;
+    use reserving_kernels::validate::ValidationError;
+
+    // Malformed view must return ShapeMismatch, not panic OOB.
+    let bad = TriangleView {
+        n_origins: 4,
+        n_devs: 4,
+        data: &[1.0, 2.0],
+    };
+    assert_eq!(
+        DevelopmentFactorEngine::simple_average(&bad, 1.0),
+        Err(ValidationError::ShapeMismatch)
+    );
+
+    // ex_hi_lo must neutralize an extreme 1e16 outlier without catastrophic cancellation.
+    let outlier_tri = Triangle::try_from_upper_rows(&[
+        &[1e-14, 100.0, 110.0, 115.0],
+        &[100.0, 150.0, 165.0],
+        &[100.0, 150.0],
+        &[100.0],
+    ])
+    .expect("outlier");
+    let trimmed = ex_hi_lo(&outlier_tri.view());
+    assert!((trimmed[0] - 1.5).abs() < 1e-12);
+
+    // Non-decaying LDFs must be rejected by generalized_bondy instead of returning +inf.
+    assert!(tail::generalized_bondy(&[1.1, 1.2, 1.3], 0, 3).is_err());
+
+    // Parallelogram on-leveling includes the final rate regime.
+    let ol = parallelogram_onlevel_factor(&[0.10], &[0.5, 0.5]).expect("onlevel");
+    assert!(close(ol, 1.10 / 1.05, 1e-12));
+
+    // Spearman correlation propagates NaN.
+    assert!(spearman_correlation(&[1.0, 2.0, f64::NAN], &[1.0, 2.0, 3.0]).is_nan());
+
+    // Truncated aggregate distribution with total_mass <= alpha must reject TVaR.
+    let dist = panjer_recursion(
+        FrequencyDistribution::Poisson { lambda: 10.0 },
+        &[0.0, 1.0],
+        1.0,
+        5,
+    )
+    .expect("panjer");
+    assert!(dist.tvar(0.95).is_err());
+
+    // Empty triangle calendar_effect & rectangular negative_increment_flags must not panic.
+    let empty = TriangleView {
+        n_origins: 0,
+        n_devs: 0,
+        data: &[],
+    };
+    let cal = calendar_effect::diagnose(&empty, &[]);
+    assert!(cal.strongest_calendar.is_none());
+
+    let rect = Triangle::new(3, 5, vec![100.0; 15]);
+    assert!(triangle_diagnostics::negative_increment_flags(&rect.view()).is_empty());
+}

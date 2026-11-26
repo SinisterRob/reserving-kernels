@@ -13,15 +13,26 @@ pub(crate) fn cholesky_lower(a: &[f64], dim: usize) -> Result<Vec<f64>, Validati
     if a.len() != dim * dim || dim == 0 {
         return Err(ValidationError::ShapeMismatch);
     }
+    for i in 0..dim {
+        let d = a[i * dim + i];
+        if !d.is_finite() || d <= 0.0 {
+            return Err(ValidationError::InvalidParameter(
+                "matrix is not positive definite",
+            ));
+        }
+    }
     let mut l = vec![0.0; dim * dim];
     for i in 0..dim {
+        // Row-relative tolerance is invariant to diagonal unit rescaling D A D
+        // (e.g. mixed-unit Fisher information matrices in Clark MLE).
+        let row_tol = 1e-14 * a[i * dim + i];
         for j in 0..=i {
             let mut sum = a[i * dim + j];
             for k in 0..j {
                 sum -= l[i * dim + k] * l[j * dim + k];
             }
             if i == j {
-                if !sum.is_finite() || sum <= 1e-14 {
+                if !sum.is_finite() || sum <= row_tol {
                     return Err(ValidationError::InvalidParameter(
                         "matrix is not positive definite",
                     ));
@@ -36,6 +47,7 @@ pub(crate) fn cholesky_lower(a: &[f64], dim: usize) -> Result<Vec<f64>, Validati
 }
 
 /// Solve lower-triangular `L y = b` by forward substitution.
+#[allow(dead_code)]
 pub(crate) fn solve_lower(l: &[f64], dim: usize, b: &[f64]) -> Vec<f64> {
     let mut y = vec![0.0; dim];
     for i in 0..dim {
@@ -49,6 +61,7 @@ pub(crate) fn solve_lower(l: &[f64], dim: usize, b: &[f64]) -> Vec<f64> {
 }
 
 /// Solve upper-triangular `L^T x = y` by backward substitution given lower-triangular `L`.
+#[allow(dead_code)]
 pub(crate) fn solve_lower_transpose(l: &[f64], dim: usize, y: &[f64]) -> Vec<f64> {
     let mut x = vec![0.0; dim];
     for i in (0..dim).rev() {
@@ -65,12 +78,27 @@ pub(crate) fn solve_lower_transpose(l: &[f64], dim: usize, y: &[f64]) -> Vec<f64
 pub(crate) fn invert_spd(a: &[f64], dim: usize) -> Result<Vec<f64>, ValidationError> {
     let l = cholesky_lower(a, dim)?;
     let mut inv = vec![0.0; dim * dim];
-    let mut rhs = vec![0.0; dim];
+    let mut y = vec![0.0; dim];
+    let mut x = vec![0.0; dim];
     for col in 0..dim {
-        rhs.fill(0.0);
-        rhs[col] = 1.0;
-        let y = solve_lower(&l, dim, &rhs);
-        let x = solve_lower_transpose(&l, dim, &y);
+        // Forward substitution for L y = e_col; y[0..col] == 0 identically.
+        y[..col].fill(0.0);
+        y[col] = 1.0 / l[col * dim + col];
+        for i in (col + 1)..dim {
+            let mut sum = 0.0;
+            for k in col..i {
+                sum -= l[i * dim + k] * y[k];
+            }
+            y[i] = sum / l[i * dim + i];
+        }
+        // Backward substitution for L^T x = y.
+        for i in (0..dim).rev() {
+            let mut sum = y[i];
+            for k in (i + 1)..dim {
+                sum -= l[k * dim + i] * x[k];
+            }
+            x[i] = sum / l[i * dim + i];
+        }
         for row in 0..dim {
             inv[row * dim + col] = x[row];
         }
@@ -88,10 +116,24 @@ pub(crate) fn invert_spd(a: &[f64], dim: usize) -> Result<Vec<f64>, ValidationEr
 
 /// Solve a general `dim × dim` linear system `A x = b` via Gaussian elimination
 /// with partial pivoting.
+#[allow(dead_code)]
 pub(crate) fn solve_general(a: &[f64], dim: usize, b: &[f64]) -> Result<Vec<f64>, ValidationError> {
     if a.len() != dim * dim || b.len() != dim || dim == 0 {
         return Err(ValidationError::ShapeMismatch);
     }
+    let mut max_entry = 0.0_f64;
+    for &v in a {
+        if !v.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        max_entry = max_entry.max(v.abs());
+    }
+    if max_entry == 0.0 {
+        return Err(ValidationError::InvalidParameter(
+            "linear system is singular or rank-deficient",
+        ));
+    }
+    let piv_tol = 1e-14 * max_entry;
     let mut mat = a.to_vec();
     let mut rhs = b.to_vec();
 
@@ -105,7 +147,7 @@ pub(crate) fn solve_general(a: &[f64], dim: usize, b: &[f64]) -> Result<Vec<f64>
                 pivot_row = row;
             }
         }
-        if !max_abs.is_finite() || max_abs <= 1e-14 {
+        if !max_abs.is_finite() || max_abs <= piv_tol {
             return Err(ValidationError::InvalidParameter(
                 "linear system is singular or rank-deficient",
             ));
@@ -134,7 +176,7 @@ pub(crate) fn solve_general(a: &[f64], dim: usize, b: &[f64]) -> Result<Vec<f64>
             sum -= mat[row * dim + k] * x[k];
         }
         let diag = mat[row * dim + row];
-        if !diag.is_finite() || diag.abs() <= 1e-14 {
+        if !diag.is_finite() || diag.abs() <= piv_tol {
             return Err(ValidationError::InvalidParameter(
                 "linear system is singular or rank-deficient",
             ));
@@ -155,20 +197,20 @@ pub(crate) struct WlsQrSolution {
     pub leverages: Vec<f64>,
 }
 
-/// Solve weighted least squares `min_beta sum_i w_i (y_i - x_i^T beta)^2` via
-/// Householder QR factorization of `W^{1/2} X`, avoiding normal-equation
-/// condition-number squaring.
-///
-/// * `x` — row-major `n × p` design matrix.
-/// * `y` — response vector of length `n`.
-/// * `weights` — strictly positive weights of length `n`.
-pub(crate) fn weighted_least_squares_qr(
+struct WeightedQrFactorization {
+    a: Vec<f64>,
+    b: Vec<f64>,
+    sqrt_w: Vec<f64>,
+}
+
+/// Factorize `W^{1/2} X` via in-place Householder QR.
+fn qr_factorize_weighted(
     x: &[f64],
     y: &[f64],
     weights: &[f64],
     n: usize,
     p: usize,
-) -> Result<WlsQrSolution, ValidationError> {
+) -> Result<WeightedQrFactorization, ValidationError> {
     if n == 0 || p == 0 || p > n || x.len() != n * p || y.len() != n || weights.len() != n {
         return Err(ValidationError::ShapeMismatch);
     }
@@ -205,7 +247,7 @@ pub(crate) fn weighted_least_squares_qr(
             norm_sq += val * val;
         }
         let norm = norm_sq.sqrt();
-        if !norm.is_finite() || norm <= 1e-13 {
+        if !norm.is_finite() || norm <= 0.0 {
             return Err(ValidationError::InvalidParameter(
                 "design matrix is rank-deficient or collinear",
             ));
@@ -220,7 +262,7 @@ pub(crate) fn weighted_least_squares_qr(
             v[i] = vi;
             v_norm_sq += vi * vi;
         }
-        if v_norm_sq <= 1e-30 {
+        if v_norm_sq <= 1e-30 * norm_sq {
             continue;
         }
         let tau = 2.0 / v_norm_sq;
@@ -251,7 +293,7 @@ pub(crate) fn weighted_least_squares_qr(
         }
     }
 
-    // Check R conditioning / rank deficiency.
+    // Check R conditioning / rank deficiency (scale-invariant).
     let mut max_diag = 0.0_f64;
     let mut min_diag = f64::INFINITY;
     for k in 0..p {
@@ -262,11 +304,51 @@ pub(crate) fn weighted_least_squares_qr(
         max_diag = max_diag.max(d);
         min_diag = min_diag.min(d);
     }
-    if min_diag <= 1e-12 * max_diag.max(1.0) {
+    if max_diag <= 0.0 || min_diag <= 1e-12 * max_diag {
         return Err(ValidationError::InvalidParameter(
             "design matrix is rank-deficient or collinear",
         ));
     }
+
+    Ok(WeightedQrFactorization { a, b, sqrt_w })
+}
+
+/// Fast Householder QR weighted least squares returning only `beta` (skipping
+/// `R^{-1}`, `(X^T W X)^{-1}`, and hat leverages). Ideal for inner IRLS loops.
+pub(crate) fn weighted_least_squares_qr_beta_only(
+    x: &[f64],
+    y: &[f64],
+    weights: &[f64],
+    n: usize,
+    p: usize,
+) -> Result<Vec<f64>, ValidationError> {
+    let WeightedQrFactorization { a, b, .. } = qr_factorize_weighted(x, y, weights, n, p)?;
+    let mut beta = vec![0.0; p];
+    for i in (0..p).rev() {
+        let mut sum = b[i];
+        for j in (i + 1)..p {
+            sum -= a[i * p + j] * beta[j];
+        }
+        beta[i] = sum / a[i * p + i];
+    }
+    Ok(beta)
+}
+
+/// Solve weighted least squares `min_beta sum_i w_i (y_i - x_i^T beta)^2` via
+/// Householder QR factorization of `W^{1/2} X`, avoiding normal-equation
+/// condition-number squaring.
+///
+/// * `x` — row-major `n × p` design matrix.
+/// * `y` — response vector of length `n`.
+/// * `weights` — strictly positive weights of length `n`.
+pub(crate) fn weighted_least_squares_qr(
+    x: &[f64],
+    y: &[f64],
+    weights: &[f64],
+    n: usize,
+    p: usize,
+) -> Result<WlsQrSolution, ValidationError> {
+    let WeightedQrFactorization { a, b, sqrt_w } = qr_factorize_weighted(x, y, weights, n, p)?;
 
     // Back-substitute R * beta = (Q^T b)[0..p].
     let mut beta = vec![0.0; p];
@@ -303,19 +385,20 @@ pub(crate) fn weighted_least_squares_qr(
         }
     }
 
-    // Leverages h_i = || (W^{1/2} X)_i R^{-1} ||^2.
+    // Leverages h_i = w_i * || X_i R^{-1} ||^2.
     let mut leverages = vec![0.0; n];
     for i in 0..n {
-        let sw = sqrt_w[i];
-        let mut h_i = 0.0;
+        let w_i = sqrt_w[i] * sqrt_w[i];
+        let x_row = &x[i * p..(i + 1) * p];
+        let mut norm_sq = 0.0;
         for col in 0..p {
             let mut z = 0.0;
             for k in 0..=col {
-                z += sw * x[i * p + k] * r_inv[k * p + col];
+                z += x_row[k] * r_inv[k * p + col];
             }
-            h_i += z * z;
+            norm_sq += z * z;
         }
-        leverages[i] = h_i.clamp(0.0, 1.0);
+        leverages[i] = (w_i * norm_sq).clamp(0.0, 1.0);
     }
 
     Ok(WlsQrSolution {

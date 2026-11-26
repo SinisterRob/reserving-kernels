@@ -4,18 +4,8 @@
 //! observed prefix at the caller's valuation date. No calendar assumptions are
 //! introduced here. Unselectable links produce NaN; callers validate results.
 
-/// Returns the indices of origins that have **both** `dev j` and `dev j+1`
-/// observed under arbitrary per-row widths.
-fn eligible_origins(counts: &[usize], j: usize) -> Vec<usize> {
-    counts
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &c)| if c > j + 1 { Some(i) } else { None })
-        .collect()
-}
-
 /// Counts-aware simple average. `last_n=Some(k)` restricts to the `k` most
-/// recent origins per link (origins are ordered with oldest first).
+/// recent eligible origins per link (origins are ordered with oldest first).
 pub fn simple_average_observed_counts(
     cum: &[f64],
     n_o: usize,
@@ -25,15 +15,23 @@ pub fn simple_average_observed_counts(
     out: &mut [f64],
 ) {
     debug_assert_eq!(cum.len(), n_o * n_d);
-    for j in 0..n_d - 1 {
-        let mut origins = eligible_origins(counts, j);
-        if let Some(k) = last_n {
-            let drop = origins.len().saturating_sub(k);
-            origins.drain(..drop);
-        }
+    debug_assert_eq!(counts.len(), n_o);
+    let n_links = n_d.saturating_sub(1);
+    debug_assert_eq!(out.len(), n_links);
+
+    for j in 0..n_links {
+        let limit = last_n.unwrap_or(usize::MAX);
+        let mut seen_eligible = 0_usize;
         let mut sum = 0.0_f64;
         let mut count = 0_usize;
-        for &i in &origins {
+        for i in (0..n_o).rev() {
+            if counts[i] <= j + 1 {
+                continue;
+            }
+            if seen_eligible >= limit {
+                break;
+            }
+            seen_eligible += 1;
             let x = cum[i * n_d + j];
             let y = cum[i * n_d + j + 1];
             if x > 0.0 && x.is_finite() && y.is_finite() {
@@ -51,6 +49,9 @@ pub fn simple_average_observed_counts(
 
 /// Counts-aware ex-hi/lo (drop largest and smallest ratio per link;
 /// fall back to simple average when fewer than 3 pairs).
+///
+/// Uses a two-pass index-tracking scan (zero heap allocations and free of
+/// catastrophic cancellation on extreme outlier ratios).
 pub fn ex_hi_lo_observed_counts(
     cum: &[f64],
     n_o: usize,
@@ -59,32 +60,85 @@ pub fn ex_hi_lo_observed_counts(
     out: &mut [f64],
 ) {
     debug_assert_eq!(cum.len(), n_o * n_d);
-    for j in 0..n_d - 1 {
-        let origins = eligible_origins(counts, j);
-        let mut ratios: Vec<f64> = Vec::with_capacity(origins.len());
-        for &i in &origins {
+    debug_assert_eq!(counts.len(), n_o);
+    let n_links = n_d.saturating_sub(1);
+    debug_assert_eq!(out.len(), n_links);
+
+    for j in 0..n_links {
+        let mut valid_count = 0_usize;
+        let mut min_val = f64::INFINITY;
+        let mut max_val = f64::NEG_INFINITY;
+        let mut min_idx = 0_usize;
+        let mut max_idx = 0_usize;
+
+        for i in 0..n_o {
+            if counts[i] <= j + 1 {
+                continue;
+            }
             let x = cum[i * n_d + j];
             let y = cum[i * n_d + j + 1];
             if x > 0.0 && x.is_finite() && y.is_finite() {
-                ratios.push(y / x);
+                let r = y / x;
+                if valid_count == 0 || r < min_val {
+                    min_val = r;
+                    min_idx = i;
+                }
+                if valid_count == 0 || r > max_val {
+                    max_val = r;
+                    max_idx = i;
+                }
+                valid_count += 1;
             }
         }
-        if ratios.is_empty() {
+
+        if valid_count == 0 {
             out[j] = f64::NAN;
             continue;
         }
-        if ratios.len() < 3 {
-            out[j] = ratios.iter().sum::<f64>() / ratios.len() as f64;
-            continue;
+
+        // If all valid ratios are equal, min_idx == max_idx; pick any distinct
+        // second index when trimming >= 3 elements.
+        let trim = valid_count >= 3;
+        if trim && min_idx == max_idx {
+            for i in 0..n_o {
+                if i == min_idx || counts[i] <= j + 1 {
+                    continue;
+                }
+                let x = cum[i * n_d + j];
+                let y = cum[i * n_d + j + 1];
+                if x > 0.0 && x.is_finite() && y.is_finite() {
+                    max_idx = i;
+                    break;
+                }
+            }
         }
-        ratios.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let trimmed = &ratios[1..ratios.len() - 1];
-        out[j] = trimmed.iter().sum::<f64>() / trimmed.len() as f64;
+
+        let mut sum = 0.0_f64;
+        let mut kept = 0_usize;
+        for i in 0..n_o {
+            if counts[i] <= j + 1 {
+                continue;
+            }
+            if trim && (i == min_idx || i == max_idx) {
+                continue;
+            }
+            let x = cum[i * n_d + j];
+            let y = cum[i * n_d + j + 1];
+            if x > 0.0 && x.is_finite() && y.is_finite() {
+                sum += y / x;
+                kept += 1;
+            }
+        }
+        out[j] = if kept > 0 {
+            sum / kept as f64
+        } else {
+            f64::NAN
+        };
     }
 }
 
-/// Counts-aware volume-weighted, restricted to the `k` most recent origins
-/// (largest index = most recent in the right-triangle convention).
+/// Counts-aware volume-weighted, restricted to the `last_n` most recent eligible
+/// origins (largest index = most recent in the right-triangle convention).
 pub fn volume_weighted_last_n_observed_counts(
     cum: &[f64],
     n_o: usize,
@@ -94,13 +148,22 @@ pub fn volume_weighted_last_n_observed_counts(
     out: &mut [f64],
 ) {
     debug_assert_eq!(cum.len(), n_o * n_d);
-    for j in 0..n_d - 1 {
-        let mut origins = eligible_origins(counts, j);
-        let drop = origins.len().saturating_sub(last_n);
-        origins.drain(..drop);
+    debug_assert_eq!(counts.len(), n_o);
+    let n_links = n_d.saturating_sub(1);
+    debug_assert_eq!(out.len(), n_links);
+
+    for j in 0..n_links {
+        let mut seen = 0_usize;
         let mut num = 0.0_f64;
         let mut den = 0.0_f64;
-        for &i in &origins {
+        for i in (0..n_o).rev() {
+            if counts[i] <= j + 1 {
+                continue;
+            }
+            if seen >= last_n {
+                break;
+            }
+            seen += 1;
             num += cum[i * n_d + j + 1];
             den += cum[i * n_d + j];
         }

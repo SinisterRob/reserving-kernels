@@ -47,7 +47,7 @@ use crate::types::TriangleView;
 use crate::validate::{ValidationError, validate_positive_finite_slice, validate_triangle};
 
 /// Accident-year direction specification for PTF regression.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AccidentSpec {
     /// Single constant level `alpha` shared across origins (allows full
     /// identification of a baseline calendar inflation rate `iota`).
@@ -63,7 +63,7 @@ pub enum AccidentSpec {
 }
 
 /// Development-period direction specification for PTF regression.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DevelopmentSpec {
     /// Separate development step `gamma_k` for every lag `k = 1..n-1`.
     PerPeriod,
@@ -75,7 +75,7 @@ pub enum DevelopmentSpec {
 }
 
 /// Calendar-year inflation direction specification for PTF regression.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CalendarSpec {
     /// No calendar-year inflation term (`iota_t = 0`).
     None,
@@ -100,7 +100,7 @@ pub enum CalendarSpec {
 
 /// Log-normal bias-correction convention when transforming log-scale
 /// predictions `eta_hat` back to dollar incremental expectations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum LogNormalMeanMode {
     /// Plug-in log-normal mean: `exp(eta_hat + 0.5 * sigma^2)`.
     #[default]
@@ -110,7 +110,7 @@ pub enum LogNormalMeanMode {
 }
 
 /// Configuration for [`fit_ptf`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PtfOptions {
     /// Accident-year trend parameterization.
     pub accident: AccidentSpec,
@@ -146,8 +146,52 @@ impl Default for PtfOptions {
     }
 }
 
+impl PtfOptions {
+    /// Set the accident-year trend specification.
+    pub fn with_accident(mut self, accident: AccidentSpec) -> Self {
+        self.accident = accident;
+        self
+    }
+
+    /// Set the development-period trend specification.
+    pub fn with_development(mut self, development: DevelopmentSpec) -> Self {
+        self.development = development;
+        self
+    }
+
+    /// Set the calendar-year inflation specification.
+    pub fn with_calendar(mut self, calendar: CalendarSpec) -> Self {
+        self.calendar = calendar;
+        self
+    }
+
+    /// Supply a positive exposure vector `E_i` used as a `ln(E_i)` offset.
+    pub fn with_exposure(mut self, exposure: impl Into<Vec<f64>>) -> Self {
+        self.exposure = Some(exposure.into());
+        self
+    }
+
+    /// Supply per-development-period observation weights `w_j > 0`.
+    pub fn with_dev_weights(mut self, dev_weights: impl Into<Vec<f64>>) -> Self {
+        self.dev_weights = Some(dev_weights.into());
+        self
+    }
+
+    /// Override the future calendar inflation rate beyond the last observed diagonal.
+    pub const fn with_future_calendar_rate(mut self, rate: f64) -> Self {
+        self.future_calendar_rate = Some(rate);
+        self
+    }
+
+    /// Set the log-normal mean bias-correction convention.
+    pub const fn with_mean_mode(mut self, mean_mode: LogNormalMeanMode) -> Self {
+        self.mean_mode = mean_mode;
+        self
+    }
+}
+
 /// Output from Barnett & Zehnwirth (2000) PTF log-linear regression reserving.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PtfResult {
     /// Human-readable names of the fitted regression parameters (length `p`).
     pub param_names: Vec<String>,
@@ -299,8 +343,9 @@ pub fn fit_ptf(
         1.0
     };
     let rss_floor = (rss / n_obs as f64).max(1e-30);
-    let aic = n_obs as f64 * rss_floor.ln() + 2.0 * p as f64;
-    let bic = n_obs as f64 * rss_floor.ln() + (p as f64) * (n_obs as f64).ln();
+    let sum_ln_w: f64 = w_vec.iter().map(|w| w.ln()).sum();
+    let aic = n_obs as f64 * rss_floor.ln() - sum_ln_w + 2.0 * p as f64;
+    let bic = n_obs as f64 * rss_floor.ln() - sum_ln_w + (p as f64) * (n_obs as f64).ln();
 
     let cov: Vec<f64> = sol.xtwx_inv.iter().map(|&v| sigma_sq * v).collect();
     let coefficient_se: Vec<f64> = (0..p).map(|k| cov[k * p + k].max(0.0).sqrt()).collect();
@@ -310,7 +355,7 @@ pub fn fit_ptf(
 
     // Compute fitted incremental values across full n × n grid and forecast future cells.
     let mut fitted_incremental = vec![0.0; n * n];
-    let mut future_rows: Vec<(usize, usize, f64, f64, Vec<f64>)> = Vec::new();
+    let mut future_rows: Vec<(usize, usize, f64, f64, f64, Vec<f64>)> = Vec::new();
     let mut latest_cum = vec![0.0; n];
 
     for i in 0..n {
@@ -331,10 +376,13 @@ pub fn fit_ptf(
                 LogNormalMeanMode::FullPredictive => v_proc + v_est,
             };
             let mu = (eta + 0.5 * mean_var).exp();
+            if !mu.is_finite() {
+                return Err(ValidationError::NotFinite);
+            }
             fitted_incremental[i * n + j] = mu;
 
             if i + j >= n {
-                future_rows.push((i, j, mu, v_proc, x_cell));
+                future_rows.push((i, j, mu, v_proc, v_est, x_cell));
             }
         }
     }
@@ -342,39 +390,55 @@ pub fn fit_ptf(
     // Per-origin and aggregate reserves + exact analytical log-normal MSEP.
     let mut reserves = vec![0.0; n];
     let mut origin_msep = vec![0.0; n];
-    for &(i, _j, mu, _vp, _) in &future_rows {
+    for &(i, _j, mu, _vp, _ve, _) in &future_rows {
         reserves[i] += mu;
     }
 
+    // Precompute Cov * x_b for every future cell so pairwise covariances run in O(N_fut^2 * p).
     let n_fut = future_rows.len();
+    let mut cov_x: Vec<Vec<f64>> = Vec::with_capacity(n_fut);
+    for (_, _, _, _, _, xb) in &future_rows {
+        let mut v = vec![0.0; p];
+        for r in 0..p {
+            let mut acc = 0.0;
+            for c in 0..p {
+                acc += cov[r * p + c] * xb[c];
+            }
+            v[r] = acc;
+        }
+        cov_x.push(v);
+    }
+
     let mut total_msep = 0.0;
     for a in 0..n_fut {
-        let (ia, _ja, mu_a, vp_a, ref xa) = future_rows[a];
-        let v_est_a = quad_form(xa, &cov, p).max(0.0);
+        let (ia, _ja, mu_a, vp_a, v_est_a, ref xa) = future_rows[a];
         let var_a = mu_a * mu_a * (vp_a + v_est_a).exp_m1();
+        if !var_a.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
         origin_msep[ia] += var_a;
         total_msep += var_a;
 
         for b in (a + 1)..n_fut {
-            let (ib, _jb, mu_b, _vp_b, ref xb) = future_rows[b];
+            let (ib, _jb, mu_b, _vp_b, _ve_b, _) = future_rows[b];
             let mut cov_eta = 0.0;
+            let cvb = &cov_x[b];
             for r in 0..p {
-                let xar = xa[r];
-                if xar == 0.0 {
-                    continue;
-                }
-                let mut acc = 0.0;
-                for c in 0..p {
-                    acc += cov[r * p + c] * xb[c];
-                }
-                cov_eta += xar * acc;
+                cov_eta += xa[r] * cvb[r];
             }
             let cov_y = mu_a * mu_b * cov_eta.exp_m1();
+            if !cov_y.is_finite() {
+                return Err(ValidationError::NotFinite);
+            }
             total_msep += 2.0 * cov_y;
             if ia == ib {
                 origin_msep[ia] += 2.0 * cov_y;
             }
         }
+    }
+
+    if !total_msep.is_finite() {
+        return Err(ValidationError::NotFinite);
     }
 
     let ultimates: Vec<f64> = latest_cum

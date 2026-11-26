@@ -301,6 +301,7 @@ pub fn build_exhibit_bundle(
     let incremental_triangle = incremental_triangle_exhibit(triangle);
     let factor_exhibit = factor_exhibit(&factors, &factor_diagnostics);
     let projections = projection_comparison_exhibit(
+        &factors,
         &chain_ladder,
         bf.as_ref(),
         cape_cod.as_ref(),
@@ -403,23 +404,28 @@ fn factor_exhibit(
 }
 
 fn projection_comparison_exhibit(
+    factors: &DevelopmentFactors,
     chain_ladder: &crate::chain_ladder::ChainLadderProjection,
     bf: Option<&BornhuetterFergusonProjection>,
     cape_cod: Option<&CapeCodProjection>,
     mack: &Mack,
     brosius: &Brosius,
 ) -> ProjectionComparisonExhibit {
+    let factor_maturity = factors.maturity_percentages();
     let rows = chain_ladder
         .latest
         .iter()
         .enumerate()
-        .map(|(origin, &latest)| ProjectionRow {
-            origin,
-            latest_dev: chain_ladder.latest_dev[origin],
-            latest,
-            maturity: bf
-                .map(|projection| projection.maturity[origin])
-                .or_else(|| cape_cod.map(|projection| projection.reported_percentage[origin])),
+        .map(|(origin, &latest)| {
+            let latest_dev = chain_ladder.latest_dev[origin];
+            ProjectionRow {
+                origin,
+                latest_dev,
+                latest,
+                maturity: bf
+                    .map(|projection| projection.maturity[origin])
+                    .or_else(|| cape_cod.map(|projection| projection.reported_percentage[origin]))
+                    .or_else(|| factor_maturity.get(latest_dev).copied()),
             chain_ladder_ultimate: Some(chain_ladder.ultimates[origin]),
             chain_ladder_reserve: Some(chain_ladder.reserves[origin]),
             bf_expected: bf.map(|projection| projection.expected_ultimate[origin]),
@@ -435,6 +441,7 @@ fn projection_comparison_exhibit(
             mack_cv: Some(mack.cv[origin]),
             brosius_ultimate: Some(brosius.ultimate[origin]),
             brosius_reserve: Some(brosius.reserve[origin]),
+            }
         })
         .collect();
 
@@ -483,9 +490,9 @@ fn mack_exhibit(mack: &Mack, tail: f64) -> MackExhibit {
         total_cv: mack.total_cv,
         quantiles: MackQuantiles {
             p50: mack.total_reserve,
-            p75: mack.total_reserve + 0.674 * mack.total_standard_error,
-            p90: mack.total_reserve + 1.282 * mack.total_standard_error,
-            p95: mack.total_reserve + 1.645 * mack.total_standard_error,
+            p75: mack.total_reserve + 0.674_489_750_196_081_7 * mack.total_standard_error,
+            p90: mack.total_reserve + 1.281_551_565_544_600_4 * mack.total_standard_error,
+            p95: mack.total_reserve + 1.644_853_626_951_472_2 * mack.total_standard_error,
         },
         tail_disclosure: if tail > 1.0 {
             "Mack normal approximation; tail uncertainty is not modeled.".to_string()

@@ -1,13 +1,17 @@
 //! Portfolio-level slice reducers.
 
-use crate::triangle::latest_diagonal;
 use crate::types::TriangleView;
 
 /// Sum of latest observed cumulative losses (total "paid to date" across
-/// origin years).
+/// origin years) without intermediate heap allocation.
 #[inline]
 pub fn total_paid(t: &TriangleView<'_>) -> f64 {
-    latest_diagonal(t).iter().sum()
+    let n = t.n_origins.min(t.n_devs);
+    let mut sum = 0.0;
+    for i in 0..n {
+        sum += t.get(i, n - 1 - i);
+    }
+    sum
 }
 
 /// Sum of a per-origin ultimate vector.
@@ -30,9 +34,12 @@ pub fn paid_ratio(t: &TriangleView<'_>, ultimate: &[f64]) -> f64 {
 }
 
 /// Portfolio loss ratio: total ultimate / total premium.
+/// Returns `NaN` if slice lengths differ or total premium is non-positive.
 #[inline]
 pub fn portfolio_loss_ratio(ultimate: &[f64], premium: &[f64]) -> f64 {
-    debug_assert_eq!(ultimate.len(), premium.len());
+    if ultimate.len() != premium.len() {
+        return f64::NAN;
+    }
     let mut num = 0.0;
     let mut den = 0.0;
     for (u, p) in ultimate.iter().zip(premium.iter()) {

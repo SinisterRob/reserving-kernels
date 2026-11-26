@@ -88,13 +88,15 @@ pub fn latest_observed_by_origin(
     debug_assert_eq!(latest_dev.len(), n_origin);
 
     if n_dev == 0 {
+        latest_dev.fill(0);
+        latest_value.fill(f64::NAN);
         return;
     }
 
     for i in 0..n_origin {
         if i >= n_dev {
             latest_dev[i] = 0;
-            latest_value[i] = 0.0;
+            latest_value[i] = f64::NAN;
             continue;
         }
         let last_j = n_dev - 1 - i;

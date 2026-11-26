@@ -15,7 +15,7 @@
 use crate::validate::{ValidationError, validate_finite_slice};
 
 /// Summary statistics for a reserve sample distribution.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ReserveDistributionSummary {
     /// Arithmetic mean.
     pub mean: f64,
@@ -63,7 +63,16 @@ fn quantile_sorted(ordered: &[f64], p: f64) -> f64 {
     if p >= 1.0 {
         return *ordered.last().expect("non-empty");
     }
-    let idx = ((p * ordered.len() as f64).ceil() as usize).saturating_sub(1);
+    // Snap near-integer p * N within 1e-12 to avoid IEEE-754 representation jumps
+    // (e.g. 0.07 * 100.0 == 7.000000000000001).
+    let pn = p * ordered.len() as f64;
+    let rounded = pn.round();
+    let rank = if (pn - rounded).abs() <= 1e-12 {
+        rounded as usize
+    } else {
+        pn.ceil() as usize
+    };
+    let idx = rank.saturating_sub(1);
     ordered[idx.min(ordered.len() - 1)]
 }
 
@@ -101,17 +110,13 @@ pub fn quantile(values: &[f64], p: f64) -> Result<f64, ValidationError> {
     Ok(quantile_sorted(&ordered, p))
 }
 
-/// Discrete least-quantile Value at Risk `VaR_p(X)` (CAS Monograph No. 15,
-/// Algorithm 3.4.2): returns `ordered[floor(p * N)]` (clamped at `N - 1`).
+/// Discrete least-quantile Value at Risk `VaR_p(X) = F^-(p) = inf { x : F(x) >= p }`
+/// (CAS Monograph No. 15, Algorithm 3.4.2): returns `ordered[ceil(p * N) - 1]`
+/// with IEEE-754 near-integer boundary snapping.
 pub fn var_least(values: &[f64], p: f64) -> Result<f64, ValidationError> {
     validate_prob(p)?;
     let ordered = sorted(values)?;
-    let n = ordered.len();
-    if p >= 1.0 {
-        return Ok(ordered[n - 1]);
-    }
-    let idx = ((p * n as f64).floor() as usize).min(n - 1);
-    Ok(ordered[idx])
+    Ok(quantile_sorted(&ordered, p))
 }
 
 /// Tail Conditional Expectation (average of observations `>= quantile(values, p)`).
@@ -121,15 +126,18 @@ pub fn var_least(values: &[f64], p: f64) -> Result<f64, ValidationError> {
 /// Use [`tvar_coherent`] for the CAS Monograph No. 15 coherent TVaR.
 pub fn tvar(values: &[f64], p: f64) -> Result<f64, ValidationError> {
     let threshold = quantile(values, p)?;
-    let tail: Vec<f64> = values
-        .iter()
-        .copied()
-        .filter(|value| *value >= threshold)
-        .collect();
-    if tail.is_empty() {
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for &value in values {
+        if value >= threshold {
+            sum += value;
+            count += 1;
+        }
+    }
+    if count == 0 {
         return Ok(threshold);
     }
-    Ok(tail.iter().sum::<f64>() / tail.len() as f64)
+    Ok(sum / count as f64)
 }
 
 /// Exact coherent Tail Value at Risk `TVaR_p(X) = (1 / (1 - p)) ∫_p^1 F^-(s) ds`

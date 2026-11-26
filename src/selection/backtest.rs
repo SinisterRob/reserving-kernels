@@ -243,6 +243,7 @@ pub fn fit_predict_score(
     let mut sq_sum = 0.0;
     let mut err_sum = 0.0;
     let mut count = 0usize;
+    let mut mape_count = 0usize;
 
     for (prediction, cell) in predictions.iter().zip(holdout.held_out.iter()) {
         if !prediction.is_finite() || !cell.actual.is_finite() {
@@ -251,6 +252,7 @@ pub fn fit_predict_score(
         let error = prediction - cell.actual;
         if cell.actual != 0.0 {
             abs_pct_sum += (error / cell.actual).abs();
+            mape_count += 1;
         }
         sq_sum += error * error;
         err_sum += error;
@@ -260,8 +262,8 @@ pub fn fit_predict_score(
     BacktestScore {
         selector,
         n_held_out: count,
-        mape: if count > 0 {
-            abs_pct_sum / count as f64
+        mape: if mape_count > 0 {
+            abs_pct_sum / mape_count as f64
         } else {
             f64::NAN
         },

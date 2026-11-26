@@ -49,7 +49,7 @@ use crate::validate::{
 };
 
 /// Tail-factor mean and variance parameters for Mack (1999) recursive standard errors.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MackTailSpec {
     /// Multiplicative tail factor `f_tail >= 1.0`.
     pub tail_factor: f64,
@@ -72,7 +72,7 @@ impl MackTailSpec {
 }
 
 /// Full Mack chain-ladder result: point estimates and standard errors.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Mack {
     /// Volume-weighted LDFs, length `n − 1`.
     pub ldf: Vec<f64>,
@@ -96,52 +96,77 @@ pub struct Mack {
     pub total_cv: f64,
 }
 
+impl std::fmt::Display for Mack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Mack(reserve={:.2}, se={:.2}, cv={:.2}%)",
+            self.total_reserve,
+            self.total_standard_error,
+            self.total_cv * 100.0
+        )
+    }
+}
+
 fn sigma_sq_vec(t: &TriangleView<'_>, f: &[f64]) -> Vec<f64> {
     let n = t.n_origins.min(t.n_devs);
     if n < 2 {
         return Vec::new();
     }
-    let mut s = vec![0.0; n - 1];
+    let mut s: Vec<Option<f64>> = vec![None; n - 1];
     // Links k = 0..n-2; observed pairs n_k = n - k - 1.
     for k in 0..n - 1 {
         let nk = n - k - 1;
-        if nk >= 2 {
-            let mut acc = 0.0;
-            for i in 0..nk {
-                let c_k = t.get(i, k);
-                let c_kp1 = t.get(i, k + 1);
+        let mut acc = 0.0;
+        let mut valid = 0usize;
+        let mut invalid_zero = false;
+        for i in 0..nk {
+            let c_k = t.get(i, k);
+            let c_kp1 = t.get(i, k + 1);
+            if c_k > 0.0 {
                 let ratio = c_kp1 / c_k;
                 acc += c_k * (ratio - f[k]).powi(2);
-            }
-            s[k] = acc / (nk as f64 - 1.0);
-        } else {
-            // nk == 1: placeholder, filled via Mack's extrapolation below.
-            s[k] = f64::NAN;
-        }
-    }
-    // Mack's min-rule for the last link.
-    if n >= 2 {
-        let last = n - 2;
-        if !s[last].is_finite() {
-            s[last] = if n >= 4 {
-                let a = s[last - 1];
-                let b = s[last - 2];
-                if a > 0.0 && b > 0.0 {
-                    let candidate = (a * a / b).min(a).min(b);
-                    candidate.max(0.0)
-                } else {
-                    0.0
-                }
-            } else if n == 3 {
-                // Only σ²_0 exists; reuse it.
-                s[0].max(0.0)
+                valid += 1;
+            } else if c_k == 0.0 && c_kp1 == 0.0 {
+                // Zero prior and zero next contributes 0 to variance and does not
+                // provide an independent ratio observation.
+                continue;
             } else {
-                // n == 2, single pair, no error information.
+                invalid_zero = true;
+                break;
+            }
+        }
+        if invalid_zero {
+            s[k] = Some(f64::NAN);
+        } else if valid >= 2 {
+            s[k] = Some(acc / (valid as f64 - 1.0));
+        }
+        // valid < 2 remains None for Mack's extrapolation below.
+    }
+    // Extrapolate missing links using Mack's min-rule.
+    let mut out = vec![0.0; n - 1];
+    for k in 0..n - 1 {
+        if let Some(val) = s[k] {
+            out[k] = val;
+        } else if k >= 2 {
+            let a = out[k - 1];
+            let b = out[k - 2];
+            out[k] = if a.is_finite() && b.is_finite() && a > 0.0 && b > 0.0 {
+                (a * a / b).min(a).min(b).max(0.0)
+            } else {
                 0.0
             };
+        } else if k == 1 {
+            out[k] = if out[0].is_finite() {
+                out[0].max(0.0)
+            } else {
+                0.0
+            };
+        } else {
+            out[k] = 0.0;
         }
     }
-    s
+    out
 }
 
 fn sigma_sq_vec_observed_counts(
@@ -153,59 +178,64 @@ fn sigma_sq_vec_observed_counts(
     if n_dev < 2 {
         return Vec::new();
     }
-    let mut s = vec![0.0; n_dev - 1];
+    let mut s: Vec<Option<f64>> = vec![None; n_dev - 1];
     for k in 0..n_dev - 1 {
-        let pairs = observed_pair_origins(observed_counts, k);
-        let pair_count = pairs.len();
-        if pair_count >= 2 {
-            let mut acc = 0.0;
-            for i in pairs {
-                let c_k = t.get(i, k);
-                let c_kp1 = t.get(i, k + 1);
+        let mut acc = 0.0;
+        let mut valid = 0usize;
+        let mut invalid_zero = false;
+        for (i, &count) in observed_counts.iter().enumerate() {
+            if count <= k + 1 {
+                continue;
+            }
+            let c_k = t.get(i, k);
+            let c_kp1 = t.get(i, k + 1);
+            if c_k > 0.0 {
                 let ratio = c_kp1 / c_k;
                 acc += c_k * (ratio - f[k]).powi(2);
+                valid += 1;
+            } else if c_k == 0.0 && c_kp1 == 0.0 {
+                continue;
+            } else {
+                invalid_zero = true;
+                break;
             }
-            s[k] = acc / (pair_count as f64 - 1.0);
-        } else {
-            s[k] = f64::NAN;
+        }
+        if invalid_zero {
+            s[k] = Some(f64::NAN);
+        } else if valid >= 2 {
+            s[k] = Some(acc / (valid as f64 - 1.0));
         }
     }
-    extrapolate_missing_sigma(&mut s);
-    s
+    extrapolate_missing_sigma(&s)
 }
 
-fn extrapolate_missing_sigma(sigma_sq: &mut [f64]) {
+fn extrapolate_missing_sigma(sigma_sq: &[Option<f64>]) -> Vec<f64> {
+    let mut out = vec![0.0; sigma_sq.len()];
     for k in 0..sigma_sq.len() {
-        if sigma_sq[k].is_finite() {
+        if let Some(val) = sigma_sq[k] {
+            out[k] = val;
             continue;
         }
-        let prior = sigma_sq[..k]
-            .iter()
-            .copied()
-            .filter(|value| value.is_finite() && *value >= 0.0)
-            .collect::<Vec<_>>();
-        sigma_sq[k] = match prior.as_slice() {
-            [] => 0.0,
-            [.., a] => *a,
-        };
-        if prior.len() >= 2 {
-            let a = prior[prior.len() - 1];
-            let b = prior[prior.len() - 2];
-            sigma_sq[k] = if a > 0.0 && b > 0.0 {
-                (a * a / b).min(a).min(b).max(0.0)
-            } else {
-                0.0
-            };
+        let mut last_two = [None, None];
+        for &value in &out[..k] {
+            if value.is_finite() && value >= 0.0 {
+                last_two[0] = last_two[1];
+                last_two[1] = Some(value);
+            }
         }
+        out[k] = match last_two {
+            [Some(b), Some(a)] => {
+                if a > 0.0 && b > 0.0 {
+                    (a * a / b).min(a).min(b).max(0.0)
+                } else {
+                    0.0
+                }
+            }
+            [None, Some(a)] => a,
+            _ => 0.0,
+        };
     }
-}
-
-fn observed_pair_origins(observed_counts: &[usize], dev: usize) -> Vec<usize> {
-    observed_counts
-        .iter()
-        .enumerate()
-        .filter_map(|(origin, &count)| (count > dev + 1).then_some(origin))
-        .collect()
+    out
 }
 
 /// Run the full Mack analysis without validation.
@@ -288,7 +318,10 @@ pub fn analyze_with_tail_spec_unchecked(t: &TriangleView<'_>, tail_spec: MackTai
         mse[i] = tail * tail * pre_tail_mse + tail_process + tail_param;
     }
 
-    let standard_error: Vec<f64> = mse.iter().map(|m| m.max(0.0).sqrt()).collect();
+    let standard_error: Vec<f64> = mse
+        .iter()
+        .map(|&m| if m.is_finite() { m.max(0.0).sqrt() } else { f64::NAN })
+        .collect();
     let cv: Vec<f64> = standard_error
         .iter()
         .zip(reserve.iter())
@@ -324,7 +357,11 @@ pub fn analyze_with_tail_spec_unchecked(t: &TriangleView<'_>, tail_spec: MackTai
         }
     }
 
-    let total_standard_error = total_mse.max(0.0).sqrt();
+    let total_standard_error = if total_mse.is_finite() {
+        total_mse.max(0.0).sqrt()
+    } else {
+        f64::NAN
+    };
     let total_cv = if total_reserve > 0.0 {
         total_standard_error / total_reserve
     } else {
@@ -373,8 +410,10 @@ pub fn analyze_observed_counts(
     let mut s_col = vec![0.0; n_dev.saturating_sub(1)];
     for k in 0..n_dev.saturating_sub(1) {
         let mut acc = 0.0;
-        for i in observed_pair_origins(observed_counts, k) {
-            acc += t.get(i, k);
+        for (i, &count) in observed_counts.iter().enumerate() {
+            if count > k + 1 {
+                acc += t.get(i, k);
+            }
         }
         s_col[k] = acc;
     }
@@ -512,6 +551,15 @@ pub fn analyze_with_tail_uncertainty_and_policy(
     }
     validate_tail_spec(tail_spec)?;
     DevelopmentFactorEngine::volume_weighted_with_policy(t, tail_spec.tail_factor, policy)?;
+    let n = t.n_origins;
+    for k in 0..n.saturating_sub(1) {
+        let nk = n - k - 1;
+        for i in 0..nk {
+            if t.get(i, k) == 0.0 && t.get(i, k + 1) != 0.0 {
+                return Err(ValidationError::DivideByZero("mack link denominator"));
+            }
+        }
+    }
     Ok(analyze_with_tail_spec_unchecked(t, tail_spec))
 }
 

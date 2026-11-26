@@ -43,32 +43,42 @@ pub fn rate_change_chain(rate_changes: &[f64]) -> Result<f64, ValidationError> {
     Ok(factor)
 }
 
-/// Parallelogram-style on-level factor from earned weights and sequential rate changes.
+/// Parallelogram-style on-level factor from sequential rate changes and earned
+/// exposure weights across each rate-level regime.
 ///
-/// `earned_weights` should sum to roughly `1.0`; the function uses the supplied
-/// weights as-is and returns the factor to current rate level.
+/// For `k` sequential rate changes `r_1, ..., r_k`, there are `k + 1` rate-level
+/// regimes: `L_0 = 1.0`, `L_1 = 1 + r_1`, ..., `L_k = prod_{j=1}^k (1 + r_j)`.
+/// Pass `earned_weights` of length `k + 1` corresponding to those `k + 1` regimes
+/// (weights are automatically normalized by their sum so any non-negative
+/// exposure/area weights work). Returns `L_k / sum_j (w_j L_j)`.
 pub fn parallelogram_onlevel_factor(
     rate_changes: &[f64],
     earned_weights: &[f64],
 ) -> Result<f64, ValidationError> {
-    if rate_changes.len() != earned_weights.len() {
+    if earned_weights.len() != rate_changes.len() + 1 {
         return Err(ValidationError::ShapeMismatch);
     }
     validate_nonnegative_finite_slice(earned_weights)?;
-    let current_level = rate_change_chain(rate_changes)?;
 
-    let mut prior_level = 1.0;
-    let mut average_level = 0.0;
-    for (&weight, &rate_change) in earned_weights.iter().zip(rate_changes.iter()) {
+    let mut level = 1.0;
+    let mut weighted_level = earned_weights[0] * level;
+    let mut weight_sum = earned_weights[0];
+
+    for (&rate_change, &weight) in rate_changes.iter().zip(earned_weights[1..].iter()) {
         validate_rate_change(rate_change)?;
-        average_level += weight * prior_level;
-        prior_level *= 1.0 + rate_change;
+        level *= 1.0 + rate_change;
+        weighted_level += weight * level;
+        weight_sum += weight;
     }
 
-    if average_level <= 0.0 {
+    if !level.is_finite() || !weighted_level.is_finite() || !weight_sum.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
+    if weight_sum <= 0.0 || weighted_level <= 0.0 {
         return Err(ValidationError::DivideByZero("average rate level"));
     }
-    Ok(current_level / average_level)
+    let average_level = weighted_level / weight_sum;
+    Ok(level / average_level)
 }
 
 #[cfg(test)]
@@ -93,9 +103,17 @@ mod tests {
     }
 
     #[test]
-    fn parallelogram_factor_exceeds_one_for_positive_changes() {
-        let factor =
-            parallelogram_onlevel_factor(&[0.10, 0.05], &[0.5, 0.5]).expect("on-level factor");
-        assert!(factor > 1.0);
+    fn parallelogram_factor_matches_exact_weighted_regime_levels() {
+        // Regimes: L0 = 1.0 (weight 0.25), L1 = 1.10 (weight 0.50), L2 = 1.155 (weight 0.25)
+        // Average level = 0.25*1.0 + 0.50*1.10 + 0.25*1.155 = 1.08875
+        // On-level factor = 1.155 / 1.08875
+        let factor = parallelogram_onlevel_factor(&[0.10, 0.05], &[0.25, 0.50, 0.25])
+            .expect("on-level factor");
+        assert!(close(factor, 1.155 / 1.08875));
+        // No rate changes -> factor == 1.0.
+        assert!(close(
+            parallelogram_onlevel_factor(&[], &[1.0]).expect("no change"),
+            1.0
+        ));
     }
 }

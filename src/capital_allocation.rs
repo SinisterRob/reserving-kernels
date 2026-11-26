@@ -34,11 +34,11 @@
 //!   `Q_i = L_i * (Q / L) + (E[X_i | S > A] - (L_i / L) * E[S | S > A])`,
 //!   conserving `sum_i Q_i == Q` and `sum_i (L_i + Q_i) == A` identically.
 
-use crate::reserve_distribution::{mean, rvar, tvar_coherent, var_least};
+use crate::reserve_distribution::{mean, rvar, tvar_coherent};
 use crate::validate::{ValidationError, validate_finite_slice};
 
 /// Output of an Euler coherent risk-measure capital allocation across `d` lines.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EulerAllocationResult {
     /// Portfolio aggregate risk measure `rho(S)`.
     pub portfolio_risk_measure: f64,
@@ -63,7 +63,7 @@ pub struct EulerAllocationResult {
 }
 
 /// Output of Myers & Read (2001) marginal default-put surplus allocation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MyersReadAllocationResult {
     /// Total portfolio expected liabilities `L = E[S]`.
     pub portfolio_liability: f64,
@@ -364,36 +364,28 @@ pub fn myers_read_from_default_ratio(
             "Myers & Read allocation requires positive expected liability",
         ));
     }
-    let target_put = target_default_ratio * l;
-    let s_min = total.iter().copied().fold(f64::INFINITY, f64::min);
-    let s_max = total.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let target_sum_excess = target_default_ratio * l * nf;
+    let mut sorted_total = total.clone();
+    sorted_total.sort_by(f64::total_cmp);
+    let s_max = sorted_total[n - 1];
 
-    let eval_put = |a: f64| -> f64 { total.iter().map(|&s| (s - a).max(0.0)).sum::<f64>() / nf };
-
-    let mut lo = s_min.min(0.0);
-    while eval_put(lo) < target_put {
-        lo -= l.max(1.0);
-    }
-    let mut hi = s_max;
-    if eval_put(lo) <= target_put {
-        return Err(ValidationError::InvalidParameter(
-            "target_default_ratio cannot be achieved on this loss sample",
-        ));
-    }
-
-    // D(A) is strictly decreasing and convex on [s_min, s_max]; bisection converges to 1e-13.
-    for _ in 0..90 {
-        let mid = 0.5 * (lo + hi);
-        if eval_put(mid) > target_put {
-            lo = mid;
-        } else {
-            hi = mid;
+    // Exact closed-form solver for piecewise-linear G(A) = sum_k max(s_k - A, 0) = target_sum_excess.
+    // Scan from the largest outcome downward to bracket the active tail interval.
+    let mut tail_sum = 0.0_f64;
+    let mut assets = None;
+    for (tail_count, m) in (0..n).rev().enumerate() {
+        let sm = sorted_total[m];
+        let g_at_sm = tail_sum - (tail_count as f64) * sm;
+        if g_at_sm >= target_sum_excess && tail_count > 0 {
+            assets = Some((tail_sum - target_sum_excess) / tail_count as f64);
+            break;
         }
+        tail_sum += sm;
     }
-    let assets = 0.5 * (lo + hi);
-    // Guard against landing on s_max numerically.
+    let assets = assets.unwrap_or_else(|| (tail_sum - target_sum_excess) / nf);
+    // Guarantee strictly below s_max so at least one scenario has S > A (MSRV 1.85 safe).
     let safe_assets = if assets >= s_max {
-        var_least(&total, 1.0 - 1.0 / nf)?
+        s_max - s_max.abs().max(1.0) * 1e-12
     } else {
         assets
     };

@@ -30,7 +30,7 @@ use crate::validate::ValidationError;
 
 /// Semantic interpretation of the supplied target correlation matrix for
 /// [`iman_conover`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum CorrelationType {
     /// Target matrix is directly the Pearson correlation of latent Gaussian
     /// van der Waerden reference scores (Mildenhall 2006, §3).
@@ -45,7 +45,7 @@ pub enum CorrelationType {
 }
 
 /// Output of [`iman_conover`] batch rank reordering.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImanConoverResult {
     /// Number of scenarios `N`.
     pub n_scenarios: usize,
@@ -65,7 +65,7 @@ pub struct ImanConoverResult {
 }
 
 /// Output of [`synchronized_odp_bootstrap`] across `K` aligned lines of business.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SynchronizedBootstrapResult {
     /// Underlying ODP fits per line.
     pub line_fits: Vec<OdpFit>,
@@ -189,12 +189,19 @@ pub fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
         sxy += dx * dy;
     }
     let denom = (sxx * syy).sqrt();
-    if denom > 0.0 { sxy / denom } else { f64::NAN }
+    if denom > 0.0 {
+        (sxy / denom).clamp(-1.0, 1.0)
+    } else {
+        f64::NAN
+    }
 }
 
 /// Tie-adjusted Spearman rank correlation between two equal-length slices.
 pub fn spearman_correlation(x: &[f64], y: &[f64]) -> f64 {
     if x.len() < 2 || x.len() != y.len() {
+        return f64::NAN;
+    }
+    if x.iter().any(|v| v.is_nan()) || y.iter().any(|v| v.is_nan()) {
         return f64::NAN;
     }
     let rx = average_ranks(x);
@@ -396,6 +403,22 @@ pub fn iman_conover(
 
         let mut val_order: Vec<usize> = (0..n).collect();
         val_order.sort_by(|&a, &b| columns[col_j][a].total_cmp(&columns[col_j][b]));
+        // Randomly break ties within equal-value runs to avoid inheriting original row order.
+        let mut tie_start = 0usize;
+        while tie_start < n {
+            let v0 = columns[col_j][val_order[tie_start]];
+            let mut tie_end = tie_start + 1;
+            while tie_end < n && columns[col_j][val_order[tie_end]] == v0 {
+                tie_end += 1;
+            }
+            if tie_end - tie_start > 1 {
+                for m in (tie_start + 1..tie_end).rev() {
+                    let swap_idx = tie_start + rng.next_index(m - tie_start + 1);
+                    val_order.swap(m, swap_idx);
+                }
+            }
+            tie_start = tie_end;
+        }
 
         let mut perm = vec![0usize; n];
         let mut reordered = vec![0.0; n];

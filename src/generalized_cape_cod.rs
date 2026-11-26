@@ -44,7 +44,7 @@ use crate::validate::{
 };
 
 /// Result of a Generalized (Decay-Weighted) Cape Cod projection.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GeneralizedCapeCodProjection {
     /// Decay factor `delta` in `(0, 1]`.
     pub decay: f64,
@@ -198,6 +198,11 @@ impl GeneralizedCapeCodEngine {
             used_premium[i] = premium[i] * reported_percentage[i];
         }
 
+        let mut decay_powers = vec![1.0; n];
+        for d in 1..n {
+            decay_powers[d] = decay_powers[d - 1] * decay;
+        }
+
         let mut elr_by_origin = vec![0.0; n];
         let mut normalized_weights = vec![0.0; n * n];
         let mut expected_ultimate = vec![0.0; n];
@@ -206,7 +211,7 @@ impl GeneralizedCapeCodEngine {
             let mut num = 0.0;
             let mut den = 0.0;
             for k in 0..n {
-                let w = decay.powi(i.abs_diff(k) as i32);
+                let w = decay_powers[i.abs_diff(k)];
                 let tau_k = loss_trend_to_base.map_or(1.0, |t| t[k]);
                 let eff_w = w * used_premium[k];
                 normalized_weights[i * n + k] = eff_w;

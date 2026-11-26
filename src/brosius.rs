@@ -23,7 +23,7 @@ use crate::validate::{
 };
 
 /// Brosius projection result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Brosius {
     /// Intercept per link: `a_j`, length `n − 1`.
     pub intercept: Vec<f64>,
@@ -60,7 +60,7 @@ impl Brosius {
 }
 
 /// Brosius OLS fit diagnostics for one development link.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BrosiusLinkDiagnostic {
     /// Development link start index.
     pub dev: usize,
@@ -123,7 +123,8 @@ pub fn project_unchecked(t: &TriangleView<'_>, tail: f64) -> Brosius {
             }
             var_x = sum_dx2 / kf;
             cov_xy = sum_dxdy / kf;
-            let b = if var_x > 0.0 { cov_xy / var_x } else { 0.0 };
+            let var_tol = 1e-12 * mean_x * mean_x;
+            let b = if var_x > var_tol { cov_xy / var_x } else { 0.0 };
             let a = mean_y - b * mean_x;
             intercept[j] = a;
             slope[j] = b;
@@ -199,17 +200,19 @@ pub fn project_observed_counts(
     let mut slope = vec![0.0; n_dev.saturating_sub(1)];
     let mut diagnostics = Vec::with_capacity(n_dev.saturating_sub(1));
     for dev in 0..n_dev.saturating_sub(1) {
-        let pairs = observed_counts
-            .iter()
-            .enumerate()
-            .filter_map(|(origin, &count)| (count > dev + 1).then_some(origin))
-            .collect::<Vec<_>>();
-        let k = pairs.len();
+        let mut k = 0usize;
+        let mut first_origin = 0usize;
         let mut sx = 0.0;
         let mut sy = 0.0;
-        for &origin in &pairs {
-            sx += t.get(origin, dev);
-            sy += t.get(origin, dev + 1);
+        for (origin, &count) in observed_counts.iter().enumerate() {
+            if count > dev + 1 {
+                if k == 0 {
+                    first_origin = origin;
+                }
+                k += 1;
+                sx += t.get(origin, dev);
+                sy += t.get(origin, dev + 1);
+            }
         }
 
         let kf = k as f64;
@@ -223,22 +226,24 @@ pub fn project_observed_counts(
             mean_y = sy / kf;
             let mut sum_dx2 = 0.0;
             let mut sum_dxdy = 0.0;
-            for &origin in &pairs {
-                let dx = t.get(origin, dev) - mean_x;
-                let dy = t.get(origin, dev + 1) - mean_y;
-                sum_dx2 += dx * dx;
-                sum_dxdy += dx * dy;
+            for (origin, &count) in observed_counts.iter().enumerate() {
+                if count > dev + 1 {
+                    let dx = t.get(origin, dev) - mean_x;
+                    let dy = t.get(origin, dev + 1) - mean_y;
+                    sum_dx2 += dx * dx;
+                    sum_dxdy += dx * dy;
+                }
             }
             var_x = sum_dx2 / kf;
             cov_xy = sum_dxdy / kf;
-            let b = if var_x > 0.0 { cov_xy / var_x } else { 0.0 };
+            let var_tol = 1e-12 * mean_x * mean_x;
+            let b = if var_x > var_tol { cov_xy / var_x } else { 0.0 };
             let a = mean_y - b * mean_x;
             intercept[dev] = a;
             slope[dev] = b;
         } else if k == 1 {
-            let origin = pairs[0];
-            let x = t.get(origin, dev);
-            let y = t.get(origin, dev + 1);
+            let x = t.get(first_origin, dev);
+            let y = t.get(first_origin, dev + 1);
             intercept[dev] = 0.0;
             slope[dev] = if x > 0.0 { y / x } else { f64::NAN };
             mean_x = x;

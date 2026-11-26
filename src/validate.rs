@@ -13,7 +13,7 @@ use crate::types::TriangleView;
 /// without salvage/subrogation recoveries. Incurred triangles and reinsurance
 /// triangles (including Mack's 1993 RAA benchmark) legitimately exhibit downward
 /// case-reserve revisions and require [`MonotonicityPolicy::AllowNegativeIncrements`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum MonotonicityPolicy {
     /// Reject any observed cumulative cell strictly lower than its predecessor.
     #[default]
@@ -24,7 +24,7 @@ pub enum MonotonicityPolicy {
 }
 
 /// Validation failure modes for triangle inputs.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum ValidationError {
     /// `data.len() != n_origins * n_devs`.
     ShapeMismatch,

@@ -35,7 +35,7 @@ use crate::validate::{
 // ===========================================================================
 
 /// Selected development factor family.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LdfSelectionMethod {
     /// Volume-weighted link ratios.
     VolumeWeighted,
@@ -60,7 +60,7 @@ pub enum LdfSelectionMethod {
 }
 
 /// Selected age-to-age factors and cumulative development factors.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DevelopmentFactors {
     /// Selected age-to-age LDFs, length `n_dev - 1`.
     pub ldfs: Vec<f64>,
@@ -81,7 +81,7 @@ impl DevelopmentFactors {
 }
 
 /// Numerator/denominator trail for one selected link ratio.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LinkRatioDiagnostic {
     /// Development age `j` for the `j -> j + 1` link.
     pub dev: usize,
@@ -370,19 +370,26 @@ pub fn ex_hi_lo(t: &TriangleView<'_>) -> Vec<f64> {
         }
         let k = scratch.len();
         out[j] = if k >= 3 {
-            let mut mn = scratch[0];
-            let mut mx = scratch[0];
-            let mut sum = 0.0;
-            for &v in &scratch {
-                if v < mn {
-                    mn = v;
+            let mut min_idx = 0usize;
+            let mut max_idx = 0usize;
+            for (idx, &v) in scratch.iter().enumerate().skip(1) {
+                if v < scratch[min_idx] {
+                    min_idx = idx;
                 }
-                if v > mx {
-                    mx = v;
+                if v > scratch[max_idx] {
+                    max_idx = idx;
                 }
-                sum += v;
             }
-            (sum - mn - mx) / ((k - 2) as f64)
+            if min_idx == max_idx {
+                max_idx = 1;
+            }
+            let mut sum = 0.0;
+            for (idx, &v) in scratch.iter().enumerate() {
+                if idx != min_idx && idx != max_idx {
+                    sum += v;
+                }
+            }
+            sum / ((k - 2) as f64)
         } else if k > 0 {
             scratch.iter().sum::<f64>() / (k as f64)
         } else {
@@ -489,30 +496,20 @@ pub fn pct_reported(cdf: &[f64]) -> Vec<f64> {
 pub struct DevelopmentFactorEngine;
 
 impl DevelopmentFactorEngine {
-    fn factors_from_selected_ldfs_with_policy(
-        tri: &TriangleView<'_>,
+    fn factors_from_validated_ldfs(
+        n_devs: usize,
         tail: f64,
         ldfs: Vec<f64>,
-        policy: MonotonicityPolicy,
     ) -> Result<DevelopmentFactors, ValidationError> {
-        validate_development_inputs_with_policy(tri, tail, policy)?;
         validate_positive_finite_slice(&ldfs, "development denominator")?;
 
-        let mut cdfs = vec![0.0; tri.n_devs];
+        let mut cdfs = vec![0.0; n_devs];
         cdfs_from_ldfs(&ldfs, tail, &mut cdfs);
         if cdfs.iter().any(|cdf| !cdf.is_finite()) {
             return Err(ValidationError::NotFinite);
         }
 
         Ok(DevelopmentFactors { ldfs, cdfs, tail })
-    }
-
-    fn factors_from_selected_ldfs(
-        tri: &TriangleView<'_>,
-        tail: f64,
-        ldfs: Vec<f64>,
-    ) -> Result<DevelopmentFactors, ValidationError> {
-        Self::factors_from_selected_ldfs_with_policy(tri, tail, ldfs, MonotonicityPolicy::Strict)
     }
 
     /// Select volume-weighted factors and CDFs from a validated cumulative triangle.
@@ -532,7 +529,7 @@ impl DevelopmentFactorEngine {
         validate_development_inputs_with_policy(tri, tail, policy)?;
         let mut ldfs = vec![0.0; tri.n_devs - 1];
         volume_weighted_ldfs(tri.data, tri.n_origins, tri.n_devs, &mut ldfs);
-        Self::factors_from_selected_ldfs_with_policy(tri, tail, ldfs, policy)
+        Self::factors_from_validated_ldfs(tri.n_devs, tail, ldfs)
     }
 
     /// Select simple-average factors and CDFs from a validated cumulative triangle.
@@ -540,7 +537,8 @@ impl DevelopmentFactorEngine {
         tri: &TriangleView<'_>,
         tail: f64,
     ) -> Result<DevelopmentFactors, ValidationError> {
-        Self::factors_from_selected_ldfs(tri, tail, simple_average(tri))
+        validate_development_inputs(tri, tail)?;
+        Self::factors_from_validated_ldfs(tri.n_devs, tail, simple_average(tri))
     }
 
     /// Select median factors and CDFs from a validated cumulative triangle.
@@ -548,7 +546,8 @@ impl DevelopmentFactorEngine {
         tri: &TriangleView<'_>,
         tail: f64,
     ) -> Result<DevelopmentFactors, ValidationError> {
-        Self::factors_from_selected_ldfs(tri, tail, median(tri))
+        validate_development_inputs(tri, tail)?;
+        Self::factors_from_validated_ldfs(tri.n_devs, tail, median(tri))
     }
 
     /// Select ex-hi-lo factors and CDFs from a validated cumulative triangle.
@@ -556,7 +555,8 @@ impl DevelopmentFactorEngine {
         tri: &TriangleView<'_>,
         tail: f64,
     ) -> Result<DevelopmentFactors, ValidationError> {
-        Self::factors_from_selected_ldfs(tri, tail, ex_hi_lo(tri))
+        validate_development_inputs(tri, tail)?;
+        Self::factors_from_validated_ldfs(tri.n_devs, tail, ex_hi_lo(tri))
     }
 
     /// Select volume-weighted last-N factors and CDFs from a validated cumulative triangle.
@@ -565,7 +565,8 @@ impl DevelopmentFactorEngine {
         tail: f64,
         last_n: usize,
     ) -> Result<DevelopmentFactors, ValidationError> {
-        Self::factors_from_selected_ldfs(tri, tail, volume_weighted_last_n(tri, last_n))
+        validate_development_inputs(tri, tail)?;
+        Self::factors_from_validated_ldfs(tri.n_devs, tail, volume_weighted_last_n(tri, last_n))
     }
 
     /// Select simple-average last-N factors and CDFs from a validated cumulative triangle.
@@ -574,7 +575,8 @@ impl DevelopmentFactorEngine {
         tail: f64,
         last_n: usize,
     ) -> Result<DevelopmentFactors, ValidationError> {
-        Self::factors_from_selected_ldfs(tri, tail, simple_average_last_n(tri, last_n))
+        validate_development_inputs(tri, tail)?;
+        Self::factors_from_validated_ldfs(tri.n_devs, tail, simple_average_last_n(tri, last_n))
     }
 
     /// Diagnostics for volume-weighted link selections.

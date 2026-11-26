@@ -41,7 +41,7 @@ use crate::types::TriangleView;
 use crate::validate::{ValidationError, validate_positive_finite_slice, validate_triangle};
 
 /// Optional informative diagonal Gaussian prior on `Theta = (Phi, Psi)`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PicPrior {
     /// Prior mean for incurred log-link parameters `Phi_0..Phi_{n-1}` (length `n`).
     pub phi_mean: Vec<f64>,
@@ -54,7 +54,7 @@ pub struct PicPrior {
 }
 
 /// Configuration options for [`analyze`].
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct PicOptions {
     /// Optional explicit incurred log-increment variances `sigma_0^2..sigma_{n-1}^2`
     /// (length `n`). Estimated empirically from the incurred triangle when `None`.
@@ -70,8 +70,34 @@ pub struct PicOptions {
     pub variance_floor: Option<f64>,
 }
 
+impl PicOptions {
+    /// Supply explicit incurred log-increment variances `sigma_0^2..sigma_{n-1}^2`.
+    pub fn with_incurred_variances(mut self, variances: impl Into<Vec<f64>>) -> Self {
+        self.incurred_variances = Some(variances.into());
+        self
+    }
+
+    /// Supply explicit paid log-increment variances `tau_1^2..tau_{n-1}^2`.
+    pub fn with_paid_variances(mut self, variances: impl Into<Vec<f64>>) -> Self {
+        self.paid_variances = Some(variances.into());
+        self
+    }
+
+    /// Supply an informative Gaussian conjugate prior on `(Phi, Psi)`.
+    pub fn with_prior(mut self, prior: PicPrior) -> Self {
+        self.prior = Some(prior);
+        self
+    }
+
+    /// Set the floor on estimated log-increment variances.
+    pub const fn with_variance_floor(mut self, floor: f64) -> Self {
+        self.variance_floor = Some(floor);
+        self
+    }
+}
+
 /// Complete output of the Merz & Wüthrich (2010) Paid-Incurred Chain model.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PaidIncurredChainResult {
     /// Posterior means for incurred log-increments `Phi_0..Phi_{n-1}` (length `n`).
     pub posterior_phi: Vec<f64>,
@@ -141,7 +167,17 @@ pub fn analyze(
     }
 
     let j_max = n - 1;
-    let var_floor = options.variance_floor.unwrap_or(1e-10).max(1e-14);
+    let var_floor = match options.variance_floor {
+        Some(v) => {
+            if !v.is_finite() || v <= 0.0 {
+                return Err(ValidationError::InvalidParameter(
+                    "variance_floor must be finite and strictly positive",
+                ));
+            }
+            v.max(1e-14)
+        }
+        None => 1e-10,
+    };
 
     // Compute observed incurred log-increments zeta_{i, j} and paid log-increments xi_{i, j}.
     let mut zeta = vec![f64::NAN; n * n];
@@ -366,6 +402,24 @@ pub fn analyze(
     }
 
     // Aggregate MSEP with exact log-normal cross-origin covariances.
+    // Precompute V_Theta * c_k for each origin so pairwise covariances run in O(n^2 * p_dim).
+    let mut vc_vecs: Vec<Vec<f64>> = Vec::with_capacity(n);
+    for k in 0..n {
+        if pred_log_var[k] == 0.0 {
+            vc_vecs.push(Vec::new());
+            continue;
+        }
+        let mut vc = vec![0.0; p_dim];
+        for a in 0..p_dim {
+            let mut row_acc = 0.0;
+            for b in 0..p_dim {
+                row_acc += v_theta[a * p_dim + b] * c_vecs[k][b];
+            }
+            vc[a] = row_acc;
+        }
+        vc_vecs.push(vc);
+    }
+
     let mut total_msep: f64 = msep.iter().sum();
     for i in 0..n {
         if pred_log_var[i] == 0.0 {
@@ -376,16 +430,9 @@ pub fn analyze(
                 continue;
             }
             let mut cov_log = 0.0;
+            let vck = &vc_vecs[k];
             for a in 0..p_dim {
-                let ca = c_vecs[i][a];
-                if ca == 0.0 {
-                    continue;
-                }
-                let mut row_acc = 0.0;
-                for b in 0..p_dim {
-                    row_acc += v_theta[a * p_dim + b] * c_vecs[k][b];
-                }
-                cov_log += ca * row_acc;
+                cov_log += c_vecs[i][a] * vck[a];
             }
             total_msep += 2.0 * ultimates[i] * ultimates[k] * cov_log.exp_m1();
         }

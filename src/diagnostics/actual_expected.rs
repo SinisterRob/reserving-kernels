@@ -130,34 +130,56 @@ pub fn standardized_residuals(
     out
 }
 
-/// Dense residual heatmap rows for all observable target cells.
+/// Dense residual heatmap rows for all observable target cells (single-pass,
+/// zero intermediate matrices).
 pub fn cell_residual_heatmap(
     t: &TriangleView<'_>,
     ldfs: &[f64],
     sigma_by_dev: Option<&[f64]>,
 ) -> Vec<CellResidual> {
-    let expected = expected_next_cumulative(t, ldfs);
-    let raw = raw_residuals(t, ldfs);
-    let a_to_e = actual_to_expected_ratios(t, ldfs);
-    let standardized = sigma_by_dev
-        .map(|sigma| standardized_residuals(t, ldfs, sigma))
-        .unwrap_or_else(|| vec![f64::NAN; t.n_origins * t.n_devs]);
-
     let mut out = Vec::new();
     for origin in 0..t.n_origins {
         for dev in 1..t.n_devs {
             if !scheduled_pair_observed(t, origin, dev) {
                 continue;
             }
-            let idx = origin * t.n_devs + dev;
+            let prev = t.get(origin, dev - 1);
+            let actual = t.get(origin, dev);
+            let ldf = ldfs.get(dev - 1).copied().unwrap_or(f64::NAN);
+            let expected = if prev.is_finite() && ldf.is_finite() {
+                prev * ldf
+            } else {
+                f64::NAN
+            };
+            let residual = if actual.is_finite() && expected.is_finite() {
+                actual - expected
+            } else {
+                f64::NAN
+            };
+            let actual_to_expected = if actual.is_finite() && expected.is_finite() && expected > 0.0
+            {
+                actual / expected
+            } else {
+                f64::NAN
+            };
+            let standardized_residual = if let Some(sigmas) = sigma_by_dev {
+                let sigma = sigmas.get(dev - 1).copied().unwrap_or(f64::NAN);
+                if sigma.is_finite() && sigma > 0.0 && prev > 0.0 && residual.is_finite() {
+                    residual / (sigma * prev.sqrt())
+                } else {
+                    f64::NAN
+                }
+            } else {
+                f64::NAN
+            };
             out.push(CellResidual {
                 origin,
                 dev,
-                actual: t.get(origin, dev),
-                expected: expected[idx],
-                residual: raw[idx],
-                actual_to_expected: a_to_e[idx],
-                standardized_residual: standardized[idx],
+                actual,
+                expected,
+                residual,
+                actual_to_expected,
+                standardized_residual,
             });
         }
     }

@@ -3,19 +3,25 @@
 use crate::chain_ladder::{ChainLadderEngine, ChainLadderProjection};
 use crate::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
 use crate::types::{Triangle, TriangleView};
-use crate::validate::ValidationError;
+use crate::validate::{ValidationError, validate_triangle};
 
-/// Open-count triangle `reported - closed`, preserving `NaN` where either cell is missing.
+/// Open-count triangle `reported - closed`, preserving `NaN` where either cell is missing
+/// or outside the scheduled observed region.
 pub fn open_count_triangle(
     reported: &TriangleView<'_>,
     closed: &TriangleView<'_>,
 ) -> Result<Triangle, ValidationError> {
+    validate_triangle(reported)?;
+    validate_triangle(closed)?;
     if reported.n_origins != closed.n_origins || reported.n_devs != closed.n_devs {
         return Err(ValidationError::ShapeMismatch);
     }
     let mut data = vec![f64::NAN; reported.n_origins * reported.n_devs];
     for origin in 0..reported.n_origins {
         for dev in 0..reported.n_devs {
+            if !reported.is_scheduled_observed(origin, dev) {
+                continue;
+            }
             let reported_value = reported.get(origin, dev);
             let closed_value = closed.get(origin, dev);
             if reported_value.is_finite() && closed_value.is_finite() {

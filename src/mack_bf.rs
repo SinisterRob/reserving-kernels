@@ -48,7 +48,7 @@ use crate::validate::{
 
 /// How the cumulative payout pattern `z_k` is estimated from the triangle in
 /// [`analyze_from_triangle`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum BfPayoutEstimator {
     /// Mack (2008) §2 direct incremental BF payout shares:
     /// `y_k = sum_{i=0}^{n-1-k} S_{i,k} / sum_{i=0}^{n-1-k} E_i`,
@@ -60,7 +60,7 @@ pub enum BfPayoutEstimator {
 }
 
 /// Configuration options for [`analyze_from_triangle`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MackBfOptions {
     /// Payout pattern estimation method.
     pub payout_estimator: BfPayoutEstimator,
@@ -82,8 +82,28 @@ impl Default for MackBfOptions {
     }
 }
 
+impl MackBfOptions {
+    /// Set the payout pattern estimation method.
+    pub const fn with_payout_estimator(mut self, estimator: BfPayoutEstimator) -> Self {
+        self.payout_estimator = estimator;
+        self
+    }
+
+    /// Set the uniform pairwise correlation `rho in [0, 1]` between *a priori* ultimates.
+    pub const fn with_prior_correlation(mut self, rho: f64) -> Self {
+        self.prior_correlation = rho;
+        self
+    }
+
+    /// Set the triangle monotonicity policy.
+    pub const fn with_policy(mut self, policy: MonotonicityPolicy) -> Self {
+        self.monotonicity_policy = policy;
+        self
+    }
+}
+
 /// Complete Mack (2008) analytical BF MSEP decomposition.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MackBfResult {
     /// Latest observed cumulative losses by origin (length `n`).
     pub latest: Vec<f64>,
@@ -330,12 +350,14 @@ pub fn analyze_from_triangle(
     // Build cumulative payout pattern z_k (z_{n-1} = 1.0).
     let payout_z: Vec<f64> = match options.payout_estimator {
         BfPayoutEstimator::DirectIncremental => {
-            let sum_y: f64 = y_raw.iter().sum();
-            let scale = if sum_y > 0.0 { 1.0 / sum_y } else { 1.0 };
+            // Sum only non-negative shares when clamping negative increments so
+            // normalization remains consistent under AllowNegativeIncrements.
+            let pos_sum: f64 = y_raw.iter().map(|&v| v.max(0.0)).sum();
+            let scale = if pos_sum > 0.0 { 1.0 / pos_sum } else { 1.0 };
             let mut z = vec![0.0; n];
             let mut cum = 0.0;
             for k in 0..n {
-                cum += (y_raw[k] * scale).max(0.0);
+                cum += y_raw[k].max(0.0) * scale;
                 z[k] = cum.clamp(0.0, 1.0);
             }
             z[n - 1] = 1.0;
@@ -356,21 +378,15 @@ pub fn analyze_from_triangle(
         }
     };
 
-    // Incremental shares implied by payout_z for variance estimation.
-    let mut y_k = vec![0.0; n];
-    y_k[0] = payout_z[0];
-    for k in 1..n {
-        y_k[k] = payout_z[k] - payout_z[k - 1];
-    }
-
-    // Mack (2008) §3 process variance parameters s_k^2:
-    // s_k^2 = 1 / (m_k - 1) * sum_{i=0}^{m_k - 1} E_i * (S_{i,k} / E_i - y_k)^2.
+    // Mack (2008) §3 unbiased process variance parameters s_k^2:
+    // s_k^2 = 1 / (m_k - 1) * sum_{i=0}^{m_k - 1} E_i * (S_{i,k} / E_i - y_hat_k)^2,
+    // centered at the column-weighted mean y_hat_k = sum(S_{i,k}) / sum(E_i) = y_raw[k].
     let mut s_sq = vec![0.0; n];
     for k in 0..(n - 1) {
         let m_k = n - k;
         let mut acc = 0.0;
         for i in 0..m_k {
-            let diff = inc[i * n + k] / prior_ultimate[i] - y_k[k];
+            let diff = inc[i * n + k] / prior_ultimate[i] - y_raw[k];
             acc += prior_ultimate[i] * diff * diff;
         }
         s_sq[k] = acc / (m_k as f64 - 1.0);

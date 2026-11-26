@@ -55,7 +55,7 @@ pub fn project_unchecked(
 }
 
 /// Checked Cape Cod projection result.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CapeCodProjection {
     /// Data-implied expected loss ratio.
     pub elr: f64,

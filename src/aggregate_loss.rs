@@ -36,7 +36,7 @@ use crate::severity::SeverityDistribution;
 use crate::validate::{ValidationError, validate_nonnegative_finite_slice};
 
 /// Claim-count frequency distribution in the Panjer `(a, b, 0)` class.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FrequencyDistribution {
     /// Poisson(`lambda`): `E[N] = Var(N) = lambda`, `a = 0`, `b = lambda`.
     Poisson {
@@ -63,6 +63,42 @@ pub enum FrequencyDistribution {
 }
 
 impl FrequencyDistribution {
+    /// Construct a `Poisson(lambda)` frequency distribution.
+    pub const fn poisson(lambda: f64) -> Self {
+        Self::Poisson { lambda }
+    }
+
+    /// Construct a `Binomial(m, q)` frequency distribution.
+    pub const fn binomial(m: u64, q: f64) -> Self {
+        Self::Binomial { m, q }
+    }
+
+    /// Construct a `NegativeBinomial(r, beta)` frequency distribution.
+    pub const fn negative_binomial(r: f64, beta: f64) -> Self {
+        Self::NegativeBinomial { r, beta }
+    }
+
+    /// Evaluate the compound aggregate distribution via exact Panjer `(a, b, 0)` recursion.
+    pub fn compound_panjer(
+        self,
+        severity_pmf: &[f64],
+        step: f64,
+        n_steps: usize,
+    ) -> Result<AggregateLossDistribution, ValidationError> {
+        panjer_recursion(self, severity_pmf, step, n_steps)
+    }
+
+    /// Evaluate the compound aggregate distribution via exponentially tilted radix-2 FFT.
+    pub fn compound_fft(
+        self,
+        severity_pmf: &[f64],
+        step: f64,
+        fft_size: usize,
+        tilt: Option<f64>,
+    ) -> Result<AggregateLossDistribution, ValidationError> {
+        fft_aggregate_loss(self, severity_pmf, step, fft_size, tilt)
+    }
+
     /// Construct a Negative Binomial distribution matching a target `mean > 0`
     /// and overdispersed `variance > mean`.
     pub fn negative_binomial_from_mean_variance(
@@ -197,7 +233,7 @@ impl FrequencyDistribution {
 }
 
 /// Discretized aggregate loss distribution on the uniform lattice `0, step, 2*step, ...`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AggregateLossDistribution {
     /// Grid step size `h > 0`.
     pub step: f64,
@@ -252,7 +288,12 @@ impl AggregateLossDistribution {
             });
         }
         if alpha <= 0.0 {
-            return Ok(self.mean);
+            if !(self.total_mass > 0.0) {
+                return Err(ValidationError::InvalidParameter(
+                    "aggregate loss distribution has zero captured probability mass",
+                ));
+            }
+            return Ok(self.mean / self.total_mass);
         }
         if alpha >= 1.0 {
             return Ok((self.pmf.len().saturating_sub(1)) as f64 * self.step);
@@ -268,7 +309,12 @@ impl AggregateLossDistribution {
             }
             prev_cdf = next_cdf;
         }
-        let captured_tail = (self.total_mass - alpha).max(1e-15);
+        let captured_tail = prev_cdf - alpha;
+        if !(captured_tail > 1e-15) {
+            return Err(ValidationError::InvalidParameter(
+                "truncated aggregate grid has insufficient probability mass above alpha for TVaR",
+            ));
+        }
         Ok(integral / captured_tail)
     }
 
@@ -314,9 +360,9 @@ pub fn panjer_recursion(
     let inv_denom = 1.0 / denom;
 
     let g0 = frequency.pgf_real(f0);
-    if !g0.is_finite() || g0 == 0.0 {
+    if !g0.is_finite() || g0 < f64::MIN_POSITIVE {
         return Err(ValidationError::InvalidParameter(
-            "Panjer recursion g_0 underflowed f64; use fft_aggregate_loss instead",
+            "Panjer recursion g_0 underflowed normal f64 range; use fft_aggregate_loss instead",
         ));
     }
 
@@ -336,7 +382,13 @@ pub fn panjer_recursion(
             let coeff = a + b * (y as f64) * inv_x;
             acc += coeff * f_slice[idx] * g_slice[upper - 1 - idx];
         }
-        g[x] = (acc * inv_denom).max(0.0);
+        let gx = acc * inv_denom;
+        if !gx.is_finite() || gx < -1e-6 {
+            return Err(ValidationError::InvalidParameter(
+                "Panjer recursion became numerically unstable (e.g. high-q Binomial); use fft_aggregate_loss",
+            ));
+        }
+        g[x] = gx.max(0.0);
     }
 
     Ok(summarize_aggregate(frequency, severity_pmf, step, g))
@@ -370,9 +422,9 @@ pub fn fft_aggregate_loss(
     }
     let theta = match tilt {
         Some(t) => {
-            if !t.is_finite() || t < 0.0 {
+            if !t.is_finite() || t < 0.0 || t * (fft_size - 1) as f64 > 700.0 {
                 return Err(ValidationError::InvalidParameter(
-                    "exponential tilt must be finite and >= 0",
+                    "exponential tilt must be finite, >= 0, and satisfy tilt * (fft_size - 1) <= 700",
                 ));
             }
             t
@@ -403,9 +455,15 @@ pub fn fft_aggregate_loss(
     // Inverse radix-2 FFT back to loss lattice.
     fft_radix2_in_place(&mut re, &mut im, true);
 
-    // Untilt and clamp sub-machine-epsilon negative numerical dust.
+    // Untilt and suppress sub-noise-floor FFT roundoff dust that exponential
+    // untilting by exp(theta * k) would otherwise amplify into one-sided bias.
+    let noise_floor = if theta > 0.0 { 4.0 * f64::EPSILON } else { 0.0 };
     let mut g = vec![0.0; fft_size];
     for k in 0..fft_size {
+        if !re[k].is_finite() || re[k] <= noise_floor {
+            g[k] = 0.0;
+            continue;
+        }
         let raw = if theta > 0.0 {
             re[k] * (theta * k as f64).exp()
         } else {
@@ -471,6 +529,7 @@ pub fn discretize_mean_preserving(
     step: f64,
     max_index: usize,
 ) -> Result<Vec<f64>, ValidationError> {
+    dist.validate()?;
     if !step.is_finite() || step <= 0.0 || max_index < 2 {
         return Err(ValidationError::InvalidParameter(
             "mean-preserving discretization requires step > 0 and max_index >= 2",
@@ -521,15 +580,17 @@ fn summarize_aggregate(
     step: f64,
     pmf: Vec<f64>,
 ) -> AggregateLossDistribution {
-    // Exact moments of input discrete severity X.
+    // Exact moments of input discrete severity X (two-pass centered variance avoids cancellation).
     let mut ex = 0.0;
-    let mut ex2 = 0.0;
     for (k, &fk) in severity_pmf.iter().enumerate() {
-        let x = k as f64 * step;
-        ex += x * fk;
-        ex2 += x * x * fk;
+        ex += (k as f64 * step) * fk;
     }
-    let var_x = (ex2 - ex * ex).max(0.0);
+    let mut var_x = 0.0;
+    for (k, &fk) in severity_pmf.iter().enumerate() {
+        let dx = k as f64 * step - ex;
+        var_x += dx * dx * fk;
+    }
+    let var_x = var_x.max(0.0);
     let en = frequency.mean();
     let var_n = frequency.variance();
     let exact_theoretical_mean = en * ex;
@@ -538,15 +599,17 @@ fn summarize_aggregate(
     let mut cdf = Vec::with_capacity(pmf.len());
     let mut running = 0.0;
     let mut mean = 0.0;
-    let mut m2 = 0.0;
     for (k, &gk) in pmf.iter().enumerate() {
         running += gk;
         cdf.push(running);
-        let x = k as f64 * step;
-        mean += x * gk;
-        m2 += x * x * gk;
+        mean += (k as f64 * step) * gk;
     }
-    let variance = (m2 - mean * mean).max(0.0);
+    let mut variance = 0.0;
+    for (k, &gk) in pmf.iter().enumerate() {
+        let dx = k as f64 * step - mean;
+        variance += dx * dx * gk;
+    }
+    let variance = variance.max(0.0);
 
     AggregateLossDistribution {
         step,
@@ -582,37 +645,29 @@ fn fft_radix2_in_place(re: &mut [f64], im: &mut [f64], inverse: bool) {
         }
     }
 
-    // Cooley–Tukey butterfly stages.
+    // Cooley–Tukey butterfly stages: compute exact twiddle (cos, sin) per k
+    // to prevent O(N * eps) recurrence drift on large tilted FFTs.
     let sign = if inverse { 1.0 } else { -1.0 };
     let mut len = 2usize;
     while len <= n {
         let half = len >> 1;
         let angle_step = sign * TAU / len as f64;
-        let w_step_r = angle_step.cos();
-        let w_step_i = angle_step.sin();
 
-        let mut start = 0usize;
-        while start < n {
-            let mut wr = 1.0_f64;
-            let mut wi = 0.0_f64;
-            for k in 0..half {
-                let even = start + k;
-                let odd = even + half;
+        for k in 0..half {
+            let (wi, wr) = (k as f64 * angle_step).sin_cos();
+            let mut start = k;
+            while start < n {
+                let odd = start + half;
                 let tr = wr * re[odd] - wi * im[odd];
                 let ti = wr * im[odd] + wi * re[odd];
-                let er = re[even];
-                let ei = im[even];
-                re[even] = er + tr;
-                im[even] = ei + ti;
+                let er = re[start];
+                let ei = im[start];
+                re[start] = er + tr;
+                im[start] = ei + ti;
                 re[odd] = er - tr;
                 im[odd] = ei - ti;
-
-                let next_wr = wr * w_step_r - wi * w_step_i;
-                let next_wi = wr * w_step_i + wi * w_step_r;
-                wr = next_wr;
-                wi = next_wi;
+                start += len;
             }
-            start += len;
         }
         len <<= 1;
     }

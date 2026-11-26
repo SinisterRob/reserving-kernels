@@ -86,12 +86,26 @@ pub fn cumulative_from_incremental(t: &TriangleView<'_>) -> Vec<f64> {
 
 /// Flag cells whose incremental emergence is negative.
 pub fn negative_increment_flags(t: &TriangleView<'_>) -> Vec<CellFlag> {
-    let incremental = incremental_from_cumulative(t);
     let mut flags = Vec::new();
     for i in 0..t.n_origins {
         for j in 0..t.n_devs {
-            let value = incremental[i * t.n_devs + j];
-            if value.is_finite() && value < 0.0 {
+            if !t.is_scheduled_observed(i, j) {
+                continue;
+            }
+            let cur = t.get(i, j);
+            if !cur.is_finite() {
+                continue;
+            }
+            let inc = if j == 0 {
+                cur
+            } else {
+                let prev = t.get(i, j - 1);
+                if !prev.is_finite() {
+                    continue;
+                }
+                cur - prev
+            };
+            if inc < 0.0 {
                 flags.push(CellFlag { origin: i, dev: j });
             }
         }
