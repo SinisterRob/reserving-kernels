@@ -118,6 +118,27 @@ assert!((panjer.mean - fft.mean).abs() < 1e-8);
 | `selection`, `reserve_rollforward`, `exhibit` | Backtesting & reporting | Holdout LDF backtesting, valuation roll-forward decomposition, and serializable JSON exhibit DTOs |
 | `large_loss`, `trend`, `onlevel`, `count_development`, `apriori`, `aggregate` | Preprocessing utilities | Large-loss capping/excess splits, exponential trending, parallelogram on-leveling, count development, a priori builders |
 
+## Performance
+
+Steady-state, single-threaded in-process timings on identical triangles (`RAA` 10×10, `GenIns` 10×10, synthetic 40×40) comparing **`reserving-kernels`** (`rustc 1.97.0 --release`) against **`mages/ChainLadder` 0.2.21** (R) and **`casact/chainladder-python` 0.10.1** (Python) on an Intel Core i9-14900K:
+
+<p align="center">
+  <img src="assets/benchmarks.svg" alt="reserving-kernels vs R ChainLadder and chainladder-python benchmark comparison" width="100%" />
+</p>
+
+| Benchmark | `reserving-kernels` (Rust) | `mages/ChainLadder` (R) | `chainladder-python` (Py) | Speedup vs. R | Speedup vs. Python |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Volume-Weighted LDFs (40×40) | **0.34 µs** | 840 µs | 5,710 µs | 2,485× | 16,890× |
+| Mack Chain Ladder (`RAA` 10×10) | **0.51 µs** | 5,840 µs | 25,446 µs | 11,500× | 50,090× |
+| Mack Chain Ladder (40×40) | **9.86 µs** | 24,650 µs | 30,077 µs | 2,500× | 3,050× |
+| Merz–Wüthrich 1-Yr CDR (`RAA`) | **0.62 µs** | 9,420 µs | — | 15,145× | — |
+| Clark Loglogistic MLE (`GenIns`) | **30.3 µs** | 8,300 µs | 12,026 µs | 274× | 397× |
+| ODP GLM Reserve (`GenIns`) | **75.6 µs** | 5,300 µs | 219,562 µs | 70× | 2,903× |
+| ODP Bootstrap (`GenIns`, 1k sims) | **1.15 ms** | 216.5 ms | 76.8 ms | 188× | 67× |
+| ODP Bootstrap (`GenIns`, 10k sims) | **11.77 ms** | 2,223 ms | 416.2 ms | 189× | 35× |
+
+> *Context:* `reserving-kernels` operates directly on validated flat `f64` slices with reusable scratch buffers (`~1.18 µs` per ODP bootstrap iteration), whereas `chainladder-python` and R `ChainLadder` provide 4D DataFrame / S3–S4 metadata layers and interactive workflows. All point estimates and Mack/Merz–Wüthrich standard errors were verified for numerical parity before timing.
+
 ## Verification & Literature Traceability
 
 All kernels are continuously tested against published datasets and exact mathematical identities (178+ automated unit, integration, doctest, and benchmark assertions):

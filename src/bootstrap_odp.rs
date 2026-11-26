@@ -1040,35 +1040,32 @@ pub fn bootstrap_odp_cdr(
             *slot = pool[rng.next_index(pool.len())];
         }
 
-        // 1. Build pseudo-triangle & refit pseudo-LDFs into scratch.
+        // 1. Build pseudo-triangle & refit pseudo-LDFs into scratch (matching
+        //    run_odp_iteration_with_scratch so zero-fitted cells don't poison rows).
         scratch.pseudo_cum.fill(f64::NAN);
-        for (idx, cell) in fit.residuals.iter().enumerate() {
-            let mu = fit.fitted_incremental[cell.origin * n + cell.dev];
-            let s_mu = scratch.sqrt_mu[cell.origin * n + cell.dev];
-            let pseudo_inc = mu + sampled_residuals[idx] * s_mu;
-            let prev = if cell.dev == 0 {
-                0.0
-            } else {
-                scratch.pseudo_cum[cell.origin * n + (cell.dev - 1)]
-            };
-            scratch.pseudo_cum[cell.origin * n + cell.dev] = prev + pseudo_inc;
-        }
-        let mut valid_pseudo = true;
-        for k in 0..m {
-            let nk = n - 1 - k;
-            let mut num = 0.0;
-            let mut den = 0.0;
-            for i in 0..nk {
-                num += scratch.pseudo_cum[i * n + (k + 1)];
-                den += scratch.pseudo_cum[i * n + k];
+        let mut r_idx = 0usize;
+        for origin in 0..n {
+            let mut running = 0.0;
+            let row_off = origin * n;
+            for dev in 0..(n - origin) {
+                let mu = fit.fitted_incremental[row_off + dev];
+                let pseudo_inc = if mu > 0.0 {
+                    let r = sampled_residuals[r_idx];
+                    r_idx += 1;
+                    mu + r * scratch.sqrt_mu[row_off + dev]
+                } else {
+                    0.0
+                };
+                running += pseudo_inc;
+                scratch.pseudo_cum[row_off + dev] = running;
             }
-            if !den.is_finite() || den <= 0.0 || !num.is_finite() || num <= 0.0 {
-                valid_pseudo = false;
-                break;
-            }
-            scratch.pseudo_ldfs[k] = num / den;
         }
-        if !valid_pseudo {
+        volume_weighted_ldfs(&scratch.pseudo_cum, n, n, &mut scratch.pseudo_ldfs);
+        if scratch
+            .pseudo_ldfs
+            .iter()
+            .any(|f| !f.is_finite() || *f <= 0.0)
+        {
             failed_iterations += 1;
             continue;
         }

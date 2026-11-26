@@ -19,8 +19,8 @@ use crate::ldf::{DevelopmentFactors, cdf_from_ldf, pct_reported};
 use crate::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
-    ValidationError, validate_development_factor_slices, validate_latest_and_dev,
-    validate_monotone_cumulative, validate_premium, validate_triangle,
+    MonotonicityPolicy, ValidationError, validate_development_factor_slices,
+    validate_latest_and_dev, validate_monotone_cumulative, validate_premium, validate_triangle,
 };
 
 /// Cape Cod ELR (scalar). Returns `NaN` when the used-premium total is zero.
@@ -87,7 +87,18 @@ impl CapeCodEngine {
         factors: &DevelopmentFactors,
         premium: &[f64],
     ) -> Result<CapeCodProjection, ValidationError> {
-        validate_cape_cod_inputs(cumulative, factors, premium)?;
+        Self::project_with_policy(cumulative, factors, premium, MonotonicityPolicy::Strict)
+    }
+
+    /// Derive the Cape Cod ELR and project BF ultimates/reserves under an
+    /// explicit [`MonotonicityPolicy`].
+    pub fn project_with_policy(
+        cumulative: &TriangleView<'_>,
+        factors: &DevelopmentFactors,
+        premium: &[f64],
+        policy: MonotonicityPolicy,
+    ) -> Result<CapeCodProjection, ValidationError> {
+        validate_cape_cod_inputs(cumulative, factors, premium, policy)?;
 
         let n = cumulative.n_origins;
         let mut latest = vec![0.0; n];
@@ -127,10 +138,11 @@ impl CapeCodEngine {
         }
 
         let expected_ultimate: Vec<f64> = premium.iter().map(|&p| p * elr).collect();
-        let bf_projection = BornhuetterFergusonEngine::project_from_expected_ultimate(
+        let bf_projection = BornhuetterFergusonEngine::project_from_expected_ultimate_with_policy(
             cumulative,
             factors,
             &expected_ultimate,
+            policy,
         )?;
 
         Ok(CapeCodProjection {
@@ -151,9 +163,12 @@ fn validate_cape_cod_inputs(
     cumulative: &TriangleView<'_>,
     factors: &DevelopmentFactors,
     premium: &[f64],
+    policy: MonotonicityPolicy,
 ) -> Result<(), ValidationError> {
     validate_triangle(cumulative)?;
-    validate_monotone_cumulative(cumulative)?;
+    if policy == MonotonicityPolicy::Strict {
+        validate_monotone_cumulative(cumulative)?;
+    }
     validate_premium(premium, cumulative.n_origins)?;
     validate_development_factor_slices(
         &factors.ldfs,
