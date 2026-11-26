@@ -211,11 +211,11 @@ fn fit_arithmetic(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), Validatio
     let mut r = vec![0.0; n];
     let mut lam = vec![0.0; n];
 
-    let mut sum_r_tail = 0.0;
-    let mut sum_lam_tail = 0.0;
+    let mut sum_r_tail = 0.0_f64;
+    let mut sum_lam_tail = 0.0_f64;
 
     for k in (0..n).rev() {
-        let rem_r = 1.0 - sum_r_tail;
+        let rem_r = 1.0_f64 - sum_r_tail;
         if rem_r.abs() <= 1e-14 {
             return Err(ValidationError::DivideByZero(
                 "arithmetic separation remaining delay proportion",

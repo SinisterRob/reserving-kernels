@@ -71,7 +71,12 @@ assert!((panjer.mean - fft.mean).abs() < 1e-8);
 | `incremental_additive` | Schmidt (2006), Friedland | Exposure-weighted incremental loss ratios with optional origin trend projection |
 | `berquist_sherman` | Berquist & Sherman (1977), Friedland Ch. 13 | Exponential case-reserve adequacy restatement and paid disposal-rate interpolation |
 | `brosius` | Brosius (1993) | Two-pass centered OLS credibility development (`y = a + b·x`) |
+| `murphy` | Murphy (1994) | Generalized weighted-regression CL (`Var ∝ C^δ`, `δ ∈ {0, 1, 2}`) with optional intercept & exact analytical MSE |
+| `separation` | Taylor (1977) | Non-parametric Arithmetic & Geometric Separation of delay proportions and calendar inflation |
+| `credibility_cl` | Gisler & Wüthrich (2008) | Bühlmann–Straub credibility shrinkage of LDFs toward external/collective priors with exact analytical MSEP |
 | `munich_chain_ladder` | Quarg & Mack (2004 / 2008) | Bivariate paid/incurred chain ladder closing the paid-vs-incurred ultimate gap |
+| `schnieper` | Schnieper (1991), Liu & Verrall (2009) | Two-triangle True IBNR vs. IBNER separation with exact additive decomposition and Mack-style MSEP |
+| `double_chain_ladder` | Martínez-Miranda, Nielsen & Verrall (2012) | Paid + reported-count deconvolution into reporting delay, payment delay, severity inflation, and RBNS/IBNR reserves |
 | `datasets` | Published benchmark triangles | Zero-I/O static constructors for `RAA`, `GenIns`, `Quarg & Mack (2004)`, and `Friedland US Industry Auto` |
 | `ragged`, `triangle_algebra` | Low-level flat kernels | Rectangular/ragged observed-count link selectors and allocation-free slice transforms |
 
@@ -80,10 +85,14 @@ assert!((panjer.mean - fft.mean).abs() < 1e-8);
 | Module | Literature / Method | Capabilities |
 | --- | --- | --- |
 | `mack` | Mack (1993, 1999), Murphy (1994) | Distribution-free origin & aggregate CL SEs, generalized `alpha` weights (`0, 1, 2`), cell weight masks, and stochastic tail (`MackTailSpec`) |
+| `multivariate_mack` | Braun (2004), Merz & Wüthrich (2008) | Distribution-free analytical MSEP across `N` correlated run-off triangles with cross-line covariance & diversification |
 | `mack_bf` | Mack (2008) | Analytical BF MSEP decomposing process, prior `s(E_i)`, pattern `s(z_k)`, interaction, and correlated-prior covariance |
 | `merz_wuthrich` | Merz & Wüthrich (2008) | 1-year Solvency II CDR analytical MSEP with cross-origin covariance and exact multi-year run-off decomposition |
 | `multivariate_cl` | Braun (2004), Pröhl & Schmidt (2005), Zhang (2010) | Joint $K$-line Diagonal MCL and General GMCL development with full $K \times K$ cross-line MSEP covariance |
 | `paid_incurred_chain` | Merz & Wüthrich (2010) | Bayesian log-normal joint paid/incurred model with closed-form conjugate posterior mean and analytical MSEP |
+| `hertig` | Hertig (1985) | Exact closed-form log-normal link-ratio model yielding analytical mean, variance, skewness, and quantiles |
+| `kalman_reserving` | De Jong & Zehnwirth (1983), Verrall (1989) | Recursive Joseph-form Kalman filter over calendar diagonals tracking dynamic inflation shifts |
+| `micro_reserving` | Antonio & Plat (2014) | Individual-claim reserving: truncation-corrected NHPP, reporting delay, and multi-state RBNS + IBNR simulation |
 | `clark_mle` | Clark (2003) | Loglogistic & Weibull growth-curve ODP MLE (LDF & Cape Cod) with inverse Fisher information Cramér–Rao SEs |
 | `ptf_regression` | Barnett & Zehnwirth (2000) | Probabilistic Trend Family log-linear regression isolating accident, development, and calendar inflation shocks via QR |
 | `glm_reserving` | Taylor & McGuire (2016, CAS Mono. 3) | Householder QR IRLS engine for ODP, Gamma, Tweedie (`p` in `[1, 2]`), Log-normal, and profile EQL Tweedie power selection |
@@ -104,6 +113,7 @@ assert!((panjer.mean - fft.mean).abs() < 1e-8);
 | --- | --- | --- |
 | `severity` | KPW App. A, Miccolis (1977), Lee (1988), Keatinge (1999) | Closed-form LEV `E[X ∧ L]`, survival/PDF, layer losses, excess ratios, and ILFs for Lognormal, Pareto II, Single-Param Pareto, Exponential, Mixed Exponential, and GPD |
 | `excess_layers` | Parametric & Monte Carlo layering | Lognormal LEV, attachment/exhaustion exceedance probabilities, ILFs, and synchronized SplitMix64 + Box–Muller simulation |
+| `excess_development` | Pinto & Gogol (1987), Siewert (1996) | Excess-of-`L`, limited-to-`L`, and bounded-layer CDFs/LDFs from ground-up CDFs & age-dependent excess ratios with exact conservation |
 | `diagnostics` | Mack (1994 App. G & H), A-vs-E, LOO | Adjacent-factor Spearman test, calendar-year binomial test, leave-one-out fragility, Cape Cod leverage, paid/incurred reconciliation |
 | `selection`, `reserve_rollforward`, `exhibit` | Backtesting & reporting | Holdout LDF backtesting, valuation roll-forward decomposition, and serializable JSON exhibit DTOs |
 | `large_loss`, `trend`, `onlevel`, `count_development`, `apriori`, `aggregate` | Preprocessing utilities | Large-loss capping/excess splits, exponential trending, parallelogram on-leveling, count development, a priori builders |

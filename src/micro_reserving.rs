@@ -24,8 +24,8 @@
 //!    open RBNS claims to settlement and thinned-NHPP IBNR claims from
 //!    occurrence through reporting to settlement.
 
-use crate::bootstrap_odp::Rng;
-use crate::reserve_distribution::empirical_quantile;
+use crate::bootstrap_odp::DeterministicRng;
+use crate::reserve_distribution::quantile;
 use crate::validate::ValidationError;
 
 /// A single payment transaction on an individual claim.
@@ -351,7 +351,7 @@ fn fit_lognormal(log_amounts: &[f64]) -> (f64, f64) {
     (mu, var.max(0.0).sqrt())
 }
 
-fn simulate_single_open_claim(model: &MicroReservingModel, rng: &mut Rng) -> f64 {
+fn simulate_single_open_claim(model: &MicroReservingModel, rng: &mut DeterministicRng) -> f64 {
     let total_rate = model.interim_payment_hazard + model.settlement_hazard;
     let p_interim = model.interim_payment_hazard / total_rate;
     let mut paid = 0.0;
@@ -402,7 +402,7 @@ pub fn simulate_reserves(
         .count();
 
     let expected_ibnr = model.expected_ibnr_count(valuation_time);
-    let mut rng = Rng::from_seed(seed);
+    let mut rng = DeterministicRng::from_seed(seed);
 
     let mut rbns_draws = Vec::with_capacity(n_simulations);
     let mut ibnr_draws = Vec::with_capacity(n_simulations);
@@ -432,11 +432,11 @@ pub fn simulate_reserves(
     let (mean_total, sd_total) = mean_sd(&total_draws);
 
     let total_quantiles = [
-        empirical_quantile(&total_draws, 0.50),
-        empirical_quantile(&total_draws, 0.75),
-        empirical_quantile(&total_draws, 0.90),
-        empirical_quantile(&total_draws, 0.95),
-        empirical_quantile(&total_draws, 0.99),
+        quantile(&total_draws, 0.50)?,
+        quantile(&total_draws, 0.75)?,
+        quantile(&total_draws, 0.90)?,
+        quantile(&total_draws, 0.95)?,
+        quantile(&total_draws, 0.99)?,
     ];
 
     Ok(MicroReservingResult {
@@ -464,7 +464,7 @@ pub fn simulate_synthetic_portfolio(
     seed: u64,
 ) -> Result<(Vec<ClaimRecord>, f64, f64), ValidationError> {
     model.validate()?;
-    let mut rng = Rng::from_seed(seed);
+    let mut rng = DeterministicRng::from_seed(seed);
     let mut observed = Vec::new();
     let mut true_rbns = 0.0;
     let mut true_ibnr = 0.0;

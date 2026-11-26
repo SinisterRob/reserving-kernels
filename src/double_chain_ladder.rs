@@ -19,7 +19,8 @@
 //!   reserve decomposition, both within the run-off square ($j \le n - 1$) and
 //!   including the DCL-implied tail ($j \ge n$).
 
-use crate::chain_ladder;
+use crate::chain_ladder::ChainLadderEngine;
+use crate::ldf::DevelopmentFactorEngine;
 use crate::triangle::{cumulative_to_incremental, latest_diagonal};
 use crate::types::TriangleView;
 use crate::validate::{
@@ -145,11 +146,14 @@ pub fn analyze_with_inflation(
         validate_monotone_cumulative(counts_cumulative)?;
     }
 
-    let paid_cl = chain_ladder::project_with_policy(paid_cumulative, 1.0, policy)?;
-    let count_cl = chain_ladder::project_with_policy(counts_cumulative, 1.0, policy)?;
+    let paid_factors = DevelopmentFactorEngine::volume_weighted(paid_cumulative, 1.0)?;
+    let count_factors = DevelopmentFactorEngine::volume_weighted(counts_cumulative, 1.0)?;
+    let paid_cl = ChainLadderEngine::project_with_policy(paid_cumulative, &paid_factors, policy)?;
+    let count_cl =
+        ChainLadderEngine::project_with_policy(counts_cumulative, &count_factors, policy)?;
 
-    let reporting_delay = delay_proportions_from_cdfs(&count_cl.cdf);
-    let paid_delay = delay_proportions_from_cdfs(&paid_cl.cdf);
+    let reporting_delay = delay_proportions_from_cdfs(&count_factors.cdfs);
+    let paid_delay = delay_proportions_from_cdfs(&paid_factors.cdfs);
 
     if !reporting_delay[0].is_finite() || reporting_delay[0] <= 0.0 {
         return Err(ValidationError::DivideByZero(
@@ -183,11 +187,11 @@ pub fn analyze_with_inflation(
     } else {
         let mut gamma = Vec::with_capacity(n);
         for i in 0..n {
-            let alpha_i = count_cl.ultimate[i];
+            let alpha_i = count_cl.ultimates[i];
             if alpha_i <= 0.0 {
                 return Err(ValidationError::DivideByZero("ultimate reported count"));
             }
-            gamma.push(paid_cl.ultimate[i] / alpha_i);
+            gamma.push(paid_cl.ultimates[i] / alpha_i);
         }
         gamma
     };
@@ -210,7 +214,7 @@ pub fn analyze_with_inflation(
     for i in 0..n {
         let last_obs = n - 1 - i;
         let gamma_i = severity_inflation[i];
-        let alpha_i = count_cl.ultimate[i];
+        let alpha_i = count_cl.ultimates[i];
 
         // Future payment development periods j = last_obs + 1 .. 2*n - 1
         // In-triangle: j <= n - 1; Tail: j >= n.
@@ -257,12 +261,12 @@ pub fn analyze_with_inflation(
     let total_in_triangle_reserve = total_rbns + total_ibnr;
     let total_tail_reserve: f64 = (0..n).map(|i| rbns_tail[i] + ibnr_tail[i]).sum();
     let total_reserve_with_tail = total_in_triangle_reserve + total_tail_reserve;
-    let paid_cl_total_reserve: f64 = paid_cl.reserve.iter().sum();
+    let paid_cl_total_reserve: f64 = paid_cl.reserves.iter().sum();
 
     Ok(DoubleChainLadderResult {
-        count_ultimate: count_cl.ultimate,
+        count_ultimate: count_cl.ultimates,
         reporting_delay,
-        paid_cl_ultimate: paid_cl.ultimate,
+        paid_cl_ultimate: paid_cl.ultimates,
         paid_delay,
         payment_delay,
         severity_inflation,

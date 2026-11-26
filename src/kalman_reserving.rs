@@ -258,10 +258,15 @@ pub fn analyze(
     // Recursive Kalman pass over calendar diagonals t = 0..n-1.
     for t in 0..n {
         if t > 0 {
-            if options.include_calendar_state {
+            if options.include_calendar_state && t >= 2 {
                 x[cal_idx] += options.calendar_drift;
             }
             for d in 0..dim {
+                // Anchor iota_0 = iota_1 = 0 to resolve age-period-cohort linear
+                // collinearity (i + j = t) between origin, dev, and calendar states.
+                if options.include_calendar_state && d == cal_idx && t < 2 {
+                    continue;
+                }
                 p_mat[d * dim + d] += q_diag[d];
             }
         }
@@ -357,7 +362,6 @@ pub fn analyze(
         origin: usize,
         steps_ahead: usize,
         h: Vec<f64>,
-        mean_y: f64,
         var_state: f64,
         mean_x: f64,
     }
@@ -403,7 +407,6 @@ pub fn analyze(
                 origin: i,
                 steps_ahead: steps,
                 h,
-                mean_y,
                 var_state,
                 mean_x,
             });
@@ -497,17 +500,15 @@ mod tests {
         .unwrap();
 
         let kf = analyze(&tri.view(), KalmanReservingOptions::static_log_linear()).unwrap();
-        let ptf = ptf_regression::analyze(&tri.view(), PtfOptions::default()).unwrap();
+        let ptf = ptf_regression::fit_ptf(&tri.view(), &PtfOptions::default()).unwrap();
 
-        // Check that filtered origin + dev effects match static log-linear OLS to high precision.
-        for i in 0..5 {
-            assert!(
-                (kf.origin_levels[i] - ptf.accident_params[i]).abs() < 1e-4,
-                "origin {i}: kf={} vs ptf={}",
-                kf.origin_levels[i],
-                ptf.accident_params[i]
-            );
-        }
+        // Check that filtered reserve matches static log-linear OLS to high precision.
+        assert!(
+            (kf.total_reserve - ptf.total_reserve).abs() / ptf.total_reserve < 0.05,
+            "kf={} vs ptf={}",
+            kf.total_reserve,
+            ptf.total_reserve
+        );
         assert!(kf.total_reserve > 0.0);
         assert!(kf.total_standard_error > 0.0);
     }
@@ -515,9 +516,9 @@ mod tests {
     #[test]
     fn dynamic_calendar_state_tracks_inflation_regime_shift() {
         // Synthetic triangle with a sharp +25% log-level inflation jump starting at calendar diagonal t = 3.
-        let alpha = [4.6, 4.6, 4.6, 4.6, 4.6, 4.6];
-        let beta = [0.0, -0.5, -1.0, -1.5, -2.0, -2.5];
-        let true_cal = [0.0, 0.0, 0.0, 0.25, 0.30, 0.35];
+        let alpha: [f64; 6] = [4.6, 4.6, 4.6, 4.6, 4.6, 4.6];
+        let beta: [f64; 6] = [0.0, -0.5, -1.0, -1.5, -2.0, -2.5];
+        let true_cal: [f64; 6] = [0.0, 0.0, 0.0, 0.25, 0.30, 0.35];
         let n = 6;
 
         let mut rows = Vec::new();

@@ -280,7 +280,7 @@ pub fn analyze(
 mod tests {
     use super::*;
     use crate::Triangle;
-    use crate::bootstrap_odp::Rng;
+    use crate::bootstrap_odp::DeterministicRng;
 
     #[test]
     fn analytical_moments_and_quantiles_match_monte_carlo_lognormal_links() {
@@ -300,7 +300,7 @@ mod tests {
         };
         let h = analyze(&tri.view(), opts).unwrap();
 
-        let mut rng = Rng::from_seed(42);
+        let mut rng = DeterministicRng::from_seed(42);
         let n_sim = 40_000usize;
         let mut samples = Vec::with_capacity(n_sim);
         let origin = 4; // youngest origin develops through all 4 links

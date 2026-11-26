@@ -389,14 +389,14 @@ mod tests {
                 sigma: 1.3,
             },
         ];
-        let ult = dists[3];
+        let ult = &dists[3];
 
-        let xs = from_severity_schedule(100_000.0, &gu_cdfs, &dists, &ult).unwrap();
+        let xs = from_severity_schedule(100_000.0, &gu_cdfs, &dists, ult).unwrap();
         assert!(xs.excess_cdf[0] > gu_cdfs[0]);
         assert!((xs.excess_cdf[3] - 1.0).abs() < 1e-12);
 
         let layer =
-            layer_from_severity_schedule(100_000.0, 400_000.0, &gu_cdfs, &dists, &ult).unwrap();
+            layer_from_severity_schedule(100_000.0, 400_000.0, &gu_cdfs, &dists, ult).unwrap();
         assert!(layer.layer_cdf[0] > gu_cdfs[0]);
         assert!((layer.layer_cdf[3] - 1.0).abs() < 1e-12);
     }

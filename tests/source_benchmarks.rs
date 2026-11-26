@@ -1232,3 +1232,227 @@ fn extended_reserving_kernels_and_datasets_benchmarks() {
     assert_eq!(tw.candidates.len(), 5);
     assert!((1.0..=2.0).contains(&tw.best_power));
 }
+
+#[test]
+fn pure_reserving_extension_kernels_benchmarks() {
+    use reserving_kernels::{
+        brosius, credibility_cl, double_chain_ladder, excess_development, hertig, kalman_reserving,
+        mack, micro_reserving, multivariate_mack, murphy, schnieper, separation,
+        severity::SeverityDistribution,
+    };
+
+    let genins = genins_triangle();
+    let raa = raa_triangle();
+    let auto = reserving_kernels::datasets::friedland_us_industry_auto();
+
+    // 1. Murphy (1994): exact equivalence to Mack (1993) at delta=1, alpha=0 on GenIns & RAA,
+    //    and exact equivalence to Brosius (1993) at delta=0 with intercept.
+    let m_gen = mack::analyze(&genins.view(), 1.0).unwrap();
+    let mu_gen = murphy::analyze(&genins.view(), murphy::MurphyOptions::mack_equivalent()).unwrap();
+    assert!(close_rel(mu_gen.total_reserve, m_gen.total_reserve, 1e-12));
+    assert!(close_rel(
+        mu_gen.total_standard_error,
+        m_gen.total_standard_error,
+        1e-12
+    ));
+
+    let br_gen = brosius::project(&genins.view(), 1.0).unwrap();
+    let mu_br =
+        murphy::analyze(&genins.view(), murphy::MurphyOptions::brosius_equivalent()).unwrap();
+    for i in 0..10 {
+        assert!(close_rel(mu_br.ultimate[i], br_gen.ultimate[i], 1e-10));
+    }
+
+    // 2. Taylor (1977) Arithmetic & Geometric Separation on exact stepped-inflation triangle.
+    let true_r = [0.35, 0.25, 0.20, 0.12, 0.08];
+    let true_lam = [1.0, 1.05, 1.12, 1.25, 1.40];
+    let exp = [100.0, 110.0, 120.0, 125.0, 130.0];
+    let mut sep_rows = Vec::new();
+    for i in 0..5 {
+        let mut r = Vec::new();
+        for j in 0..(5 - i) {
+            r.push(exp[i] * true_r[j] * true_lam[i + j]);
+        }
+        sep_rows.push(r);
+    }
+    let sep_slices: Vec<&[f64]> = sep_rows.iter().map(|r| r.as_slice()).collect();
+    let sep_tri = Triangle::try_from_incremental_rows(&sep_slices).unwrap();
+    for method in [
+        separation::SeparationMethod::Arithmetic,
+        separation::SeparationMethod::Geometric,
+    ] {
+        let sres = separation::analyze(
+            &sep_tri.view(),
+            &exp,
+            method,
+            &separation::InflationProjection::ConstantRate(0.08),
+        )
+        .unwrap();
+        for j in 0..5 {
+            assert!((sres.delay_proportions[j] - true_r[j]).abs() < 1e-10);
+            assert!((sres.calendar_indices[j] - true_lam[j]).abs() < 1e-9);
+        }
+    }
+
+    // 3. Gisler & Wuthrich (2008) Credibility CL on GenIns: limits recover Mack & pure prior.
+    let cred_mack = credibility_cl::analyze(
+        &genins.view(),
+        &credibility_cl::CredibilityClPrior {
+            prior_ldf: vec![1.5; 9],
+            tau_sq: vec![f64::INFINITY; 9],
+            sigma_sq_override: None,
+            tail: 1.0,
+            policy: MonotonicityPolicy::Strict,
+        },
+    )
+    .unwrap();
+    assert!(close_rel(cred_mack.total_reserve, m_gen.total_reserve, 1e-12));
+    assert!(close_rel(
+        cred_mack.total_standard_error,
+        m_gen.total_standard_error,
+        1e-12
+    ));
+
+    let cred_shrink = credibility_cl::analyze(
+        &genins.view(),
+        &credibility_cl::CredibilityClPrior {
+            prior_ldf: m_gen.ldf.clone(),
+            tau_sq: vec![0.05; 9],
+            sigma_sq_override: None,
+            tail: 1.0,
+            policy: MonotonicityPolicy::Strict,
+        },
+    )
+    .unwrap();
+    assert!(cred_shrink.total_standard_error < m_gen.total_standard_error);
+
+    // 4. Braun (2004) / Merz & Wuthrich (2008) Multivariate Mack across GenIns & Friedland Auto Paid.
+    let mv_solo = multivariate_mack::analyze(&[genins.view()], 1.0).unwrap();
+    assert!(close_rel(mv_solo.total_mse, m_gen.total_mse, 1e-12));
+
+    let mv_pair =
+        multivariate_mack::analyze(&[genins.view(), auto.paid.view()], 1.0).unwrap();
+    assert_eq!(mv_pair.n_triangles, 2);
+    assert!(mv_pair.total_standard_error <= mv_pair.undiversified_se + 1e-8);
+    assert!(mv_pair.reserve_correlation_matrix[1].abs() <= 1.0 + 1e-12);
+
+    // 5. Schnieper (1991) / Liu & Verrall (2009) True IBNR / IBNER separation:
+    //    exact reduction to Mack when N_{i,j} = 0 for j >= 1.
+    let mut n_data = vec![f64::NAN; 100];
+    let mut d_data = vec![f64::NAN; 100];
+    for i in 0..10 {
+        n_data[i * 10] = genins.get(i, 0);
+        d_data[i * 10] = 0.0;
+        for j in 1..(10 - i) {
+            n_data[i * 10 + j] = 0.0;
+            d_data[i * 10 + j] = genins.get(i, j) - genins.get(i, j - 1);
+        }
+    }
+    let sc = schnieper::analyze(
+        &Triangle::new(10, 10, n_data).view(),
+        &Triangle::new(10, 10, d_data).view(),
+        &[1000.0; 10],
+    )
+    .unwrap();
+    assert!(sc.total_ibnr.abs() < 1e-10);
+    assert!(close_rel(sc.total_reserve, m_gen.total_reserve, 1e-10));
+    assert!(close_rel(
+        sc.total_standard_error,
+        m_gen.total_standard_error,
+        1e-9
+    ));
+
+    // 6. Double Chain Ladder (Martinez-Miranda, Nielsen & Verrall 2012) exact CL reproduction.
+    let alpha = [200.0, 220.0, 240.0, 260.0];
+    let rep = [0.65, 0.20, 0.10, 0.05];
+    let pay = [0.55, 0.25, 0.15, 0.05];
+    let sev = [500.0, 520.0, 540.0, 560.0];
+    let mut c_rows = Vec::new();
+    let mut p_rows = Vec::new();
+    for i in 0..4 {
+        let mut cr = Vec::new();
+        let mut pr = Vec::new();
+        for j in 0..(4 - i) {
+            cr.push(alpha[i] * rep[j]);
+            let mut paid = 0.0;
+            for k in 0..=j {
+                paid += alpha[i] * rep[k] * pay[j - k];
+            }
+            pr.push(sev[i] * paid);
+        }
+        c_rows.push(cr);
+        p_rows.push(pr);
+    }
+    let c_sl: Vec<&[f64]> = c_rows.iter().map(|r| r.as_slice()).collect();
+    let p_sl: Vec<&[f64]> = p_rows.iter().map(|r| r.as_slice()).collect();
+    let dcl = double_chain_ladder::analyze(
+        &Triangle::try_from_incremental_rows(&p_sl).unwrap().view(),
+        &Triangle::try_from_incremental_rows(&c_sl).unwrap().view(),
+    )
+    .unwrap();
+    assert!(close_rel(
+        dcl.total_in_triangle_reserve,
+        dcl.paid_cl_total_reserve,
+        1e-9
+    ));
+    assert!(dcl.total_rbns > 0.0 && dcl.total_ibnr > 0.0);
+
+    // 7. Kalman Reserving (De Jong & Zehnwirth 1983 / Verrall 1989) on GenIns.
+    let kf = kalman_reserving::analyze(
+        &genins.view(),
+        kalman_reserving::KalmanReservingOptions::static_log_linear(),
+    )
+    .unwrap();
+    assert!(kf.total_reserve > 1e7 && kf.total_standard_error > 0.0);
+
+    // 8. Hertig (1985) closed-form log-normal link-ratio model on RAA & GenIns.
+    let h_raa = hertig::analyze(&raa.view(), hertig::HertigOptions::default()).unwrap();
+    assert!(h_raa.total_reserve > 0.0 && h_raa.total_standard_error > 0.0);
+    let q50 = h_raa.aggregate_reserve_quantile(0.50).unwrap();
+    let q95 = h_raa.aggregate_reserve_quantile(0.95).unwrap();
+    assert!(q95 > q50);
+
+    // 9. Pinto & Gogol (1987) / Siewert (1996) Excess Loss Development conservation identity.
+    let gu_cdfs = genins.ldfs(1.0).unwrap().cdfs;
+    let dists: Vec<SeverityDistribution> = (0..10)
+        .map(|j| SeverityDistribution::Lognormal {
+            mu: 9.5 + 0.08 * j as f64,
+            sigma: 1.15 + 0.02 * j as f64,
+        })
+        .collect();
+    let xs_dev = excess_development::from_severity_schedule(
+        100_000.0,
+        &gu_cdfs,
+        &dists,
+        dists.last().unwrap(),
+    )
+    .unwrap();
+    let lat_gu = genins.latest_diagonal();
+    let lat_lim: Vec<f64> = (0..10)
+        .map(|i| lat_gu[i] * (1.0 - xs_dev.excess_ratio[9 - i]))
+        .collect();
+    let lat_xs: Vec<f64> = (0..10)
+        .map(|i| lat_gu[i] * xs_dev.excess_ratio[9 - i])
+        .collect();
+    let xs_proj = excess_development::project_split_losses(&lat_lim, &lat_xs, &xs_dev).unwrap();
+    assert!(xs_proj.max_conservation_error < 1e-6);
+
+    // 10. Antonio & Plat (2014) Micro-Level Reserving synthetic event-log recovery.
+    let micro_model = micro_reserving::MicroReservingModel {
+        occurrence_intensities: vec![180.0; 4],
+        reporting_delay_rate: 2.5,
+        interim_payment_hazard: 0.7,
+        settlement_hazard: 1.3,
+        interim_severity_mu: 6.8,
+        interim_severity_sigma: 0.35,
+        settlement_payment_prob: 0.85,
+        settlement_severity_mu: 7.8,
+        settlement_severity_sigma: 0.45,
+    };
+    let (claims, true_rbns, true_ibnr) =
+        micro_reserving::simulate_synthetic_portfolio(&micro_model, 4.0, 2026).unwrap();
+    let fitted = micro_reserving::fit_from_claims(&claims, 4.0, 4).unwrap();
+    let sim = micro_reserving::simulate_reserves(&claims, &fitted, 4.0, 1_500, 77).unwrap();
+    let true_total = true_rbns + true_ibnr;
+    assert!((sim.mean_total - true_total).abs() / true_total < 0.20);
+}
