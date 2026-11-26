@@ -49,21 +49,25 @@ pub mod bootstrap_odp;
 pub mod brosius;
 pub mod cape_cod;
 pub mod capital_allocation;
+pub mod case_outstanding;
 pub mod chain_ladder;
 pub mod clark_mle;
 pub mod count_development;
+pub mod datasets;
 pub mod dependence;
 pub mod diagnostics;
 pub mod excess_layers;
 pub mod exhibit;
 pub mod generalized_cape_cod;
 pub mod glm_reserving;
+pub mod incremental_additive;
 pub mod large_loss;
 pub mod ldf;
 pub(crate) mod linalg;
 pub mod mack;
 pub mod mack_bf;
 pub mod merz_wuthrich;
+pub mod multivariate_cl;
 pub mod munich_chain_ladder;
 pub mod onlevel;
 pub mod paid_incurred_chain;
@@ -93,8 +97,8 @@ pub mod prelude {
     pub use crate::benktander::{BenktanderEngine, BenktanderProjection};
     pub use crate::bf::{BornhuetterFergusonEngine, BornhuetterFergusonProjection};
     pub use crate::bootstrap_odp::{
-        OdpBootstrapOptions, OdpBootstrapResult, OdpFit, ProcessDistribution, ResidualAdjustment,
-        bootstrap_odp, fit_odp,
+        OdpBootstrapOptions, OdpBootstrapResult, OdpCdrBootstrapResult, OdpFit,
+        ProcessDistribution, ResidualAdjustment, bootstrap_odp, bootstrap_odp_cdr, fit_odp,
     };
     pub use crate::cape_cod::{CapeCodEngine, CapeCodProjection};
     pub use crate::capital_allocation::{
@@ -102,15 +106,30 @@ pub mod prelude {
         euler_sd_allocation, euler_tvar_allocation, myers_read_allocation,
         myers_read_from_default_ratio,
     };
+    pub use crate::case_outstanding::{
+        CaseOutstandingOptions, CaseOutstandingProjection, CaseRatioAverage,
+        project_case_outstanding, project_from_paid_incurred,
+    };
     pub use crate::chain_ladder::{ChainLadderEngine, ChainLadderProjection};
     pub use crate::clark_mle::{ClarkMleResult, ClarkOptions, GrowthCurve};
+    pub use crate::datasets::{FriedlandAutoDataset, PaidIncurredDataset};
     pub use crate::dependence::{CorrelationType, ImanConoverResult, iman_conover};
     pub use crate::diagnostics::triangle_diagnostics::TriangleDiagnostics;
-    pub use crate::glm_reserving::{GlmDesign, GlmFamily, GlmOptions, GlmReservingResult, fit_glm};
+    pub use crate::glm_reserving::{
+        GlmDesign, GlmFamily, GlmOptions, GlmReservingResult, TweediePowerSelection, fit_glm,
+        select_tweedie_power,
+    };
+    pub use crate::incremental_additive::{
+        IncrementalAdditiveOptions, IncrementalAdditiveProjection, IncrementalRatioAverage,
+        project_incremental_additive,
+    };
     pub use crate::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
-    pub use crate::mack::{Mack, MackTailSpec};
+    pub use crate::mack::{Mack, MackOptions, MackTailSpec};
     pub use crate::mack_bf::{BfPayoutEstimator, MackBfOptions, MackBfResult};
     pub use crate::merz_wuthrich::MerzWuthrichResult;
+    pub use crate::multivariate_cl::{
+        MultivariateClOptions, MultivariateClResult, MultivariateModel, analyze_multivariate_cl,
+    };
     pub use crate::paid_incurred_chain::{PaidIncurredChainResult, PicOptions};
     pub use crate::ptf_regression::{
         AccidentSpec, CalendarSpec, DevelopmentSpec, LogNormalMeanMode, PtfOptions, PtfResult,

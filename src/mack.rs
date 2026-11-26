@@ -563,6 +563,268 @@ pub fn analyze_with_tail_uncertainty_and_policy(
     Ok(analyze_with_tail_spec_unchecked(t, tail_spec))
 }
 
+/// Configuration for generalized Mack chain-ladder analysis with custom
+/// weighting exponent `alpha` (Murphy 1994; `mages/ChainLadder`) and optional
+/// per-cell outlier/exclusion weights.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MackOptions {
+    /// Tail factor and optional Mack (1999) tail variance specification.
+    pub tail_spec: MackTailSpec,
+    /// Variance weighting exponent $\alpha$:
+    /// - `1.0` (default): classical volume-weighted chain ladder (Mack 1993)
+    /// - `0.0`: OLS regression through the origin
+    /// - `2.0`: unweighted simple average of individual link ratios
+    pub alpha: f64,
+    /// Monotonicity validation policy for the cumulative input triangle.
+    pub policy: MonotonicityPolicy,
+    /// Optional row-major cell weight mask of length `n_origins * n_devs`
+    /// (`0.0` excludes a link from LDF and $\hat{\sigma}_k^2$ estimation;
+    /// positive values scale the cell's weight).
+    pub weights: Option<Vec<f64>>,
+}
+
+impl Default for MackOptions {
+    fn default() -> Self {
+        Self {
+            tail_spec: MackTailSpec::fixed(1.0),
+            alpha: 1.0,
+            policy: MonotonicityPolicy::Strict,
+            weights: None,
+        }
+    }
+}
+
+impl MackOptions {
+    /// Set the variance weighting exponent $\alpha$ (`0.0`, `1.0`, or `2.0`).
+    pub fn with_alpha(mut self, alpha: f64) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
+    /// Set the tail specification.
+    pub fn with_tail_spec(mut self, tail_spec: MackTailSpec) -> Self {
+        self.tail_spec = tail_spec;
+        self
+    }
+
+    /// Set the monotonicity validation policy.
+    pub fn with_policy(mut self, policy: MonotonicityPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Set a row-major cell weight / outlier-exclusion mask.
+    pub fn with_weights(mut self, weights: Vec<f64>) -> Self {
+        self.weights = Some(weights);
+        self
+    }
+}
+
+/// Run generalized Mack (1993 / 1999) / Murphy (1994) analysis with explicit
+/// `alpha` weighting and optional cell weight/exclusion mask.
+pub fn analyze_with_options(
+    t: &TriangleView<'_>,
+    options: &MackOptions,
+) -> Result<Mack, ValidationError> {
+    if !options.alpha.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
+    if options.weights.is_none() && (options.alpha - 1.0).abs() <= 1e-12 {
+        return analyze_with_tail_uncertainty_and_policy(t, options.tail_spec, options.policy);
+    }
+
+    validate_triangle(t)?;
+    if options.policy == MonotonicityPolicy::Strict {
+        validate_monotone_cumulative(t)?;
+    }
+    validate_tail_spec(options.tail_spec)?;
+
+    let n = t.n_origins.min(t.n_devs);
+    if n < 2 {
+        return Err(ValidationError::ShapeMismatch);
+    }
+    if let Some(ref w) = options.weights {
+        if w.len() != t.n_origins * t.n_devs {
+            return Err(ValidationError::ShapeMismatch);
+        }
+        if w.iter().any(|&v| !v.is_finite() || v < 0.0) {
+            return Err(ValidationError::Negative);
+        }
+    }
+
+    let alpha = options.alpha;
+    let cell_w = |i: usize, k: usize| -> f64 {
+        options
+            .weights
+            .as_ref()
+            .map_or(1.0, |w| w[i * t.n_devs + k])
+    };
+
+    let n_steps = n - 1;
+    let mut ldf = vec![1.0; n_steps];
+    let mut s_col = vec![0.0; n_steps];
+    let mut sigma_sq = vec![0.0; n_steps];
+
+    for k in 0..n_steps {
+        let nk = n - 1 - k;
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for i in 0..nk {
+            let w = cell_w(i, k);
+            if w <= 0.0 {
+                continue;
+            }
+            let c0 = t.get(i, k);
+            let c1 = t.get(i, k + 1);
+            if !c0.is_finite() || !c1.is_finite() || c0 <= 0.0 {
+                continue;
+            }
+            let c_pow = c0.powf(alpha);
+            num += w * c_pow * (c1 / c0);
+            den += w * c_pow;
+        }
+        if den <= 0.0 {
+            return Err(ValidationError::DivideByZero("mack weighted denominator"));
+        }
+        let fk = num / den;
+        ldf[k] = fk;
+        s_col[k] = den;
+
+        let mut active = 0usize;
+        let mut sse = 0.0;
+        for i in 0..nk {
+            let w = cell_w(i, k);
+            if w <= 0.0 {
+                continue;
+            }
+            let c0 = t.get(i, k);
+            let c1 = t.get(i, k + 1);
+            if !c0.is_finite() || !c1.is_finite() || c0 <= 0.0 {
+                continue;
+            }
+            active += 1;
+            let diff = (c1 / c0) - fk;
+            sse += w * c0.powf(alpha) * diff * diff;
+        }
+        if active >= 2 {
+            sigma_sq[k] = (sse / (active - 1) as f64).max(0.0);
+        }
+    }
+
+    // Mack (1993) extrapolation for the last column when fewer than 2 active links exist.
+    if n_steps >= 3 && sigma_sq[n_steps - 1] == 0.0 {
+        let s1 = sigma_sq[n_steps - 2];
+        let s2 = sigma_sq[n_steps - 3];
+        if s2 > 0.0 {
+            sigma_sq[n_steps - 1] = (s1 * s1 / s2).min(s1.min(s2)).max(0.0);
+        }
+    }
+
+    let tail = options.tail_spec.tail_factor;
+    let tail_se_sq = options.tail_spec.tail_se * options.tail_spec.tail_se;
+    let latest = latest_diagonal(t);
+
+    let mut proj = vec![0.0; n * n];
+    for i in 0..n {
+        let start = n - 1 - i;
+        proj[i * n + start] = latest[i];
+        for k in (start + 1)..n {
+            proj[i * n + k] = proj[i * n + k - 1] * ldf[k - 1];
+        }
+    }
+
+    let mut ultimate = vec![0.0; n];
+    let mut reserve = vec![0.0; n];
+    for i in 0..n {
+        ultimate[i] = proj[i * n + (n - 1)] * tail;
+        reserve[i] = ultimate[i] - latest[i];
+    }
+
+    let mut mse = vec![0.0; n];
+    for i in 0..n {
+        let c_last = proj[i * n + (n - 1)];
+        let mut pre_tail_mse = 0.0;
+        if i >= 1 {
+            let start = n - 1 - i;
+            let mut acc = 0.0;
+            for k in start..n_steps {
+                let fk = ldf[k];
+                let sk2 = sigma_sq[k];
+                let c_hat = proj[i * n + k];
+                let s = s_col[k];
+                if fk > 0.0 && c_hat > 0.0 && s > 0.0 {
+                    acc += (sk2 / (fk * fk)) * (1.0 / c_hat.powf(alpha) + 1.0 / s);
+                }
+            }
+            pre_tail_mse = c_last * c_last * acc;
+        }
+        let tail_process = if c_last > 0.0 {
+            c_last * options.tail_spec.tail_sigma_sq
+        } else {
+            0.0
+        };
+        let tail_param = c_last * c_last * tail_se_sq;
+        mse[i] = tail * tail * pre_tail_mse + tail_process + tail_param;
+    }
+
+    let standard_error: Vec<f64> = mse
+        .iter()
+        .map(|&m| if m.is_finite() { m.max(0.0).sqrt() } else { f64::NAN })
+        .collect();
+    let cv: Vec<f64> = standard_error
+        .iter()
+        .zip(reserve.iter())
+        .map(|(s, r)| if *r > 0.0 { s / r } else { 0.0 })
+        .collect();
+    let total_reserve: f64 = reserve.iter().sum();
+
+    let mut total_mse: f64 = mse.iter().sum();
+    for i in 0..n {
+        let c_last_i = proj[i * n + (n - 1)];
+        let start = n - 1 - i;
+        let mut cov_sum = 0.0;
+        if i >= 1 {
+            for k in start..n_steps {
+                let fk = ldf[k];
+                let sk2 = sigma_sq[k];
+                let s = s_col[k];
+                if fk > 0.0 && s > 0.0 {
+                    cov_sum += sk2 / (fk * fk * s);
+                }
+            }
+        }
+        for j in (i + 1)..n {
+            let c_last_j = proj[j * n + (n - 1)];
+            total_mse +=
+                2.0 * ultimate[i] * ultimate[j] * cov_sum + 2.0 * c_last_i * c_last_j * tail_se_sq;
+        }
+    }
+
+    let total_standard_error = if total_mse.is_finite() {
+        total_mse.max(0.0).sqrt()
+    } else {
+        f64::NAN
+    };
+    let total_cv = if total_reserve > 0.0 {
+        total_standard_error / total_reserve
+    } else {
+        0.0
+    };
+
+    Ok(Mack {
+        ldf,
+        sigma_sq,
+        ultimate,
+        reserve,
+        standard_error,
+        cv,
+        total_reserve,
+        total_mse,
+        total_standard_error,
+        total_cv,
+    })
+}
+
 fn validate_tail_spec(spec: MackTailSpec) -> Result<(), ValidationError> {
     validate_tail(spec.tail_factor)?;
     if !spec.tail_sigma_sq.is_finite() || !spec.tail_se.is_finite() {

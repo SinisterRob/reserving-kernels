@@ -60,30 +60,34 @@ assert!((panjer.mean - fft.mean).abs() < 1e-8);
 
 | Module | Literature / Method | Capabilities |
 | --- | --- | --- |
-| `ldf` | Link-ratio selectors | Volume-weighted, simple, median, ex-hi-lo trimmed, last-N volume/simple averages, CDFs, percent reported |
-| `tail` | Bondy (1966), Sherman (1984), CAS TFWP (2013), Mack (1999) | Bondy, Generalized Bondy (exact profile LS), Exponential, Inverse Power, Weibull, Mack tail variance |
+| `ldf` | Link-ratio selectors | Volume-weighted, simple, geometric, median, ex-hi-lo trimmed, last-N, cell-weighted/masked LDFs, CDFs, percent reported |
+| `tail` | Bondy (1966), Sherman (1984), Clark (2003), CAS TFWP (2013), Mack (1999) | Bondy, Generalized Bondy, Exponential, Inverse Power, Weibull, Clark growth-curve tail, Mack tail variance |
 | `chain_ladder` | Classical Chain Ladder | Unchecked hot-path kernels and checked `ChainLadderEngine` |
 | `bf` | Bornhuetter & Ferguson (1972) | Reserve indications `R = (1 - 1/CDF) · E` with scalar, vector, or `apriori` inputs |
 | `benktander` | Benktander (1976), Hovinen (1981), Mack (2000) | Closed-form m-iteration credibility recursion and MSE-optimal credibility weights |
 | `cape_cod` | Stanard (1985), Bühlmann (1983) | Data-implied ELR via used-up premium weighting |
 | `generalized_cape_cod` | Gluck (1997), Friedland Ch. 10 | Decay-weighted Cape Cod (`w_{i,k} = delta^|i-k|`), reducing to Cape Cod (`delta = 1`) and CL (`delta -> 0+`) |
+| `case_outstanding` | Friedland (2010, Ch. 11) | Paid-to-case and case-to-case development projections from aligned paid and case-reserve triangles |
+| `incremental_additive` | Schmidt (2006), Friedland | Exposure-weighted incremental loss ratios with optional origin trend projection |
 | `berquist_sherman` | Berquist & Sherman (1977), Friedland Ch. 13 | Exponential case-reserve adequacy restatement and paid disposal-rate interpolation |
 | `brosius` | Brosius (1993) | Two-pass centered OLS credibility development (`y = a + b·x`) |
 | `munich_chain_ladder` | Quarg & Mack (2004 / 2008) | Bivariate paid/incurred chain ladder closing the paid-vs-incurred ultimate gap |
+| `datasets` | Published benchmark triangles | Zero-I/O static constructors for `RAA`, `GenIns`, `Quarg & Mack (2004)`, and `Friedland US Industry Auto` |
 | `ragged`, `triangle_algebra` | Low-level flat kernels | Rectangular/ragged observed-count link selectors and allocation-free slice transforms |
 
 ### 2. Stochastic Reserving, 1-Year Solvency & GLMs
 
 | Module | Literature / Method | Capabilities |
 | --- | --- | --- |
-| `mack` | Mack (1993, 1999) | Distribution-free origin & aggregate CL standard errors with optional stochastic tail (`MackTailSpec`) |
+| `mack` | Mack (1993, 1999), Murphy (1994) | Distribution-free origin & aggregate CL SEs, generalized `alpha` weights (`0, 1, 2`), cell weight masks, and stochastic tail (`MackTailSpec`) |
 | `mack_bf` | Mack (2008) | Analytical BF MSEP decomposing process, prior `s(E_i)`, pattern `s(z_k)`, interaction, and correlated-prior covariance |
 | `merz_wuthrich` | Merz & Wüthrich (2008) | 1-year Solvency II CDR analytical MSEP with cross-origin covariance and exact multi-year run-off decomposition |
+| `multivariate_cl` | Braun (2004), Pröhl & Schmidt (2005), Zhang (2010) | Joint $K$-line Diagonal MCL and General GMCL development with full $K \times K$ cross-line MSEP covariance |
 | `paid_incurred_chain` | Merz & Wüthrich (2010) | Bayesian log-normal joint paid/incurred model with closed-form conjugate posterior mean and analytical MSEP |
 | `clark_mle` | Clark (2003) | Loglogistic & Weibull growth-curve ODP MLE (LDF & Cape Cod) with inverse Fisher information Cramér–Rao SEs |
 | `ptf_regression` | Barnett & Zehnwirth (2000) | Probabilistic Trend Family log-linear regression isolating accident, development, and calendar inflation shocks via QR |
-| `glm_reserving` | Taylor & McGuire (2016, CAS Mono. 3) | Householder QR IRLS engine for ODP, Gamma, Tweedie (`p` in `[1, 2]`), and Log-normal with Cross-Classified, Hoerl, and calendar-spline designs |
-| `bootstrap_odp` | England & Verrall (1999, 2002), Shapland (2016, CAS Mono. 4) | Exact ODP GLM fit, hat-matrix leverages `h_ii`, DF vs. leverage residual scaling, Gamma & scaled-ODP process variance, failure tracking |
+| `glm_reserving` | Taylor & McGuire (2016, CAS Mono. 3) | Householder QR IRLS engine for ODP, Gamma, Tweedie (`p` in `[1, 2]`), Log-normal, and profile EQL Tweedie power selection |
+| `bootstrap_odp` | England & Verrall (1999, 2002), Shapland (2016, CAS Mono. 4) | Exact ODP GLM fit, hat-matrix leverages `h_ii`, DF vs. leverage residual scaling, Gamma & scaled-ODP process variance, and 1-year CDR re-reserving bootstrap |
 
 ### 3. Dependence, Aggregate Loss Convolution & Capital Allocation
 

@@ -556,6 +556,105 @@ pub fn fit_glm(
     })
 }
 
+/// Candidate result from [`select_tweedie_power`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TweediePowerCandidate {
+    /// Evaluated Tweedie variance power $p \in [1, 2]$.
+    pub power: f64,
+    /// Extended quasi-likelihood (EQL) negative log-likelihood score (lower is better):
+    /// $\frac{1}{2}\big(n_{\text{obs}} \ln(2\pi \hat{\phi}) + p \sum \ln y_k + D(y, \hat{\mu})/\hat{\phi}\big)$.
+    pub eql_score: f64,
+    /// Fitted Pearson dispersion $\hat{\phi}$.
+    pub pearson_dispersion: f64,
+    /// Fitted total reserve at this power.
+    pub total_reserve: f64,
+    /// Fitted total prediction error at this power.
+    pub total_prediction_error: f64,
+}
+
+/// Output of profile extended quasi-likelihood Tweedie power selection
+/// (mirroring `mages/ChainLadder`'s `tweedieReserve` power estimation).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TweediePowerSelection {
+    /// Best Tweedie power $p^*$ minimizing the extended quasi-likelihood score.
+    pub best_power: f64,
+    /// Full GLM fit at `best_power`.
+    pub best_fit: GlmReservingResult,
+    /// All successfully evaluated candidates across `p_grid`.
+    pub candidates: Vec<TweediePowerCandidate>,
+}
+
+/// Select the Tweedie variance power $p \in [1, 2]$ by minimizing the Nelder &
+/// Pregibon (1987) extended quasi-likelihood profile criterion over `p_grid`.
+pub fn select_tweedie_power(
+    triangle: &TriangleView<'_>,
+    design: GlmDesign,
+    p_grid: &[f64],
+) -> Result<TweediePowerSelection, ValidationError> {
+    if p_grid.is_empty() {
+        return Err(ValidationError::InvalidParameter(
+            "p_grid must contain at least one power in [1, 2]",
+        ));
+    }
+    let inc = cumulative_to_incremental(triangle);
+    let n = triangle.n_origins;
+    let mut sum_log_y = 0.0;
+    let mut n_pos = 0usize;
+    for i in 0..n {
+        for j in 0..(n - i) {
+            let y = inc[i * n + j];
+            if y.is_finite() && y > 0.0 {
+                sum_log_y += y.ln();
+                n_pos += 1;
+            }
+        }
+    }
+    if n_pos == 0 {
+        return Err(ValidationError::ShapeMismatch);
+    }
+
+    let mut candidates = Vec::with_capacity(p_grid.len());
+    let mut best_score = f64::INFINITY;
+    let mut best_power = f64::NAN;
+    let mut best_fit: Option<GlmReservingResult> = None;
+
+    for &p in p_grid {
+        if !p.is_finite() || !(1.0..=2.0).contains(&p) {
+            return Err(ValidationError::InvalidParameter(
+                "Tweedie power must lie in [1.0, 2.0]",
+            ));
+        }
+        let opts = GlmOptions::tweedie(p).with_design(design.clone());
+        if let Ok(fit) = fit_glm(triangle, &opts) {
+            let phi = fit.deviance_dispersion.max(1e-12);
+            let n_obs = fit.n_observed as f64;
+            let eql_score = 0.5
+                * (n_obs * (2.0 * std::f64::consts::PI * phi).ln()
+                    + p * sum_log_y
+                    + fit.deviance / phi);
+            candidates.push(TweediePowerCandidate {
+                power: p,
+                eql_score,
+                pearson_dispersion: fit.pearson_dispersion,
+                total_reserve: fit.total_reserve,
+                total_prediction_error: fit.total_prediction_error,
+            });
+            if eql_score < best_score {
+                best_score = eql_score;
+                best_power = p;
+                best_fit = Some(fit);
+            }
+        }
+    }
+
+    let best_fit = best_fit.ok_or(ValidationError::NotFinite)?;
+    Ok(TweediePowerSelection {
+        best_power,
+        best_fit,
+        candidates,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn fit_log_normal_glm(
     n: usize,

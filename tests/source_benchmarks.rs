@@ -1074,3 +1074,161 @@ fn panjer_1981_robertson_1992_and_tasche_2008_myers_read_2001_benchmarks() {
         ));
     }
 }
+
+// ===========================================================================
+// 11. Extended Reserving Transformers, Multivariate CL & 1-Year CDR Bootstrap
+// ===========================================================================
+
+#[test]
+fn extended_reserving_kernels_and_datasets_benchmarks() {
+    use reserving_kernels::{
+        bootstrap_odp::bootstrap_odp_cdr,
+        case_outstanding::{CaseOutstandingOptions, project_from_paid_incurred},
+        datasets,
+        glm_reserving::select_tweedie_power,
+        incremental_additive::{IncrementalAdditiveOptions, project_incremental_additive},
+        ldf,
+        mack::MackOptions,
+        multivariate_cl::{MultivariateClOptions, MultivariateModel, analyze_multivariate_cl},
+    };
+
+    // 1. Canonical built-in datasets match literature dimensions.
+    let raa = datasets::raa();
+    let genins = datasets::genins();
+    let qm = datasets::quarg_mack_2004();
+    let auto = datasets::friedland_us_industry_auto();
+    assert_eq!((raa.n_origins, raa.n_devs), (10, 10));
+    assert_eq!((genins.n_origins, genins.n_devs), (10, 10));
+    assert_eq!((qm.paid.n_origins, qm.paid.n_devs), (7, 7));
+    assert_eq!(auto.earned_premium.len(), 10);
+
+    // 2. Case Outstanding (Friedland Ch. 11) on US Industry Auto & Quarg-Mack.
+    let co = project_from_paid_incurred(
+        &auto.paid.view(),
+        &auto.reported.view(),
+        &CaseOutstandingOptions::default(),
+    )
+    .expect("case outstanding auto");
+    assert!(co.total_reserve > 0.0 && co.total_reserve.is_finite());
+
+    let co_qm = project_from_paid_incurred(
+        &qm.paid.view(),
+        &qm.incurred.view(),
+        &CaseOutstandingOptions::default(),
+    )
+    .expect("case outstanding qm");
+    assert!(co_qm.total_reserve > 0.0 && co_qm.total_reserve.is_finite());
+
+    // 3. Incremental Additive on Friedland US Industry Auto with earned premium.
+    let ia = project_incremental_additive(
+        &auto.paid.view(),
+        &auto.earned_premium,
+        &IncrementalAdditiveOptions::default(),
+    )
+    .expect("incremental additive");
+    assert!(ia.total_reserve > 0.0 && ia.total_reserve.is_finite());
+
+    // 4. Generalized Mack alpha (0, 1, 2) and cell weight mask on RAA.
+    let m1 = mack::analyze_with_policy(&raa.view(), 1.0, MonotonicityPolicy::AllowNegativeIncrements)
+        .expect("mack alpha=1");
+    let m_opt1 = mack::analyze_with_options(
+        &raa.view(),
+        &MackOptions::default()
+            .with_alpha(1.0)
+            .with_policy(MonotonicityPolicy::AllowNegativeIncrements),
+    )
+    .expect("mack opt alpha=1");
+    assert!(close_rel(m1.total_standard_error, m_opt1.total_standard_error, 1e-12));
+
+    let m_alpha0 = mack::analyze_with_options(
+        &raa.view(),
+        &MackOptions::default()
+            .with_alpha(0.0)
+            .with_policy(MonotonicityPolicy::AllowNegativeIncrements),
+    )
+    .expect("mack alpha=0");
+    let m_alpha2 = mack::analyze_with_options(
+        &raa.view(),
+        &MackOptions::default()
+            .with_alpha(2.0)
+            .with_policy(MonotonicityPolicy::AllowNegativeIncrements),
+    )
+    .expect("mack alpha=2");
+    assert!(m_alpha0.total_standard_error > 0.0 && m_alpha0.total_standard_error.is_finite());
+    assert!(m_alpha2.total_standard_error > 0.0 && m_alpha2.total_standard_error.is_finite());
+
+    // Masking out a single outlier cell (0, 0) changes LDF[0] cleanly.
+    let mut mask = vec![1.0; 100];
+    mask[0] = 0.0;
+    let masked_ldfs = ldf::weighted_volume_ldfs(&genins.view(), &mask).expect("masked ldfs");
+    let full_ldfs = ldf::volume_weighted(&genins.view());
+    assert!((masked_ldfs[0] - full_ldfs[0]).abs() > 1e-4);
+    assert!(close_rel(masked_ldfs[1], full_ldfs[1], 1e-12));
+
+    let geo_ldfs = ldf::geometric_average(&genins.view());
+    assert_eq!(geo_ldfs.len(), 9);
+    assert!(geo_ldfs.iter().all(|&x| x.is_finite() && x > 0.0));
+
+    // 5. Clark tail -> MackTailSpec integration.
+    let clark_spec = tail::clark_tail(&genins.view(), GrowthCurve::Loglogistic).expect("clark tail");
+    assert!(clark_spec.tail_factor > 1.0 && clark_spec.tail_se >= 0.0);
+    let m_clark_tail = mack::analyze_with_tail_uncertainty(&genins.view(), clark_spec)
+        .expect("mack with clark tail");
+    assert!(m_clark_tail.total_standard_error > mack::analyze(&genins.view(), 1.0).unwrap().total_standard_error);
+
+    // 6. 1-Year CDR Re-Reserving ODP Bootstrap on GenIns:
+    //    1-year CDR SE must be strictly less than ultimate ODP bootstrap SE.
+    let cdr_boot = bootstrap_odp_cdr(
+        &genins.view(),
+        1.0,
+        OdpBootstrapOptions::shapland(1_000, 42069),
+    )
+    .expect("cdr bootstrap");
+    let ult_boot = bootstrap_odp(
+        &genins.view(),
+        1.0,
+        OdpBootstrapOptions::shapland(1_000, 42069),
+    )
+    .expect("ult bootstrap");
+    assert_eq!(cdr_boot.failed_iterations, 0);
+    assert!(
+        cdr_boot.summary.std_dev > 0.0 && cdr_boot.summary.std_dev < ult_boot.summary.std_dev,
+        "1yr CDR SD={} should be < ultimate SD={}",
+        cdr_boot.summary.std_dev,
+        ult_boot.summary.std_dev
+    );
+
+    // 7. Multivariate Chain Ladder (Diagonal MCL & GMCL) across 2 lines.
+    let mcl_2 = analyze_multivariate_cl(
+        &[genins.view(), auto.paid.view()],
+        &MultivariateClOptions {
+            model: MultivariateModel::DiagonalMcl,
+            policy: MonotonicityPolicy::Strict,
+        },
+    )
+    .expect("2-line diagonal MCL");
+    let m_gen = mack::analyze(&genins.view(), 1.0).unwrap();
+    let m_auto = mack::analyze(&auto.paid.view(), 1.0).unwrap();
+    assert!(close_rel(mcl_2.line_standard_errors[0], m_gen.total_standard_error, 1e-10));
+    assert!(close_rel(mcl_2.line_standard_errors[1], m_auto.total_standard_error, 1e-10));
+
+    let gmcl_2 = analyze_multivariate_cl(
+        &[qm.paid.view(), qm.incurred.view()],
+        &MultivariateClOptions {
+            model: MultivariateModel::GeneralGmcl,
+            policy: MonotonicityPolicy::AllowNegativeIncrements,
+        },
+    )
+    .expect("2-line GMCL");
+    assert!(gmcl_2.portfolio_total_reserve.is_finite() && gmcl_2.portfolio_standard_error > 0.0);
+
+    // 8. Tweedie power profile-likelihood selection on GenIns.
+    let tw = select_tweedie_power(
+        &genins.view(),
+        GlmDesign::CrossClassified,
+        &[1.0, 1.25, 1.5, 1.75, 2.0],
+    )
+    .expect("tweedie power");
+    assert_eq!(tw.candidates.len(), 5);
+    assert!((1.0..=2.0).contains(&tw.best_power));
+}

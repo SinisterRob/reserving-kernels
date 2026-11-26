@@ -975,6 +975,203 @@ pub fn bootstrap_summary(
     Ok(bootstrap(triangle, tail, config)?.summary)
 }
 
+/// Output of the 1-year Solvency II Claims Development Result (CDR)
+/// re-reserving ODP bootstrap (England & Verrall / Merz & Wüthrich;
+/// mirrors `mages/ChainLadder`'s `CDR(BootChainLadder)`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OdpCdrBootstrapResult {
+    /// Initial deterministic reserve $R^{(0)}$ summed across origins.
+    pub base_total_reserve: f64,
+    /// Initial deterministic reserve $R_i^{(0)}$ per origin.
+    pub base_origin_reserves: Vec<f64>,
+    /// Simulated total 1-year CDR samples: $R^{(0)} - (Y_{\text{next}} + R^{(1)})$.
+    /// Negative values represent adverse 1-year development.
+    pub simulated_total_cdr: Vec<f64>,
+    /// Simulated 1-year CDR samples per origin (`n_origins` vectors).
+    pub simulated_cdr_by_origin: Vec<Vec<f64>>,
+    /// Empirical summary statistics of total 1-year CDR.
+    pub summary: BootstrapSummary,
+    /// Empirical summary statistics of 1-year CDR per origin.
+    pub origin_summaries: Vec<BootstrapSummary>,
+    /// Count of skipped iterations due to degenerate pseudo-triangles.
+    pub failed_iterations: usize,
+}
+
+/// Run a 1-year Solvency II Claims Development Result (CDR) re-reserving
+/// bootstrap on top of the ODP bootstrap model.
+///
+/// For each simulation $b$:
+/// 1. Resample scaled Pearson residuals and refit pseudo-LDFs $\hat{f}_k^{(b)}$.
+/// 2. Simulate the next calendar-year incremental payments $Y_{i, n-i}^{(b)}$
+///    (with process variance from `options.process_distribution`) for each open
+///    origin $i \ge 1$.
+/// 3. Append the simulated diagonal $C_{i, n-i}^{(b)} = C_{i, n-1-i} + Y_{i, n-i}^{(b)}$
+///    to the observed triangle, re-estimate volume-weighted chain-ladder LDFs
+///    on the extended 1-year-later triangle, and compute the updated reserve $R_i^{(1,b)}$.
+/// 4. Record $\text{CDR}_i^{(b)}(1) = R_i^{(0)} - (Y_{i, n-i}^{(b)} + R_i^{(1,b)})$.
+pub fn bootstrap_odp_cdr(
+    triangle: &TriangleView<'_>,
+    tail: f64,
+    options: OdpBootstrapOptions,
+) -> Result<OdpCdrBootstrapResult, ValidationError> {
+    if options.iterations == 0 {
+        return Err(ValidationError::ShapeMismatch);
+    }
+
+    let fit = fit_odp(triangle, tail, options.monotonicity_policy)?;
+    let (pool, _) =
+        build_adjusted_residual_pool(&fit, options.residual_adjustment, options.center_residuals)?;
+
+    let n = fit.n_origins;
+    let m = n.saturating_sub(1);
+    let mut rng = DeterministicRng::from_seed(options.seed);
+
+    let mut simulated_total_cdr = Vec::with_capacity(options.iterations);
+    let mut simulated_cdr_by_origin = vec![Vec::with_capacity(options.iterations); n];
+    let mut sampled_residuals = vec![0.0; fit.n_observed];
+    let mut scratch = OdpBootstrapScratch::for_fit(&fit);
+    let mut ext_cum = vec![f64::NAN; n * n];
+    let mut ext_ldfs = vec![1.0; m];
+    let mut next_pay = vec![0.0; n];
+    let mut failed_iterations = 0usize;
+
+    for _ in 0..options.iterations {
+        for slot in &mut sampled_residuals {
+            *slot = pool[rng.next_index(pool.len())];
+        }
+
+        // 1. Build pseudo-triangle & refit pseudo-LDFs into scratch.
+        scratch.pseudo_cum.fill(f64::NAN);
+        for (idx, cell) in fit.residuals.iter().enumerate() {
+            let mu = fit.fitted_incremental[cell.origin * n + cell.dev];
+            let s_mu = scratch.sqrt_mu[cell.origin * n + cell.dev];
+            let pseudo_inc = mu + sampled_residuals[idx] * s_mu;
+            let prev = if cell.dev == 0 {
+                0.0
+            } else {
+                scratch.pseudo_cum[cell.origin * n + (cell.dev - 1)]
+            };
+            scratch.pseudo_cum[cell.origin * n + cell.dev] = prev + pseudo_inc;
+        }
+        let mut valid_pseudo = true;
+        for k in 0..m {
+            let nk = n - 1 - k;
+            let mut num = 0.0;
+            let mut den = 0.0;
+            for i in 0..nk {
+                num += scratch.pseudo_cum[i * n + (k + 1)];
+                den += scratch.pseudo_cum[i * n + k];
+            }
+            if !den.is_finite() || den <= 0.0 || !num.is_finite() || num <= 0.0 {
+                valid_pseudo = false;
+                break;
+            }
+            scratch.pseudo_ldfs[k] = num / den;
+        }
+        if !valid_pseudo {
+            failed_iterations += 1;
+            continue;
+        }
+
+        // 2. Copy observed triangle & simulate next calendar diagonal (i + j == n).
+        ext_cum.copy_from_slice(triangle.data);
+        next_pay.fill(0.0);
+        for i in 1..n {
+            let j_next = n - i;
+            let c_prev = triangle.get(i, j_next - 1);
+            let expected_inc = c_prev * (scratch.pseudo_ldfs[j_next - 1] - 1.0);
+            let sim_inc = sample_process_increment(
+                expected_inc,
+                fit.dispersion,
+                options.process_distribution,
+                &mut rng,
+            );
+            next_pay[i] = sim_inc;
+            ext_cum[i * n + j_next] = c_prev + sim_inc;
+        }
+
+        // 3. Re-estimate LDFs on the 1-year-extended triangle (observed + simulated diagonal).
+        let mut valid_ext = true;
+        for k in 0..m {
+            let nk_ext = (n - k).min(n);
+            let mut num = 0.0;
+            let mut den = 0.0;
+            for i in 0..nk_ext {
+                let c0 = ext_cum[i * n + k];
+                let c1 = ext_cum[i * n + (k + 1)];
+                if c0.is_finite() && c1.is_finite() {
+                    den += c0;
+                    num += c1;
+                }
+            }
+            if !den.is_finite() || den <= 0.0 || !num.is_finite() || num <= 0.0 {
+                valid_ext = false;
+                break;
+            }
+            ext_ldfs[k] = num / den;
+        }
+        if !valid_ext {
+            failed_iterations += 1;
+            continue;
+        }
+
+        // 4. Compute updated reserve R^{(1)} and 1-year CDR = R^{(0)} - (Y_next + R^{(1)}).
+        let mut total_cdr = 0.0;
+        let mut iter_cdrs = [0.0_f64; 0];
+        let _ = &mut iter_cdrs;
+        let mut ok = true;
+        for i in 0..n {
+            let r1 = if i == 0 {
+                // Origin 0 is already at age n - 1; only tail remains.
+                let c_last = triangle.get(0, n - 1);
+                c_last * (tail - 1.0)
+            } else {
+                let j_next = n - i;
+                let mut proj = ext_cum[i * n + j_next];
+                for &f in &ext_ldfs[j_next..m] {
+                    proj *= f;
+                }
+                proj * tail - ext_cum[i * n + j_next]
+            };
+            let cdr_i = fit.origin_reserves[i] - (next_pay[i] + r1);
+            if !cdr_i.is_finite() {
+                ok = false;
+                break;
+            }
+            scratch.origin_reserves[i] = cdr_i;
+            total_cdr += cdr_i;
+        }
+        if !ok || !total_cdr.is_finite() {
+            failed_iterations += 1;
+            continue;
+        }
+        simulated_total_cdr.push(total_cdr);
+        for i in 0..n {
+            simulated_cdr_by_origin[i].push(scratch.origin_reserves[i]);
+        }
+    }
+
+    if simulated_total_cdr.is_empty() {
+        return Err(ValidationError::NotFinite);
+    }
+
+    let summary = summarize_distribution(&simulated_total_cdr)?;
+    let mut origin_summaries = Vec::with_capacity(n);
+    for series in &simulated_cdr_by_origin {
+        origin_summaries.push(summarize_distribution(series)?);
+    }
+
+    Ok(OdpCdrBootstrapResult {
+        base_total_reserve: fit.total_reserve,
+        base_origin_reserves: fit.origin_reserves,
+        simulated_total_cdr,
+        simulated_cdr_by_origin,
+        summary,
+        origin_summaries,
+        failed_iterations,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

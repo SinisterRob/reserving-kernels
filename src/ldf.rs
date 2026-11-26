@@ -488,6 +488,67 @@ pub fn pct_reported(cdf: &[f64]) -> Vec<f64> {
         .collect()
 }
 
+/// Geometric average of positive observed individual link ratios at each
+/// development period. Emits `1.0` if no positive links exist.
+pub fn geometric_average(t: &TriangleView<'_>) -> Vec<f64> {
+    let m = t.n_devs.saturating_sub(1);
+    let mut out = vec![1.0; m];
+    for j in 0..m {
+        let mut log_sum = 0.0;
+        let mut count = 0usize;
+        for i in 0..t.n_origins {
+            let a = t.get(i, j);
+            let b = t.get(i, j + 1);
+            if a.is_finite() && b.is_finite() && a > 0.0 && b > 0.0 {
+                log_sum += (b / a).ln();
+                count += 1;
+            }
+        }
+        if count > 0 {
+            out[j] = (log_sum / count as f64).exp();
+        }
+    }
+    out
+}
+
+/// Volume-weighted LDFs with an explicit row-major cell weight/exclusion mask
+/// of length `n_origins * n_devs`. Setting `weights[i * n_devs + j] = 0.0`
+/// excludes origin `i` from development link `j -> j + 1`.
+pub fn weighted_volume_ldfs(
+    t: &TriangleView<'_>,
+    weights: &[f64],
+) -> Result<Vec<f64>, ValidationError> {
+    if weights.len() != t.n_origins * t.n_devs {
+        return Err(ValidationError::ShapeMismatch);
+    }
+    if weights.iter().any(|&w| !w.is_finite() || w < 0.0) {
+        return Err(ValidationError::Negative);
+    }
+    let m = t.n_devs.saturating_sub(1);
+    let mut out = vec![1.0; m];
+    for j in 0..m {
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for i in 0..t.n_origins {
+            let w = weights[i * t.n_devs + j];
+            if w <= 0.0 {
+                continue;
+            }
+            let a = t.get(i, j);
+            let b = t.get(i, j + 1);
+            if a.is_finite() && b.is_finite() && a > 0.0 {
+                num += w * b;
+                den += w * a;
+            }
+        }
+        if den <= 0.0 {
+            return Err(ValidationError::DivideByZero("weighted development denominator"));
+        }
+        out[j] = num / den;
+    }
+    Ok(out)
+}
+
 // ===========================================================================
 // L2 — validated engine
 // ===========================================================================
@@ -577,6 +638,29 @@ impl DevelopmentFactorEngine {
     ) -> Result<DevelopmentFactors, ValidationError> {
         validate_development_inputs(tri, tail)?;
         Self::factors_from_validated_ldfs(tri.n_devs, tail, simple_average_last_n(tri, last_n))
+    }
+
+    /// Select geometric-average factors and CDFs from a validated cumulative triangle.
+    pub fn geometric_average(
+        tri: &TriangleView<'_>,
+        tail: f64,
+    ) -> Result<DevelopmentFactors, ValidationError> {
+        validate_development_inputs(tri, tail)?;
+        Self::factors_from_validated_ldfs(tri.n_devs, tail, geometric_average(tri))
+    }
+
+    /// Select volume-weighted factors with a per-cell weight / outlier-exclusion
+    /// mask (`weights[i * n_devs + j] == 0.0` excludes the link `j -> j+1` for
+    /// origin `i`).
+    pub fn volume_weighted_masked(
+        tri: &TriangleView<'_>,
+        weights: &[f64],
+        tail: f64,
+        policy: MonotonicityPolicy,
+    ) -> Result<DevelopmentFactors, ValidationError> {
+        validate_development_inputs_with_policy(tri, tail, policy)?;
+        let ldfs = weighted_volume_ldfs(tri, weights)?;
+        Self::factors_from_validated_ldfs(tri.n_devs, tail, ldfs)
     }
 
     /// Diagnostics for volume-weighted link selections.

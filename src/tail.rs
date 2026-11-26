@@ -504,6 +504,42 @@ pub fn estimate_mack_tail_spec(
     })
 }
 
+/// Fit a Clark (2003) growth curve (`Loglogistic` or `Weibull`) to `triangle`
+/// and return the implied tail factor and its parameter standard error as a
+/// [`MackTailSpec`] (mirroring `chainladder-python`'s `TailClark`).
+pub fn clark_tail(
+    triangle: &crate::types::TriangleView<'_>,
+    curve: crate::clark_mle::GrowthCurve,
+) -> Result<MackTailSpec, ValidationError> {
+    let opts = crate::clark_mle::ClarkOptions::new(curve);
+    let fit = crate::clark_mle::fit_clark_ldf(triangle, &opts)?;
+    let n_devs = triangle.n_devs;
+    let g_end = fit.growth_curve[n_devs - 1];
+    if !g_end.is_finite() || g_end <= 0.0 || g_end > 1.0 {
+        return Err(ValidationError::NotFinite);
+    }
+    let tail_factor = (1.0 / g_end).max(1.0);
+    // Approximate tail factor SE from Clark's origin-0 (oldest maturity) parameter SE:
+    // R_0 = C_{0, n-1} * (tail - 1) => se(tail) ≈ parameter_se[0] / C_{0, n-1}.
+    let c0_last = triangle.get(0, n_devs - 1);
+    let tail_se = if c0_last.is_finite() && c0_last > 0.0 {
+        (fit.parameter_se[0] / c0_last).max(0.0)
+    } else {
+        0.0
+    };
+    let tail_sigma_sq = if c0_last.is_finite() && c0_last > 0.0 {
+        let proc_var = fit.process_se[0] * fit.process_se[0];
+        (proc_var / c0_last).max(0.0)
+    } else {
+        0.0
+    };
+    Ok(MackTailSpec {
+        tail_factor,
+        tail_sigma_sq,
+        tail_se,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
