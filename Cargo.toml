@@ -1,0 +1,33 @@
+[package]
+name = "reserving-kernels"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Robert Jurgens, FCAS <robertdjurgens@gmail.com>"]
+description = "Deterministic Rust kernels for P&C actuarial loss reserving, Mack standard errors, ODP bootstrap, and excess layer ILFs."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/SinisterRob/reserving-kernels"
+homepage = "https://sinisterrob.github.io"
+readme = "README.md"
+keywords = ["actuarial", "reserving", "chain-ladder", "bootstrap", "insurance"]
+categories = ["mathematics", "science", "simulation"]
+
+[lib]
+name = "reserving_kernels"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+wasm = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "triangle_algebra"
+harness = false
