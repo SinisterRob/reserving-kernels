@@ -1,69 +1,135 @@
 # reserving-kernels
 
-Deterministic, zero-unsafe Rust numeric kernels for property & casualty actuarial loss reserving, diagnostics, stochastic bootstrapping, portfolio dependence, and excess layer pricing.
+**Deterministic, zero-unsafe Rust numeric kernels for P&C actuarial loss reserving, 1-year Solvency II risk, GLMs, compound aggregate loss convolution, excess layer pricing, and coherent capital allocation.**
 
-Every statistical method is grounded in primary actuarial literature and verified against published benchmark triangles and closed-form identities in [`tests/source_benchmarks.rs`](tests/source_benchmarks.rs). See [`docs/SOURCES.md`](docs/SOURCES.md) for the complete bibliography and equation traceability matrix.
+`Rust 1.85+` · `MIT OR Apache-2.0` · `#![forbid(unsafe_code)]` · `serde`/`serde_json` only · `wasm32` ready
 
-## Overview
+Every statistical method is derived from primary peer-reviewed actuarial literature and numerically verified against published benchmark triangles and closed-form identities in [`tests/source_benchmarks.rs`](tests/source_benchmarks.rs). See [`docs/SOURCES.md`](docs/SOURCES.md) for the complete bibliography and equation traceability matrix.
 
-`reserving-kernels` provides a branch-light, row-major `f64` compute substrate for loss-development triangles, portfolio dependence, and severity layering:
+## Why `reserving-kernels`
 
-- **Pure Rust hot path** — `#![forbid(unsafe_code)]` by default, zero heavy linear-algebra dependencies (`serde` and `serde_json` only), optional `wasm32-unknown-unknown` target (`--features wasm`).
-- **Row-major `f64` triangle representation** — observed cumulative or incremental cells are finite `f64`; unobserved lower-right cells use `NaN` sentinels with upfront boundary validation (`validate`) and explicit `MonotonicityPolicy` (`Strict` vs. `AllowNegativeIncrements` for incurred/reinsurance triangles).
-- **Deterministic stochastic engines** — explicit fixed-seed SplitMix64 + Xoshiro256** PRNG streams with exact Marsaglia–Tsang Gamma and Knuth/Hörmann PTRD Poisson samplers for ODP residual bootstrapping, synchronized multi-line bootstrapping, Iman–Conover rank reordering, and lognormal Monte Carlo layering.
-
-## Implemented Methods
-
-### 1. Loss Development, Tail Extrapolation & Point Estimators
-- **`ldf`** — Age-to-age link-ratio selectors: volume-weighted all-year, simple average, median, ex-hi-lo trimmed, last-$N$ volume-weighted, and last-$N$ simple average, plus CDF and percent-reported construction.
-- **`tail`** — Parametric and heuristic tail-factor fitting: Bondy (1966), Generalized Bondy (exact profile least squares), Exponential decay, Sherman (1984) Inverse Power Curve, Weibull, and Mack (1999) tail variance extrapolation.
-- **`chain_ladder`** — Classical chain-ladder projection and checked `ChainLadderEngine`.
-- **`bf`** — Bornhuetter–Ferguson (1972) reserve indications (`R = (1 - 1 / CDF) * Expected Ultimate`).
-- **`benktander`** — Benktander (1976) / Hovinen (1981) / Mack (2000) iterated BF credibility projection and MSE-optimal credibility weights.
-- **`cape_cod`** — Stanard (1985) / Bühlmann (1983) Cape Cod generalized expected loss ratio estimation with used-up premium weighting.
-- **`generalized_cape_cod`** — Gluck (1997) decay-weighted Cape Cod (`w_{i,k} = delta^{|i-k|}`) interpolating smoothly between standard Cape Cod (`delta = 1`) and Chain Ladder (`delta -> 0+`).
-- **`berquist_sherman`** — Berquist & Sherman (1977) operational adjustments: exponential case-reserve adequacy restatement and paid claim disposal-rate interpolation.
-- **`brosius`** — Brosius (1993) two-pass centered least-squares credibility development (`y = a + b x`) with link credibility weights.
-- **`munich_chain_ladder`** — Quarg & Mack (2004 / 2008) bivariate paid/incurred chain ladder closing the paid-vs-incurred ultimate gap.
-
-### 2. Diagnostics, Holdout Backtesting & Reconciliation
-- **`diagnostics`** — Leave-one-out link-ratio fragility, actual-vs-expected standardized residuals, Mack (1994) Appendix G Spearman adjacent-factor correlation test and Appendix H calendar-year binomial test, Cape Cod ELR stability, paid-to-incurred reconciliation, and case-reserve adequacy ratios.
-- **`selection`** — Latest-diagonal and multi-diagonal holdout backtesting with composite stability/smoothness/accuracy scoring across LDF selector families.
-- **`reserve_rollforward`** — Valuation-to-valuation reserve movement decomposition (actual vs. expected emergence and true ultimate change).
-- **`exhibit`** — Serializable JSON exhibit DTOs for downstream tables, heatmaps, and method-comparison charts.
-
-### 3. Stochastic Reserving, 1-Year Solvency & GLMs
-- **`mack`** — Mack (1993) distribution-free chain-ladder standard errors (verified against published RAA and GenIns totals) plus Mack (1999) recursive standard errors with stochastic tail-factor variance (`MackTailSpec`).
-- **`mack_bf`** — Mack (2008) distribution-free analytical MSEP for Bornhuetter–Ferguson decomposing process, prior ultimate, payout-pattern, interaction, and cross-origin covariance risk.
-- **`merz_wuthrich`** — Merz & Wüthrich (2008) 1-year Claims Development Result (`CDR`) analytical MSEP for Solvency II horizons plus exact multi-year run-off decomposition summing to Mack's ultimate MSEP.
-- **`paid_incurred_chain`** — Merz & Wüthrich (2010) Bayesian log-normal Paid-Incurred Chain (PIC) model with closed-form conjugate posterior mean and analytical MSEP.
-- **`clark_mle`** — Clark (2003) Loglogistic and Weibull growth-curve ODP MLE (LDF & Cape Cod) with inverse Fisher information Cramér–Rao parameter standard errors.
-- **`ptf_regression`** — Barnett & Zehnwirth (2000) Probabilistic Trend Family (PTF) log-linear regression isolating accident, development, and calendar-year inflation shocks via Householder QR weighted OLS.
-- **`glm_reserving`** — Taylor & McGuire (2016, CAS Monograph No. 3) Householder QR IRLS engine supporting ODP, Gamma, Tweedie (`p in [1, 2]`), and Log-normal families with Cross-Classified, Hoerl curve, and calendar-year spline designs.
-- **`bootstrap_odp`** — England & Verrall (1999, 2002) and Shapland (2016, CAS Monograph No. 4) Over-Dispersed Poisson GLM fit (`fit_odp`) and residual bootstrap (`bootstrap_odp`): exact hat-matrix leverages (`h_ii`), mutually exclusive degrees-of-freedom vs. leverage scaling, analytic ODP prediction error, Gamma and scaled-ODP process variance, and explicit failed-iteration accounting.
-
-### 4. Dependence, Aggregate Loss Convolution & Capital Allocation
-- **`dependence`** — Mildenhall (2006) / Iman–Conover (1982) whole-scenario batch rank reordering (preserving exact empirical marginals with Gaussian/Spearman/Kendall targets) and Kirschner, Kerley & Isaacs (2002) synchronized multi-line ODP bootstrapping.
-- **`reserve_distribution`** — Single-pass empirical moments, quantiles, exceedance probabilities, and CAS Monograph No. 15 discrete risk measures: least-quantile VaR (Algorithm 3.4.2), exact subadditive coherent TVaR (Algorithm 3.4.3), and Range VaR (RVaR).
-- **`aggregate_loss`** — Panjer (1981) `(a, b, 0)` exact recursion and Robertson (1992) pure-Rust radix-2 Cooley–Tukey FFT compound distribution inversion with exponential tilting, plus rounding and mean-preserving LEV discretization.
-- **`capital_allocation`** — Tasche (2008) tie-symmetric Euler allocation for coherent TVaR, RVaR, and Standard Deviation principles plus Myers & Read (2001) marginal default-put surplus allocation.
-
-### 5. Excess / Layer Pricing & Severity
-- **`severity`** — Claim-count severity helpers plus exact closed-form Limited Expected Values `E[X ∧ L]`, survival/PDF, layer expected losses, excess ratios, and ILFs (Klugman–Panjer–Willmot; Miccolis 1977; Lee 1988; Keatinge 1999) for Lognormal, Pareto Type II (Lomax), Single-Parameter Pareto, Exponential, Mixed Exponential, and Generalized Pareto distributions.
-- **`excess_layers`** — Closed-form lognormal Limited Expected Value `E[X ∧ L]`, attachment and exhaustion exceedance probabilities, Increased Limit Factors (ILFs), and synchronized SplitMix64 + Box–Muller Monte Carlo layer simulation.
-- **`large_loss`**, **`trend`**, **`onlevel`**, **`count_development`**, **`apriori`**, **`aggregate`** — Triangle capping/excess partitioning, exponential trend transforms, parallelogram on-level premium factors, claim-count development, shared a priori builders, and portfolio reducers.
+- **Pure-Rust, zero heavy dependencies** — `#![forbid(unsafe_code)]` by default, no BLAS/LAPACK/FFTW/ndarray required; Householder QR, Cholesky, IRLS, and tilted radix-2 Cooley–Tukey FFT are built in and compile cleanly to `wasm32-unknown-unknown` (`--features wasm`).
+- **Branch-light row-major `f64` triangles** — observed cumulative or incremental values are finite `f64`, unobserved lower-right cells use `NaN` sentinels, and ingress validation (`validate`) enforces explicit `MonotonicityPolicy` (`Strict` vs. `AllowNegativeIncrements` for incurred/reinsurance triangles).
+- **Deterministic & reproducible** — fixed-seed SplitMix64 + Xoshiro256** PRNG streams with exact Marsaglia–Tsang Gamma and Knuth/Hörmann PTRD Poisson samplers across ODP bootstrap, synchronized multi-line bootstrap, Iman–Conover rank reordering, and Monte Carlo layering.
 
 ## Quick Start
 
-```bash
-cargo test --all-targets --all-features
-cargo run --example export_exhibit
-cargo bench
+Add to `Cargo.toml`:
+
+```toml
+[dependencies]
+reserving-kernels = { git = "https://github.com/SinisterRob/reserving-kernels" }
 ```
 
-### WebAssembly Build
+### Example: Mack Ultimate SE, 1-Year Solvency II CDR, and Panjer/FFT Convolution
+
+```rust
+use reserving_kernels::{
+    aggregate_loss::{FrequencyDistribution, fft_aggregate_loss, panjer_recursion},
+    mack, merz_wuthrich,
+    types::Triangle,
+};
+
+let nan = f64::NAN;
+let triangle = Triangle::try_new(
+    4,
+    4,
+    vec![
+        100.0, 160.0, 195.0, 205.0,
+        120.0, 190.0, 232.0,   nan,
+        135.0, 218.0,   nan,   nan,
+        150.0,   nan,   nan,   nan,
+    ],
+)?;
+
+// Mack (1993) ultimate chain-ladder reserve & standard error
+let m = mack::analyze(&triangle.view(), 1.0)?;
+
+// Merz & Wuthrich (2008) 1-year Claims Development Result (Solvency II horizon)
+let cdr = merz_wuthrich::analyze(&triangle.view())?;
+assert!(cdr.total_cdr_standard_error <= m.total_standard_error);
+
+// Panjer (1981) recursion vs. Robertson (1992) exponentially tilted radix-2 FFT
+let freq = FrequencyDistribution::Poisson { lambda: 3.0 };
+let severity_pmf = [0.0, 0.5, 0.3, 0.2];
+let panjer = panjer_recursion(freq, &severity_pmf, 100.0, 128)?;
+let fft = fft_aggregate_loss(freq, &severity_pmf, 100.0, 128, None)?;
+assert!((panjer.mean - fft.mean).abs() < 1e-8);
+# Ok::<(), reserving_kernels::validate::ValidationError>(())
+```
+
+## Implemented Modules
+
+### 1. Loss Development, Point Estimators & Operational Adjustments
+
+| Module | Literature / Method | Capabilities |
+| --- | --- | --- |
+| `ldf` | Link-ratio selectors | Volume-weighted, simple, median, ex-hi-lo trimmed, last-N volume/simple averages, CDFs, percent reported |
+| `tail` | Bondy (1966), Sherman (1984), CAS TFWP (2013), Mack (1999) | Bondy, Generalized Bondy (exact profile LS), Exponential, Inverse Power, Weibull, Mack tail variance |
+| `chain_ladder` | Classical Chain Ladder | Unchecked hot-path kernels and checked `ChainLadderEngine` |
+| `bf` | Bornhuetter & Ferguson (1972) | Reserve indications `R = (1 - 1/CDF) · E` with scalar, vector, or `apriori` inputs |
+| `benktander` | Benktander (1976), Hovinen (1981), Mack (2000) | Closed-form m-iteration credibility recursion and MSE-optimal credibility weights |
+| `cape_cod` | Stanard (1985), Bühlmann (1983) | Data-implied ELR via used-up premium weighting |
+| `generalized_cape_cod` | Gluck (1997), Friedland Ch. 10 | Decay-weighted Cape Cod (`w_{i,k} = delta^|i-k|`), reducing to Cape Cod (`delta = 1`) and CL (`delta -> 0+`) |
+| `berquist_sherman` | Berquist & Sherman (1977), Friedland Ch. 13 | Exponential case-reserve adequacy restatement and paid disposal-rate interpolation |
+| `brosius` | Brosius (1993) | Two-pass centered OLS credibility development (`y = a + b·x`) |
+| `munich_chain_ladder` | Quarg & Mack (2004 / 2008) | Bivariate paid/incurred chain ladder closing the paid-vs-incurred ultimate gap |
+| `ragged`, `triangle_algebra` | Low-level flat kernels | Rectangular/ragged observed-count link selectors and allocation-free slice transforms |
+
+### 2. Stochastic Reserving, 1-Year Solvency & GLMs
+
+| Module | Literature / Method | Capabilities |
+| --- | --- | --- |
+| `mack` | Mack (1993, 1999) | Distribution-free origin & aggregate CL standard errors with optional stochastic tail (`MackTailSpec`) |
+| `mack_bf` | Mack (2008) | Analytical BF MSEP decomposing process, prior `s(E_i)`, pattern `s(z_k)`, interaction, and correlated-prior covariance |
+| `merz_wuthrich` | Merz & Wüthrich (2008) | 1-year Solvency II CDR analytical MSEP with cross-origin covariance and exact multi-year run-off decomposition |
+| `paid_incurred_chain` | Merz & Wüthrich (2010) | Bayesian log-normal joint paid/incurred model with closed-form conjugate posterior mean and analytical MSEP |
+| `clark_mle` | Clark (2003) | Loglogistic & Weibull growth-curve ODP MLE (LDF & Cape Cod) with inverse Fisher information Cramér–Rao SEs |
+| `ptf_regression` | Barnett & Zehnwirth (2000) | Probabilistic Trend Family log-linear regression isolating accident, development, and calendar inflation shocks via QR |
+| `glm_reserving` | Taylor & McGuire (2016, CAS Mono. 3) | Householder QR IRLS engine for ODP, Gamma, Tweedie (`p` in `[1, 2]`), and Log-normal with Cross-Classified, Hoerl, and calendar-spline designs |
+| `bootstrap_odp` | England & Verrall (1999, 2002), Shapland (2016, CAS Mono. 4) | Exact ODP GLM fit, hat-matrix leverages `h_ii`, DF vs. leverage residual scaling, Gamma & scaled-ODP process variance, failure tracking |
+
+### 3. Dependence, Aggregate Loss Convolution & Capital Allocation
+
+| Module | Literature / Method | Capabilities |
+| --- | --- | --- |
+| `dependence` | Iman & Conover (1982), Mildenhall (2006), Kirschner et al. (2002) | Marginal-preserving rank reordering (Gaussian/Spearman/Kendall) and synchronized multi-line ODP bootstrap |
+| `reserve_distribution` | CAS Monograph No. 15 (§3.2–§3.4) | Empirical moments/quantiles, least-quantile VaR (Alg. 3.4.2), exact subadditive coherent TVaR (Alg. 3.4.3), and RVaR |
+| `aggregate_loss` | Panjer (1981), Robertson (1992), KPW Ch. 9 | Exact `(a, b, 0)` Panjer recursion (Poisson/Binomial/NegBin), exponentially tilted radix-2 FFT, rounding & mean-preserving LEV discretization |
+| `capital_allocation` | Tasche (2008), Myers & Read (2001), CAS Mono. 15 §5 | Tie-symmetric Euler allocation for TVaR, RVaR, and SD principles plus marginal default-put surplus allocation |
+
+### 4. Excess Layer Pricing, Severity & Diagnostics
+
+| Module | Literature / Method | Capabilities |
+| --- | --- | --- |
+| `severity` | KPW App. A, Miccolis (1977), Lee (1988), Keatinge (1999) | Closed-form LEV `E[X ∧ L]`, survival/PDF, layer losses, excess ratios, and ILFs for Lognormal, Pareto II, Single-Param Pareto, Exponential, Mixed Exponential, and GPD |
+| `excess_layers` | Parametric & Monte Carlo layering | Lognormal LEV, attachment/exhaustion exceedance probabilities, ILFs, and synchronized SplitMix64 + Box–Muller simulation |
+| `diagnostics` | Mack (1994 App. G & H), A-vs-E, LOO | Adjacent-factor Spearman test, calendar-year binomial test, leave-one-out fragility, Cape Cod leverage, paid/incurred reconciliation |
+| `selection`, `reserve_rollforward`, `exhibit` | Backtesting & reporting | Holdout LDF backtesting, valuation roll-forward decomposition, and serializable JSON exhibit DTOs |
+| `large_loss`, `trend`, `onlevel`, `count_development`, `apriori`, `aggregate` | Preprocessing utilities | Large-loss capping/excess splits, exponential trending, parallelogram on-leveling, count development, a priori builders |
+
+## Verification & Literature Traceability
+
+All kernels are continuously tested against published datasets and exact mathematical identities (178+ automated unit, integration, doctest, and benchmark assertions):
+
+- **Published Triangles:** Mack (1993) `RAA` 10×10, Taylor & Ashe (1983) / England & Verrall (1999, 2002) `GenIns` 10×10, Friedland (2010) US Industry Auto 10×10, and Quarg & Mack (2004) 7×7.
+- **Exact Identities:** Merz–Wüthrich multi-year CDR run-off summing identically to Mack ultimate MSEP; IRLS cross-classified ODP matching exact `fit_odp` leverages and dispersion; Panjer vs. tilted radix-2 FFT L∞ agreement; tie-invariant Euler TVaR and Myers–Read exact full-allocation conservation.
+- See [`docs/SOURCES.md`](docs/SOURCES.md) for full citations and [`tests/source_benchmarks.rs`](tests/source_benchmarks.rs) for the executable benchmark suite.
+
+## Building & Testing
 
 ```bash
+# Run full unit, integration, doctest, and source-benchmark suite
+cargo test --all-targets --all-features
+cargo test --doc
+
+# Run Criterion microbenchmarks
+cargo bench
+
+# Generate JSON exhibit example
+cargo run --example export_exhibit
+
+# Build WebAssembly target
 cargo build --release --target wasm32-unknown-unknown --features wasm
 ```
 
