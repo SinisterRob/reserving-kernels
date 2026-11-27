@@ -592,5 +592,8 @@ fn regression_ldf_tail_onlevel_dependence_and_diagnostics() {
     assert!(cal.strongest_calendar.is_none());
 
     let rect = Triangle::new(3, 5, vec![100.0; 15]);
-    assert!(triangle_diagnostics::negative_increment_flags(&rect.view()).is_empty());
+    assert_eq!(
+        triangle_diagnostics::negative_increment_flags(&rect.view()),
+        Vec::new()
+    );
 }

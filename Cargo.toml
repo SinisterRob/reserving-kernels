@@ -2,7 +2,7 @@
 name = "reserving-kernels"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.97"
 authors = ["Robert Jurgens, FCAS <robertdjurgens@gmail.com>"]
 description = "Pure Rust numeric kernels for P&C actuarial reserving, pricing, and capital modeling."
 license = "MIT OR Apache-2.0"

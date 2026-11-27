@@ -183,7 +183,7 @@ mod tests {
         let tri = triangle_4x4();
         let score = score_selector(&tri.view(), CandidateSelector::VolumeWeighted, 1.0);
 
-        assert!(!score.selected_factors.is_empty());
+        assert_eq!(score.selected_factors.len(), 3);
         assert!(score.stability_score.is_finite());
         assert!(score.backtest_score.is_finite());
         assert!(score.smoothness_score.is_finite());

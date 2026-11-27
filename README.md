@@ -6,7 +6,7 @@
 
 Pure Rust numeric kernels for P&C actuarial reserving, pricing, and capital modeling.
 
-[![CI](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml/badge.svg)](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml) · `Rust 1.98+` · `MIT OR Apache-2.0` · `no unsafe` · `serde only` · `wasm32 ready`
+[![CI](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml/badge.svg)](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml) · `Rust 1.97+` · `MIT OR Apache-2.0` · `no unsafe` · `serde only` · `wasm32 ready`
 
 Every method is implemented from peer-reviewed actuarial literature and verified against published benchmark triangles in [`tests/source_benchmarks.rs`](tests/source_benchmarks.rs). See [`docs/SOURCES.md`](docs/SOURCES.md) for full citations and equation mappings.
 

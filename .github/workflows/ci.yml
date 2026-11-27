@@ -65,16 +65,16 @@ jobs:
         run: cargo run --example export_exhibit > /dev/null
 
   msrv:
-    name: MSRV (1.98)
+    name: MSRV (1.97)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98.0"
+          toolchain: "1.97.0"
       - uses: Swatinem/rust-cache@v2
         with:
-          key: msrv-1.98
+          key: msrv-1.97
       - name: Check library, tests, and examples (default features)
         run: cargo check --lib --tests --examples --no-default-features
       - name: Check library, tests, and examples (all features)
