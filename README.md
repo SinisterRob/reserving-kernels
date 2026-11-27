@@ -87,79 +87,84 @@ fn main() -> Result<(), ValidationError> {
 
 ## Implemented Modules
 
-`reserving-kernels` is organized into four areas covering 54 public modules (plus optional `wasm_exports` behind `--features wasm`).
+`reserving-kernels` is organized into clean domain modules (`deterministic`, `stochastic`, `capital`, `excess`, `preprocessing`, `diagnostics`, `subannual`, `datasets`, `types`, `validate`, plus the zero-dep `triangle!` macro and optional `wasm_exports` behind `--features wasm`).
 
-| Area | Highlights |
+| Domain Module | Highlights |
 | --- | --- |
-| **1. Loss Development & Point Estimators** | Chain Ladder, Bornhuetter–Ferguson, Benktander, Cape Cod (standard & generalized), Berquist–Sherman, Munich & Double Chain Ladder, Separation, sub-annual grids |
-| **2. Stochastic Reserving, 1-Year Risk & GLMs** | Mack (uni/multivariate & BF), Merz–Wüthrich 1-year CDR, ODP/Gamma/Tweedie GLMs, ODP Bootstrap, Paid–Incurred Chain, Kalman & individual-claim reserving |
-| **3. Dependence, Aggregate Loss & Capital Allocation** | Iman–Conover rank correlation, synchronized multi-line bootstrap, Panjer & FFT aggregate loss convolution, VaR/TVaR/RVaR, Euler & Myers–Read allocation |
-| **4. Excess Layering, Severity & Diagnostics** | Parametric severity & LEV/excess ratios, excess-layer development, Mack diagnostic tests, backtesting, roll-forwards, and preprocessing utilities |
+| **`deterministic`** | Chain Ladder, Bornhuetter–Ferguson, Benktander, Cape Cod (standard & generalized), Berquist–Sherman, Munich & Double Chain Ladder, Schnieper, Separation, Credibility CL |
+| **`stochastic`** | Mack (uni/multivariate & BF), Merz–Wüthrich 1-yr CDR, England–Verrall–Wüthrich 1-yr run-off, ODP/Gamma/Tweedie GLMs, ODP Bootstrap, Paid–Incurred Chain, Clark MLE, PTF, Kalman & micro-reserving |
+| **`capital`** | Iman–Conover rank correlation, synchronized multi-line bootstrap, Panjer & FFT aggregate loss convolution, VaR/TVaR/RVaR, Euler & Myers–Read allocation |
+| **`excess`** | Parametric severity & LEV/excess ratios, excess-layer simulation, and excess/limited loss development |
+| **`preprocessing` & `diagnostics`** | Triangle transforms, ragged helpers, large-loss capping, trending, on-leveling, holdout LDF backtesting, roll-forwards, exhibits, and Mack diagnostic tests |
+| **`subannual`** | Asymmetric grids (2:1/4:1/12:1), 7 sub-annual CDF/LDF interpolators (SWIMON, Spliced Weibull, IVF12), Bloom stubs, exact-age Clark & asymmetric ODP |
 
 <details>
-<summary><strong>Full module directory (54 public modules)</strong></summary>
+<summary><strong>Full module directory</strong></summary>
 
-### 1. Loss Development & Point Estimators
+### Core (`types`, `validate`, `datasets`, `triangle!`)
 
 | Module | Capabilities |
 | --- | --- |
-| `types`, `triangle`, `validate` | Flat row-major `Triangle` / `TriangleView`, monotonicity policies, and validation errors |
-| `ldf` | Volume-weighted, simple, geometric, median, trimmed, last-N, and masked LDFs/CDFs |
-| `tail` | Bondy, Generalized Bondy, Exponential, Inverse Power, Weibull, Clark growth-curve, and Mack tail variance |
-| `chain_ladder` | Unchecked hot-path kernels and checked `ChainLadderEngine` |
-| `bf` | Bornhuetter–Ferguson reserve indications with scalar, vector, or a priori inputs |
-| `benktander` | Closed-form m-iteration credibility recursion and MSE-optimal weights |
-| `cape_cod`, `generalized_cape_cod` | Standard and decay-weighted Cape Cod ELR estimation |
-| `case_outstanding` | Paid-to-case and case-to-case development from aligned triangles |
-| `incremental_additive` | Exposure-weighted incremental loss ratios with optional trend |
-| `berquist_sherman` | Case-reserve adequacy restatement and paid disposal-rate interpolation |
-| `brosius`, `murphy` | Centered OLS credibility and generalized weighted-regression CL with exact MSE |
-| `separation` | Arithmetic and geometric separation of delay patterns and calendar inflation |
-| `credibility_cl` | Bühlmann–Straub shrinkage of LDFs toward collective priors with analytical MSEP |
-| `munich_chain_ladder` | Bivariate paid/incurred CL closing the paid-vs-incurred gap |
-| `schnieper` | Two-triangle True IBNR vs. IBNER separation with Mack-style MSEP |
-| `double_chain_ladder` | Paid + count deconvolution into reporting/payment delays, severity inflation, and RBNS/IBNR |
-| `subannual` | Asymmetric grids (2:1/4:1/12:1), 7 CDF/LDF interpolators, Bloom stubs, asymmetric CL/BF/Cape Cod/Clark/ODP, and parity checks |
+| `types`, `validate` | Pure row-major `Triangle` / `TriangleView`, monotonicity policies, validation errors, and `triangle!` literal macro |
 | `datasets` | Zero-I/O benchmark triangles (RAA, GenIns, Quarg & Mack, Friedland Auto) |
-| `ragged`, `triangle_algebra` | Low-level ragged link selectors and allocation-free slice transforms |
 
-### 2. Stochastic Reserving, 1-Year Risk & GLMs
-
-| Module | Capabilities |
-| --- | --- |
-| `mack`, `multivariate_mack` | Distribution-free CL standard errors (single & correlated multi-line) with stochastic tails |
-| `mack_bf` | Analytical BF MSEP decomposing process, prior, pattern, and interaction variance |
-| `merz_wuthrich` | 1-year Solvency II CDR analytical MSEP and multi-year run-off decomposition |
-| `multivariate_cl` | Joint K-line Diagonal MCL and General GMCL with full cross-line covariance |
-| `paid_incurred_chain` | Bayesian log-normal joint paid/incurred model with closed-form posterior & MSEP |
-| `hertig` | Exact closed-form log-normal link-ratio moments and quantiles |
-| `kalman_reserving` | Recursive Kalman filter over calendar diagonals for dynamic inflation shifts |
-| `micro_reserving` | Individual-claim reserving (NHPP, reporting delay, multi-state RBNS + IBNR simulation) |
-| `clark_mle` | Loglogistic & Weibull growth-curve ODP MLE with Cramér–Rao standard errors |
-| `ptf_regression` | Probabilistic Trend Family log-linear regression for accident, dev, and calendar trends |
-| `glm_reserving` | Built-in QR IRLS engine for ODP, Gamma, Tweedie, and Log-normal GLMs |
-| `bootstrap_odp` | ODP GLM bootstrap with hat-matrix leverages, process variance, and 1-year CDR re-reserving |
-
-### 3. Dependence, Aggregate Loss & Capital Allocation
+### `deterministic` — Loss Development & Point Estimators
 
 | Module | Capabilities |
 | --- | --- |
-| `dependence` | Iman–Conover rank reordering and synchronized multi-line ODP bootstrap |
-| `reserve_distribution` | Empirical moments, VaR, coherent TVaR, and RVaR |
-| `aggregate_loss` | Panjer (a, b, 0) recursion, exponentially tilted FFT, and severity discretization |
-| `capital_allocation` | Euler allocation (TVaR, RVaR, SD) and Myers–Read marginal default-put allocation |
+| `deterministic::ldf` | Volume-weighted, simple, geometric, median, trimmed, last-N, and masked LDFs/CDFs |
+| `deterministic::tail` | Bondy, Generalized Bondy, Exponential, Inverse Power, Weibull, Clark growth-curve, and Mack tail variance |
+| `deterministic::chain_ladder` | Unchecked hot-path kernels and checked `ChainLadderEngine` |
+| `deterministic::bf` | Bornhuetter–Ferguson reserve indications with scalar, vector, or a priori inputs |
+| `deterministic::benktander` | Closed-form m-iteration credibility recursion and MSE-optimal weights |
+| `deterministic::cape_cod`, `generalized_cape_cod` | Standard and decay-weighted Cape Cod ELR estimation |
+| `deterministic::case_outstanding` | Paid-to-case and case-to-case development from aligned triangles |
+| `deterministic::incremental_additive` | Exposure-weighted incremental loss ratios with optional trend |
+| `deterministic::berquist_sherman` | Case-reserve adequacy restatement and paid disposal-rate interpolation |
+| `deterministic::brosius`, `murphy` | Centered OLS credibility and generalized weighted-regression CL with exact MSE |
+| `deterministic::separation` | Arithmetic and geometric separation of delay patterns and calendar inflation |
+| `deterministic::credibility_cl` | Bühlmann–Straub shrinkage of LDFs toward collective priors with analytical MSEP |
+| `deterministic::munich_chain_ladder` | Bivariate paid/incurred CL closing the paid-vs-incurred gap |
+| `deterministic::schnieper` | Two-triangle True IBNR vs. IBNER separation with Mack-style MSEP |
+| `deterministic::double_chain_ladder` | Paid + count deconvolution into reporting/payment delays, severity inflation, and RBNS/IBNR |
 
-### 4. Excess Layering, Severity & Diagnostics
+### `stochastic` — Stochastic Reserving, 1-Year Risk & GLMs
 
 | Module | Capabilities |
 | --- | --- |
-| `severity` | Closed-form LEV, survival/PDF, layer losses, and excess ratios (Lognormal, Pareto, Exponential, Mixed Exp, GPD) |
-| `excess_layers` | Parametric layering, exceedance probabilities, and antithetic Monte Carlo simulation |
-| `excess_development` | Excess-of-L, limited-to-L, and bounded-layer CDFs/LDFs with exact conservation |
+| `stochastic::mack`, `multivariate_mack` | Distribution-free CL standard errors (single & correlated multi-line) with stochastic tails |
+| `stochastic::mack_bf` | Analytical BF MSEP decomposing process, prior, pattern, and interaction variance |
+| `stochastic::merz_wuthrich` | 1-year Solvency II CDR analytical MSEP and multi-year run-off decomposition |
+| `stochastic::reserve_runoff` | England–Verrall–Wüthrich (2019) fixed-history 1-year re-reserving simulation (Mack & ODP) |
+| `stochastic::multivariate_cl` | Joint K-line Diagonal MCL and General GMCL with full cross-line covariance |
+| `stochastic::paid_incurred_chain` | Bayesian log-normal joint paid/incurred model with closed-form posterior & MSEP |
+| `stochastic::hertig` | Exact closed-form log-normal link-ratio moments and quantiles |
+| `stochastic::kalman_reserving` | Recursive Kalman filter over calendar diagonals for dynamic inflation shifts |
+| `stochastic::micro_reserving` | Individual-claim reserving (NHPP, reporting delay, multi-state RBNS + IBNR simulation) |
+| `stochastic::clark_mle` | Loglogistic & Weibull growth-curve ODP MLE with Cramér–Rao standard errors |
+| `stochastic::ptf_regression` | Probabilistic Trend Family log-linear regression for accident, dev, and calendar trends |
+| `stochastic::glm_reserving` | Built-in Householder QR IRLS engine for ODP, Gamma, Tweedie, and Log-normal GLMs |
+| `stochastic::bootstrap_odp` | ODP GLM bootstrap with hat-matrix leverages, process variance, and 1-year CDR re-reserving |
+
+### `capital` — Dependence, Aggregate Loss & Capital Allocation
+
+| Module | Capabilities |
+| --- | --- |
+| `capital::dependence` | Iman–Conover rank reordering and synchronized multi-line ODP bootstrap |
+| `capital::reserve_distribution` | Empirical moments, VaR, coherent TVaR, and RVaR |
+| `capital::aggregate_loss` | Panjer (a, b, 0) recursion, exponentially tilted FFT, and severity discretization |
+| `capital::capital_allocation` | Euler allocation (TVaR, RVaR, SD) and Myers–Read marginal default-put allocation |
+
+### `excess`, `preprocessing`, `diagnostics` & `subannual`
+
+| Module | Capabilities |
+| --- | --- |
+| `excess::severity`, `excess_layers`, `excess_development` | Closed-form LEV/survival/PDF, excess layer simulation, and excess/limited development factors |
 | `diagnostics` | Mack Spearman & calendar-year tests, actual vs. expected, leave-one-out fragility, and paid/incurred reconciliation |
-| `selection`, `reserve_rollforward`, `exhibit` | Holdout LDF backtesting, valuation roll-forwards, and JSON exhibit DTOs |
-| `large_loss`, `trend`, `onlevel` | Large-loss capping, loss trending, and parallelogram rate on-leveling |
-| `count_development`, `apriori`, `aggregate` | Claim-count development, a priori loss-ratio builders, and triangle aggregation |
+| `subannual` | Asymmetric grids (2:1/4:1/12:1), 7 CDF/LDF interpolators (SWIMON, Spliced Weibull, IVF12), Bloom stubs, asymmetric CL/BF/Cape Cod/Clark/ODP, and parity checks |
+| `preprocessing::triangle`, `triangle_algebra`, `ragged` | Cumulative/incremental transforms, ragged link selectors, and allocation-free slice kernels |
+| `preprocessing::selection`, `reserve_rollforward`, `exhibit` | Holdout LDF backtesting, valuation roll-forwards, and JSON exhibit DTOs |
+| `preprocessing::large_loss`, `trend`, `onlevel`, `count_development`, `apriori`, `aggregate` | Large-loss capping, trending, parallelogram on-leveling, count development, a priori builders, and aggregation |
 
 </details>
 
