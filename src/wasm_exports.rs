@@ -4,6 +4,12 @@
 //! `u32` for counts/sizes) so JavaScript can call them directly through
 //! `WebAssembly.Instance.exports` with no bindgen glue.
 //!
+//! # Safety
+//!
+//! These exports exchange data through process-global `static mut` scratch
+//! buffers and are **strictly for single-threaded `wasm32` hosts**. Do not
+//! invoke them concurrently from multiple threads on native targets.
+//!
 //! Data is exchanged through static buffers:
 //!
 //! * `rk_tri_ptr`  — cumulative triangle, row-major, `N_MAX × N_MAX`

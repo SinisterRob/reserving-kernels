@@ -62,6 +62,7 @@ pub mod types;
 pub mod validate;
 
 #[cfg(feature = "wasm")]
+#[doc(hidden)]
 pub mod wasm_exports;
 
 pub use types::{Triangle, TriangleView};

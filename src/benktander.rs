@@ -98,6 +98,7 @@ pub fn mack_optimal_credibility(
 }
 
 /// Checked Benktander–Hovinen reserving service.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct BenktanderEngine;
 
 impl BenktanderEngine {

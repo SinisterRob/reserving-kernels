@@ -1,6 +1,6 @@
 [package]
 name = "reserving-kernels"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.97"
 authors = ["Robert Jurgens, FCAS <robertdjurgens@gmail.com>"]
@@ -8,10 +8,24 @@ description = "Pure Rust numeric kernels for P&C actuarial reserving and reserve
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/SinisterRob/reserving-kernels"
 homepage = "https://sinisterrob.github.io"
+documentation = "https://docs.rs/reserving-kernels"
 readme = "README.md"
-exclude = ["assets/", ".github/", ".githooks/", "scripts/"]
+exclude = [
+    "assets/",
+    ".github/",
+    ".githooks/",
+    ".gitignore",
+    ".gitattributes",
+    ".env",
+    ".env.*",
+    "scripts/",
+    "benches/baseline-*.json",
+]
 keywords = ["actuarial", "reserving", "chain-ladder", "bootstrap", "insurance"]
 categories = ["mathematics", "science", "simulation"]
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lib]
 name = "reserving_kernels"
@@ -20,14 +34,15 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
+# Single-threaded C-ABI exports for wasm32 browser builds (not for concurrent native use).
 wasm = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+serde_json = "1"
 
 [[bench]]
 name = "triangle_algebra"

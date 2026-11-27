@@ -322,6 +322,23 @@ impl Triangle {
 
 impl fmt::Display for Triangle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.view().fmt(f)
+    }
+}
+
+/// A non-owning view over a triangle's row-major buffer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TriangleView<'a> {
+    /// Number of origin periods.
+    pub n_origins: usize,
+    /// Number of development periods.
+    pub n_devs: usize,
+    /// Row-major buffer.
+    pub data: &'a [f64],
+}
+
+impl fmt::Display for TriangleView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for i in 0..self.n_origins {
             if i > 0 {
                 writeln!(f)?;
@@ -340,17 +357,6 @@ impl fmt::Display for Triangle {
         }
         Ok(())
     }
-}
-
-/// A non-owning view over a triangle's row-major buffer.
-#[derive(Debug, Clone, Copy)]
-pub struct TriangleView<'a> {
-    /// Number of origin periods.
-    pub n_origins: usize,
-    /// Number of development periods.
-    pub n_devs: usize,
-    /// Row-major buffer.
-    pub data: &'a [f64],
 }
 
 impl TriangleView<'_> {

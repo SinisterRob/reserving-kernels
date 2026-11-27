@@ -78,6 +78,7 @@ pub struct CapeCodProjection {
 }
 
 /// Checked Cape Cod service.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CapeCodEngine;
 
 impl CapeCodEngine {
