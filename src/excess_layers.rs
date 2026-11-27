@@ -1,188 +1,239 @@
-//! Lognormal severity layering and Limited Expected Values (LEV).
+//! Parameterized lognormal severity layering and Limited Expected Values (LEV).
 //!
 //! Provides exact closed-form lognormal limited expected value $E[X \wedge L]$
-//! alongside a deterministic SplitMix64 + antithetic Marsaglia polar Monte Carlo
-//! engine with sorted prefix-sum $O(\log N)$ layer evaluation.
+//! and layer expectations via [`LognormalLayerModel`], alongside a
+//! deterministic SplitMix64 + antithetic Marsaglia polar Monte Carlo engine
+//! ([`LognormalLayerSampler`]) with sorted prefix-sum $O(\log N)$ layer queries.
 
-use std::sync::OnceLock;
+use crate::validate::ValidationError;
 
-/// Default ground-up expected severity ($100,000).
-pub const GROUND_UP_MEAN: f64 = 100_000.0;
-/// Default primary retention / excess attachment point ($100,000).
-pub const ATTACHMENT: f64 = 100_000.0;
-const LN_GROUND_UP_MEAN: f64 = 11.512925464970229;
-const SAMPLE_SIZE: usize = 65_536;
-const HALF_SAMPLE: usize = SAMPLE_SIZE / 2;
-const INV_SAMPLE_SIZE: f64 = 1.0 / (SAMPLE_SIZE as f64);
-const SEED: u64 = 2026;
-const INV_SQRT_TAU: f64 = 0.3989422804014327;
+const INV_SQRT_TAU: f64 = 0.398_942_280_401_432_7;
 
-#[derive(Clone, Copy)]
-struct TailParams {
+/// Closed-form lognormal severity model parameterized by ground-up `mean > 0`
+/// and log-scale standard deviation `sigma > 0`.
+///
+/// The underlying lognormal parameters satisfy
+/// $\mu = \ln(\text{mean}) - \tfrac{1}{2}\sigma^2$ so `E[X] = mean`.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LognormalLayerModel {
+    mean: f64,
     sigma: f64,
     inv_sigma: f64,
     log_mean: f64,
     pdf_scale: f64,
 }
 
-const fn make_tail(sigma: f64) -> TailParams {
-    TailParams {
-        sigma,
-        inv_sigma: 1.0 / sigma,
-        log_mean: LN_GROUND_UP_MEAN - 0.5 * sigma * sigma,
-        pdf_scale: INV_SQRT_TAU / sigma,
+impl LognormalLayerModel {
+    /// Construct a validated lognormal layer model with ground-up `mean > 0`
+    /// and log-scale standard deviation `sigma > 0`.
+    pub fn try_new(mean: f64, sigma: f64) -> Result<Self, ValidationError> {
+        if !mean.is_finite() || !sigma.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        if mean <= 0.0 {
+            return Err(ValidationError::NonPositive("ground-up mean"));
+        }
+        if sigma <= 0.0 {
+            return Err(ValidationError::NonPositive("lognormal sigma"));
+        }
+        Ok(Self {
+            mean,
+            sigma,
+            inv_sigma: 1.0 / sigma,
+            log_mean: mean.ln() - 0.5 * sigma * sigma,
+            pdf_scale: INV_SQRT_TAU / sigma,
+        })
+    }
+
+    /// Ground-up expected severity `E[X]`.
+    #[inline]
+    pub fn mean(&self) -> f64 {
+        self.mean
+    }
+
+    /// Log-scale standard deviation $\sigma$.
+    #[inline]
+    pub fn sigma(&self) -> f64 {
+        self.sigma
+    }
+
+    /// Closed-form Limited Expected Value $E[X \wedge L]$.
+    ///
+    /// Returns `0.0` for `limit <= 0.0`, `mean` for `+∞`, and `NaN` for `NaN`.
+    #[inline]
+    pub fn exact_lev(&self, limit: f64) -> f64 {
+        if limit.is_nan() {
+            return f64::NAN;
+        }
+        if limit <= 0.0 {
+            return 0.0;
+        }
+        if !limit.is_finite() {
+            return self.mean;
+        }
+        let z = (limit.ln() - self.log_mean) * self.inv_sigma;
+        self.mean * crate::severity::normal_cdf_exact(z - self.sigma)
+            + limit * crate::severity::normal_cdf_exact(-z)
+    }
+
+    /// Closed-form expected loss in the layer `(attachment, top]`:
+    /// $E[\min(X, \text{top}) - \min(X, \text{attachment})]$.
+    ///
+    /// Returns `0.0` when `top <= attachment`.
+    #[inline]
+    pub fn exact_layer(&self, attachment: f64, top: f64) -> f64 {
+        if attachment.is_nan() || top.is_nan() {
+            return f64::NAN;
+        }
+        let att = attachment.max(0.0);
+        if top <= att {
+            return 0.0;
+        }
+        (self.exact_lev(top) - self.exact_lev(att)).max(0.0)
+    }
+
+    /// Exceedance probability $P(X > \text{threshold})$.
+    #[inline]
+    pub fn exceedance_prob(&self, threshold: f64) -> f64 {
+        if threshold.is_nan() {
+            return f64::NAN;
+        }
+        if threshold <= 0.0 {
+            return 1.0;
+        }
+        if !threshold.is_finite() {
+            return 0.0;
+        }
+        let z = (threshold.ln() - self.log_mean) * self.inv_sigma;
+        crate::severity::normal_cdf_exact(-z)
+    }
+
+    /// Lognormal probability density function $f_X(x)$ at loss amount `x`.
+    #[inline]
+    pub fn pdf(&self, x: f64) -> f64 {
+        if x <= 0.0 || !x.is_finite() {
+            return 0.0;
+        }
+        let z = (x.ln() - self.log_mean) * self.inv_sigma;
+        (self.pdf_scale / x) * (-0.5 * z * z).exp()
     }
 }
 
-const TAIL_PARAMS: [TailParams; 3] = [make_tail(0.55), make_tail(1.00), make_tail(1.55)];
-
-#[inline]
-const fn tail_index(tail: u32) -> usize {
-    match tail {
-        0 => 0,
-        2 => 2,
-        _ => 1,
-    }
+/// Deterministic antithetic Monte Carlo lognormal layer sampler with sorted
+/// prefix sums for $O(\log N)$ repeated layer evaluations.
+///
+/// No process-global caches are used; callers own the sampler lifetime.
+#[derive(Debug, Clone)]
+pub struct LognormalLayerSampler {
+    model: LognormalLayerModel,
+    inv_n: f64,
+    sorted_normals: Vec<f64>,
+    prefix_sums: Vec<f64>,
 }
 
-static SORTED_NORMALS: OnceLock<Vec<f64>> = OnceLock::new();
-static TAIL_PREFIX_SUMS: [OnceLock<Vec<f64>>; 3] =
-    [OnceLock::new(), OnceLock::new(), OnceLock::new()];
-
-fn sorted_normals() -> &'static [f64] {
-    SORTED_NORMALS.get_or_init(|| {
-        let mut state = SEED;
-        let mut pos = Vec::with_capacity(HALF_SAMPLE);
-        while pos.len() < HALF_SAMPLE {
+impl LognormalLayerSampler {
+    /// Generate `n_samples` (rounded up to an even count for exact antithetic
+    /// pairing) deterministic SplitMix64 + Marsaglia polar draws and build the
+    /// sorted prefix-sum table.
+    pub fn try_new(
+        model: LognormalLayerModel,
+        n_samples: usize,
+        seed: u64,
+    ) -> Result<Self, ValidationError> {
+        if n_samples < 2 {
+            return Err(ValidationError::InvalidParameter(
+                "LognormalLayerSampler requires at least 2 samples",
+            ));
+        }
+        let half = n_samples.div_ceil(2);
+        let total = half * 2;
+        let mut state = seed;
+        let mut pos = Vec::with_capacity(half);
+        while pos.len() < half {
             let u = 2.0 * uniform(&mut state) - 1.0;
             let v = 2.0 * uniform(&mut state) - 1.0;
             let s = u * u + v * v;
             if s > 0.0 && s < 1.0 {
                 let scale = (-2.0 * s.ln() / s).sqrt();
                 pos.push((u * scale).abs());
-                pos.push((v * scale).abs());
+                if pos.len() < half {
+                    pos.push((v * scale).abs());
+                }
             }
         }
         pos.sort_unstable_by(f64::total_cmp);
-        let mut all = Vec::with_capacity(SAMPLE_SIZE);
+
+        let mut sorted_normals = Vec::with_capacity(total);
         for &z in pos.iter().rev() {
-            all.push(-z);
+            sorted_normals.push(-z);
         }
-        all.extend_from_slice(&pos);
-        all
-    })
-}
+        sorted_normals.extend_from_slice(&pos);
 
-fn tail_prefix(t: usize) -> &'static [f64] {
-    TAIL_PREFIX_SUMS[t].get_or_init(|| {
-        let normals = sorted_normals();
-        let p = TAIL_PARAMS[t];
-        let mut prefix = Vec::with_capacity(SAMPLE_SIZE + 1);
+        let mut prefix_sums = Vec::with_capacity(total + 1);
         let mut acc = 0.0;
-        prefix.push(0.0);
-        for &z in normals {
-            acc += (p.log_mean + p.sigma * z).exp();
-            prefix.push(acc);
+        prefix_sums.push(0.0);
+        for &z in &sorted_normals {
+            acc += (model.log_mean + model.sigma * z).exp();
+            prefix_sums.push(acc);
         }
-        prefix
-    })
-}
 
-#[inline]
-fn simulated_lev(tail: u32, limit: f64) -> f64 {
-    if limit <= 0.0 || limit.is_nan() {
-        return 0.0;
+        Ok(Self {
+            model,
+            inv_n: 1.0 / (total as f64),
+            sorted_normals,
+            prefix_sums,
+        })
     }
-    let t = tail_index(tail);
-    let normals = sorted_normals();
-    let prefix = tail_prefix(t);
-    if !limit.is_finite() {
-        return prefix[SAMPLE_SIZE] * INV_SAMPLE_SIZE;
-    }
-    let p = TAIL_PARAMS[t];
-    let z_thresh = (limit.ln() - p.log_mean) * p.inv_sigma;
-    let k = normals.partition_point(|&z| z < z_thresh);
-    (prefix[k] + ((SAMPLE_SIZE - k) as f64) * limit) * INV_SAMPLE_SIZE
-}
 
-/// Closed-form expected loss in either the retained primary layer (`layer == 0`, $0$ to `ATTACHMENT`)
-/// or the excess layer (`layer == 1`, `ATTACHMENT` to `top`).
-pub fn expected_layer(tail: u32, top: f64, layer: u32) -> f64 {
-    let p = TAIL_PARAMS[tail_index(tail)];
-    let lower = limited_mean_params(ATTACHMENT, p);
-    if layer == 0 {
-        lower
-    } else if top <= ATTACHMENT {
-        0.0
-    } else {
-        (limited_mean_params(top, p) - lower).max(0.0)
+    /// Underlying analytical [`LognormalLayerModel`].
+    #[inline]
+    pub fn model(&self) -> LognormalLayerModel {
+        self.model
     }
-}
 
-/// Deterministic Monte Carlo estimate (fixed seed `2026`, $N = 65{,}536$ synchronized
-/// antithetic draws) evaluated in $O(\log N)$ via cached sorted prefix sums.
-pub fn simulated_layer(tail: u32, top: f64, layer: u32) -> f64 {
-    if layer == 0 {
-        simulated_lev(tail, ATTACHMENT)
-    } else if top <= ATTACHMENT {
-        0.0
-    } else {
-        (simulated_lev(tail, top) - simulated_lev(tail, ATTACHMENT)).max(0.0)
+    /// Number of antithetic draws held by this sampler.
+    #[inline]
+    pub fn n_samples(&self) -> usize {
+        self.sorted_normals.len()
     }
-}
 
-/// Probability that a single ground-up loss exceeds `threshold`, $P(X > \text{threshold})$.
-pub fn exceedance_prob(tail: u32, threshold: f64) -> f64 {
-    if threshold <= 0.0 {
-        return 1.0;
+    /// Simulated Limited Expected Value $E[X \wedge L]$ in $O(\log N)$.
+    #[inline]
+    pub fn simulated_lev(&self, limit: f64) -> f64 {
+        if limit.is_nan() {
+            return f64::NAN;
+        }
+        if limit <= 0.0 {
+            return 0.0;
+        }
+        let n = self.sorted_normals.len();
+        if !limit.is_finite() {
+            return self.prefix_sums[n] * self.inv_n;
+        }
+        let z_thresh = (limit.ln() - self.model.log_mean) * self.model.inv_sigma;
+        let k = self.sorted_normals.partition_point(|&z| z < z_thresh);
+        (self.prefix_sums[k] + ((n - k) as f64) * limit) * self.inv_n
     }
-    let p = TAIL_PARAMS[tail_index(tail)];
-    let z = (threshold.ln() - p.log_mean) * p.inv_sigma;
-    crate::severity::normal_cdf_exact(-z)
-}
 
-/// Lognormal probability density function $f_X(x)$ at loss amount `x`.
-pub fn severity_pdf(tail: u32, x: f64) -> f64 {
-    if x <= 0.0 || !x.is_finite() {
-        return 0.0;
+    /// Simulated expected loss in the layer `(attachment, top]` in $O(\log N)$.
+    #[inline]
+    pub fn simulated_layer(&self, attachment: f64, top: f64) -> f64 {
+        if attachment.is_nan() || top.is_nan() {
+            return f64::NAN;
+        }
+        let att = attachment.max(0.0);
+        if top <= att {
+            return 0.0;
+        }
+        (self.simulated_lev(top) - self.simulated_lev(att)).max(0.0)
     }
-    let p = TAIL_PARAMS[tail_index(tail)];
-    let z = (x.ln() - p.log_mean) * p.inv_sigma;
-    (p.pdf_scale / x) * (-0.5 * z * z).exp()
-}
-
-#[inline]
-fn limited_mean_params(limit: f64, p: TailParams) -> f64 {
-    if !limit.is_finite() {
-        return f64::NAN;
-    }
-    if limit <= 0.0 {
-        return 0.0;
-    }
-    let z = (limit.ln() - p.log_mean) * p.inv_sigma;
-    GROUND_UP_MEAN * crate::severity::normal_cdf_exact(z - p.sigma)
-        + limit * crate::severity::normal_cdf_exact(-z)
-}
-
-/// Lognormal Limited Expected Value $E[X \wedge L]$ for ground-up mean `GROUND_UP_MEAN` and log-SD `sigma`.
-pub fn limited_mean(limit: f64, sigma: f64) -> f64 {
-    if !limit.is_finite() || !sigma.is_finite() || sigma <= 0.0 {
-        return f64::NAN;
-    }
-    if limit <= 0.0 {
-        return 0.0;
-    }
-    let log_mean = LN_GROUND_UP_MEAN - 0.5 * sigma * sigma;
-    let z = (limit.ln() - log_mean) / sigma;
-    GROUND_UP_MEAN * crate::severity::normal_cdf_exact(z - sigma)
-        + limit * crate::severity::normal_cdf_exact(-z)
 }
 
 fn uniform(state: &mut u64) -> f64 {
-    *state = state.wrapping_add(0x9e3779b97f4a7c15);
+    *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut bits = *state;
-    bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d049bb133111eb);
+    bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     bits ^= bits >> 31;
     ((bits >> 12) as f64 + 0.5) / 4_503_599_627_370_496.0
 }
@@ -193,67 +244,77 @@ mod tests {
 
     #[test]
     fn first_layer_matches_reference_values() {
-        for (tail, reference) in [78_331.62, 61_707.51, 43_833.97].into_iter().enumerate() {
-            assert!((expected_layer(tail as u32, 350_000.0, 0) - reference).abs() < 0.03);
+        for (sigma, reference) in [(0.55, 78_331.62), (1.00, 61_707.51), (1.55, 43_833.97)] {
+            let model = LognormalLayerModel::try_new(100_000.0, sigma).expect("model");
+            assert!((model.exact_layer(0.0, 100_000.0) - reference).abs() < 0.03);
         }
     }
 
     #[test]
     fn layer_width_and_tail_change_relativities() {
-        let mut previous_ilf = 1.0;
-        for tail in 0..=2 {
-            let lower = expected_layer(tail, 350_000.0, 0);
-            assert_eq!(expected_layer(tail, ATTACHMENT, 1), 0.0);
+        let mut previous_ratio = 1.0;
+        for sigma in [0.55, 1.00, 1.55] {
+            let model = LognormalLayerModel::try_new(100_000.0, sigma).expect("model");
+            let lower = model.exact_layer(0.0, 100_000.0);
+            assert_eq!(model.exact_layer(100_000.0, 100_000.0), 0.0);
+            assert_eq!(model.exact_layer(100_000.0, 50_000.0), 0.0);
             let mut previous_upper = 0.0;
             for top in (150_000..=750_000).step_by(25_000) {
-                let upper = expected_layer(tail, f64::from(top), 1);
+                let upper = model.exact_layer(100_000.0, f64::from(top));
                 assert!(upper > previous_upper);
-                assert!(lower + upper <= GROUND_UP_MEAN);
+                assert!(lower + upper <= model.mean());
                 previous_upper = upper;
             }
-            let ilf = 1.0 + expected_layer(tail, 350_000.0, 1) / lower;
-            assert!(ilf > previous_ilf);
-            previous_ilf = ilf;
+            let ratio = 1.0 + model.exact_layer(100_000.0, 350_000.0) / lower;
+            assert!(ratio > previous_ratio);
+            previous_ratio = ratio;
         }
     }
 
     #[test]
     fn fixed_seed_simulation_agrees_with_limited_expectations() {
-        for tail in 0..=2 {
-            for top in (150_000..=750_000).step_by(25_000) {
-                for layer in 0..=1 {
-                    let exact = expected_layer(tail, f64::from(top), layer);
-                    let simulated = simulated_layer(tail, f64::from(top), layer);
-                    assert!(
-                        (exact - simulated).abs() < 1_000.0,
-                        "tail {tail}, top {top}, layer {layer}: {exact} vs. {simulated}"
-                    );
-                }
+        for sigma in [0.55, 1.00, 1.55] {
+            let model = LognormalLayerModel::try_new(100_000.0, sigma).expect("model");
+            let sampler = LognormalLayerSampler::try_new(model, 65_536, 2026).expect("sampler");
+            for top in (150_000..=750_000).step_by(50_000) {
+                let exact = model.exact_layer(100_000.0, f64::from(top));
+                let simulated = sampler.simulated_layer(100_000.0, f64::from(top));
+                assert!(
+                    (exact - simulated).abs() < 1_000.0,
+                    "sigma {sigma}, top {top}: {exact} vs. {simulated}"
+                );
             }
         }
-        assert_eq!(
-            simulated_layer(1, 350_000.0, 1),
-            simulated_layer(1, 350_000.0, 1)
-        );
     }
 
     #[test]
     fn exceedance_and_pdf_are_consistent() {
-        for tail in 0..=2 {
-            let p_att = exceedance_prob(tail, ATTACHMENT);
-            let p_top = exceedance_prob(tail, 350_000.0);
-            assert!(p_att > 0.0 && p_att < 1.0);
-            assert!(p_top > 0.0 && p_top < p_att);
-            assert_eq!(exceedance_prob(tail, 0.0), 1.0);
-            assert_eq!(severity_pdf(tail, 0.0), 0.0);
-            assert!(severity_pdf(tail, 50_000.0) > 0.0);
-            let dx = 1_000.0;
-            let mut area = 0.0;
-            for i in 0..2_000 {
-                let x = (f64::from(i) + 0.5) * dx;
-                area += severity_pdf(tail, x) * dx;
-            }
-            assert!(area > 0.90 && area <= 1.001, "tail {tail} area={area}");
-        }
+        let model = LognormalLayerModel::try_new(100_000.0, 1.0).expect("model");
+        let p_att = model.exceedance_prob(100_000.0);
+        let p_top = model.exceedance_prob(350_000.0);
+        assert!(p_att > 0.0 && p_att < 1.0);
+        assert!(p_top > 0.0 && p_top < p_att);
+        assert_eq!(model.exceedance_prob(0.0), 1.0);
+        assert_eq!(model.pdf(0.0), 0.0);
+        assert!(model.pdf(50_000.0) > 0.0);
+        let dx = 1_000.0;
+        let area: f64 = (0..2_000)
+            .map(|i| model.pdf((f64::from(i) + 0.5) * dx) * dx)
+            .sum();
+        assert!(area > 0.95 && area <= 1.001, "area={area}");
+    }
+
+    #[test]
+    fn validates_model_and_sampler_inputs() {
+        assert_eq!(
+            LognormalLayerModel::try_new(0.0, 1.0),
+            Err(ValidationError::NonPositive("ground-up mean"))
+        );
+        assert_eq!(
+            LognormalLayerModel::try_new(100_000.0, -0.5),
+            Err(ValidationError::NonPositive("lognormal sigma"))
+        );
+        let model = LognormalLayerModel::try_new(100_000.0, 1.0).expect("model");
+        assert!(LognormalLayerSampler::try_new(model, 1, 42).is_err());
     }
 }

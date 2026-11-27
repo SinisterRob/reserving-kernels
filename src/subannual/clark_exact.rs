@@ -659,7 +659,7 @@ mod tests {
 
         let sq_ldf = fit_clark_ldf(&tri.view(), &ClarkOptions::loglogistic()).unwrap();
         let ex_ldf = fit_clark_ldf_exact_age(
-            &tri.data,
+            tri.data(),
             &cell_ages,
             n,
             n,
@@ -680,7 +680,7 @@ mod tests {
         let prem = vec![10_000_000.0; n];
         let sq_cc = fit_clark_cape_cod(&tri.view(), &prem, &ClarkOptions::weibull()).unwrap();
         let ex_cc = fit_clark_cape_cod_exact_age(
-            &tri.data,
+            tri.data(),
             &cell_ages,
             n,
             n,

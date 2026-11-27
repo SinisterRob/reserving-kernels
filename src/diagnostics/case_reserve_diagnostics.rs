@@ -143,7 +143,7 @@ mod tests {
         let decay = case_decay_pattern(&paid_triangle().view(), &incurred_triangle().view())
             .expect("decay");
 
-        assert!(ratio.data[0].is_finite());
+        assert!(ratio.data()[0].is_finite());
         assert_eq!(decay.len(), 4);
         assert!(decay[0].is_finite());
     }

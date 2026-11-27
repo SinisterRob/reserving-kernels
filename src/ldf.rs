@@ -61,6 +61,7 @@ pub enum LdfSelectionMethod {
 
 /// Selected age-to-age factors and cumulative development factors.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct DevelopmentFactors {
     /// Selected age-to-age LDFs, length `n_dev - 1`.
     pub ldfs: Vec<f64>,
@@ -790,8 +791,8 @@ mod tests {
     fn volume_weighted_single_ldf_uses_only_observed_pairs() {
         let tri = triangle_3x3();
 
-        let f0 = volume_weighted_ldf(&tri.data, 3, 3, 0);
-        let f1 = volume_weighted_ldf(&tri.data, 3, 3, 1);
+        let f0 = volume_weighted_ldf(tri.data(), 3, 3, 0);
+        let f1 = volume_weighted_ldf(tri.data(), 3, 3, 1);
 
         assert!(close(f0, (150.0 + 180.0) / (100.0 + 120.0)));
         assert!(close(f1, 180.0 / 150.0));
@@ -802,7 +803,7 @@ mod tests {
         let tri = triangle_3x3();
         let mut out = [0.0; 2];
 
-        volume_weighted_ldfs(&tri.data, 3, 3, &mut out);
+        volume_weighted_ldfs(tri.data(), 3, 3, &mut out);
 
         assert!(close(out[0], 1.5));
         assert!(close(out[1], 1.2));
@@ -813,7 +814,7 @@ mod tests {
         let tri = triangle_5x5();
         let mut out = [0.0; 4];
 
-        volume_weighted_ldfs(&tri.data, 5, 5, &mut out);
+        volume_weighted_ldfs(tri.data(), 5, 5, &mut out);
 
         assert!(close(out[0], 1.5));
         assert!(close(out[1], 1.2));

@@ -226,6 +226,7 @@ pub struct OdpCellResidual {
 
 /// Immutable ODP GLM fit, dispersion, leverages, and analytic prediction errors.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct OdpFit {
     /// Number of origin rows.
     pub n_origins: usize,
@@ -273,6 +274,7 @@ pub struct OdpFit {
 /// Full ODP bootstrap output with fit diagnostics, per-origin distributions,
 /// and explicit failure accounting.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct OdpBootstrapResult {
     /// Underlying ODP GLM fit and analytic prediction errors.
     pub fit: OdpFit,

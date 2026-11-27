@@ -745,7 +745,7 @@ mod tests {
         let t2 = Triangle::new(
             5,
             5,
-            t1.data
+            t1.data()
                 .iter()
                 .map(|v| if v.is_finite() { v * 2.0 } else { NAN })
                 .collect(),

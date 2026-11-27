@@ -183,10 +183,10 @@ mod tests {
         let ratio = paid_to_incurred_ratio_triangle(&paid.view(), &incurred.view())
             .expect("ratio triangle");
 
-        assert!(close(case.data[0], 200.0));
-        assert!(close(case.data[1], 150.0));
-        assert!(close(ratio.data[0], 1000.0 / 1200.0));
-        assert!(ratio.data[7].is_nan());
+        assert!(close(case.data()[0], 200.0));
+        assert!(close(case.data()[1], 150.0));
+        assert!(close(ratio.data()[0], 1000.0 / 1200.0));
+        assert!(ratio.data()[7].is_nan());
     }
 
     #[test]

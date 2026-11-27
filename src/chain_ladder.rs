@@ -28,6 +28,7 @@ use crate::validate::{
 
 /// Chain-ladder projection result.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ChainLadderProjection {
     /// Latest observed cumulative value by origin.
     pub latest: Vec<f64>,

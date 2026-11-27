@@ -207,7 +207,7 @@ fn asymmetric_chain_ladder_matches_square_chain_ladder_on_genins() {
 
     let sq = tri.chain_ladder(1.0).unwrap();
     let asym = asymmetric_chain_ladder(
-        &tri.data,
+        tri.data(),
         &grid,
         LdfSelectionMethod::VolumeWeighted,
         1.0,
@@ -305,7 +305,7 @@ fn asymmetric_odp_bootstrap_is_deterministic_and_supports_all_modes() {
     let grid = asymmetric_age_grid(n, n, 12.0, 12.0, 12.0, None).unwrap();
 
     let sq_fit = fit_odp(&tri.view(), 1.0, MonotonicityPolicy::Strict).unwrap();
-    let asym_fit = fit_asymmetric_odp(&tri.data, &grid, 1.0, MonotonicityPolicy::Strict).unwrap();
+    let asym_fit = fit_asymmetric_odp(tri.data(), &grid, 1.0, MonotonicityPolicy::Strict).unwrap();
     assert!((sq_fit.dispersion - asym_fit.phi).abs() < 1e-8);
 
     let opts_a = OdpBootstrapOptions {
@@ -316,8 +316,8 @@ fn asymmetric_odp_bootstrap_is_deterministic_and_supports_all_modes() {
         center_residuals: true,
         monotonicity_policy: MonotonicityPolicy::Strict,
     };
-    let b1 = asymmetric_odp_bootstrap(&tri.data, &grid, 1.0, opts_a).unwrap();
-    let b2 = asymmetric_odp_bootstrap(&tri.data, &grid, 1.0, opts_a).unwrap();
+    let b1 = asymmetric_odp_bootstrap(tri.data(), &grid, 1.0, opts_a).unwrap();
+    let b2 = asymmetric_odp_bootstrap(tri.data(), &grid, 1.0, opts_a).unwrap();
     assert_eq!(b1.simulated_totals, b2.simulated_totals);
 
     // Serde JSON roundtrip check.

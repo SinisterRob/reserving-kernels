@@ -42,6 +42,7 @@ use crate::validate::{
 
 /// Bornhuetter-Ferguson projection result.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct BornhuetterFergusonProjection {
     /// Latest observed cumulative value by origin.
     pub latest: Vec<f64>,

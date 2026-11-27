@@ -48,6 +48,7 @@ use crate::validate::{MonotonicityPolicy, ValidationError};
 
 /// Result of the Merz & Wüthrich (2008) 1-year CDR MSEP calculation.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct MerzWuthrichResult {
     /// Volume-weighted chain-ladder LDFs (length `n - 1`).
     pub ldf: Vec<f64>,

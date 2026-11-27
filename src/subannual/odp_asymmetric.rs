@@ -587,7 +587,7 @@ mod tests {
         let n = tri.n();
         let grid = asymmetric_age_grid(n, n, 12.0, 12.0, 12.0, None).unwrap();
         let sq = fit_odp(&tri.view(), 1.0, MonotonicityPolicy::Strict).unwrap();
-        let asym = fit_asymmetric_odp(&tri.data, &grid, 1.0, MonotonicityPolicy::Strict).unwrap();
+        let asym = fit_asymmetric_odp(tri.data(), &grid, 1.0, MonotonicityPolicy::Strict).unwrap();
 
         assert_eq!(sq.n_observed, asym.n_observed);
         assert_eq!(sq.rank, asym.n_params);

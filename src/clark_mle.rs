@@ -186,6 +186,7 @@ impl ClarkOptions {
 
 /// Full output from Clark (2003) LDF or Cape Cod parametric MLE reserving.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ClarkMleResult {
     /// Growth curve family fitted.
     pub curve: GrowthCurve,

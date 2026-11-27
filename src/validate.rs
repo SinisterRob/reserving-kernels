@@ -319,3 +319,59 @@ pub(crate) fn validate_observed_count_inputs(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_triangle_checks_shape_square_finite_and_sign() {
+        let bad_len = TriangleView {
+            n_origins: 2,
+            n_devs: 2,
+            data: &[1.0, 2.0, 3.0],
+        };
+        assert_eq!(
+            validate_triangle(&bad_len),
+            Err(ValidationError::ShapeMismatch)
+        );
+
+        let rect = TriangleView {
+            n_origins: 2,
+            n_devs: 3,
+            data: &[1.0, 2.0, 3.0, 4.0, 5.0, f64::NAN],
+        };
+        assert_eq!(validate_triangle(&rect), Err(ValidationError::NotSquare));
+
+        let nan_obs = TriangleView {
+            n_origins: 2,
+            n_devs: 2,
+            data: &[1.0, f64::NAN, 3.0, f64::NAN],
+        };
+        assert_eq!(validate_triangle(&nan_obs), Err(ValidationError::NotFinite));
+
+        let neg = TriangleView {
+            n_origins: 2,
+            n_devs: 2,
+            data: &[1.0, -2.0, 3.0, f64::NAN],
+        };
+        assert_eq!(validate_triangle(&neg), Err(ValidationError::Negative));
+    }
+
+    #[test]
+    fn validate_premium_checks_length_finiteness_and_positivity() {
+        assert_eq!(
+            validate_premium(&[100.0], 2),
+            Err(ValidationError::ShapeMismatch)
+        );
+        assert_eq!(
+            validate_premium(&[100.0, f64::NAN], 2),
+            Err(ValidationError::NotFinite)
+        );
+        assert_eq!(
+            validate_premium(&[100.0, 0.0], 2),
+            Err(ValidationError::NonPositive("premium"))
+        );
+        assert_eq!(validate_premium(&[100.0, 200.0], 2), Ok(()));
+    }
+}

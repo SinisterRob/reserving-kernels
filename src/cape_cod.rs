@@ -56,6 +56,7 @@ pub fn project_unchecked(
 
 /// Checked Cape Cod projection result.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct CapeCodProjection {
     /// Data-implied expected loss ratio.
     pub elr: f64,
@@ -178,4 +179,43 @@ fn validate_cape_cod_inputs(
         cumulative.n_devs,
         "Cape Cod factor",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ldf::DevelopmentFactorEngine;
+    use crate::types::Triangle;
+
+    #[test]
+    fn cape_cod_elr_and_used_premium_conservation() {
+        let tri = Triangle::try_from_upper_rows(&[
+            &[100.0, 160.0, 195.0, 205.0],
+            &[120.0, 190.0, 232.0],
+            &[135.0, 218.0],
+            &[150.0],
+        ])
+        .expect("triangle");
+        let prem = [300.0, 340.0, 380.0, 420.0];
+        let factors = DevelopmentFactorEngine::volume_weighted(&tri.view(), 1.0).expect("factors");
+        let proj = CapeCodEngine::project(&tri.view(), &factors, &prem).expect("cape cod");
+
+        assert!((proj.elr - proj.total_latest / proj.total_used_premium).abs() < 1e-12);
+        assert!(proj.bf_projection.total_reserve > 0.0);
+        for (i, (&p, &eu)) in prem.iter().zip(proj.expected_ultimate.iter()).enumerate() {
+            assert!((eu - p * proj.elr).abs() < 1e-10, "origin {i}");
+        }
+    }
+
+    #[test]
+    fn cape_cod_rejects_non_positive_premium() {
+        let tri =
+            Triangle::try_from_upper_rows(&[&[100.0, 160.0, 195.0], &[120.0, 190.0], &[135.0]])
+                .expect("triangle");
+        let factors = DevelopmentFactorEngine::volume_weighted(&tri.view(), 1.0).expect("factors");
+        assert_eq!(
+            CapeCodEngine::project(&tri.view(), &factors, &[300.0, 0.0, 380.0]),
+            Err(ValidationError::NonPositive("premium"))
+        );
+    }
 }

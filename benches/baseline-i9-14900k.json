@@ -3,7 +3,7 @@
     "hardware": "Intel Core i9-14900K",
     "host": "robbit-theliomira",
     "rustc": "1.97.0",
-    "commit": "5261ddc",
+    "commit": "cff50f4",
     "updated_at": "2026-11-26",
     "reference_r": "ChainLadder 0.2.21",
     "reference_python": "chainladder-python 0.10.1"
@@ -11,25 +11,25 @@
   "comparison": [
     {
       "id": "deterministic/volume_weighted_ldfs_40x40",
-      "label": "Volume-Weighted LDFs (40×40)",
+      "label": "Volume-Weighted LDFs (40\u00d740)",
       "r_ns": 840000.0,
       "python_ns": 5710000.0
     },
     {
       "id": "deterministic/mack_raa_10x10",
-      "label": "Mack Chain Ladder (RAA 10×10)",
+      "label": "Mack Chain Ladder (RAA 10\u00d710)",
       "r_ns": 5840000.0,
       "python_ns": 25446000.0
     },
     {
       "id": "deterministic/mack_40x40",
-      "label": "Mack Chain Ladder (40×40)",
+      "label": "Mack Chain Ladder (40\u00d740)",
       "r_ns": 24650000.0,
       "python_ns": 30077000.0
     },
     {
       "id": "deterministic/merz_wuthrich_raa_10x10",
-      "label": "Merz–Wüthrich 1-Yr CDR (RAA)",
+      "label": "Merz\u2013W\u00fcthrich 1-Yr CDR (RAA)",
       "r_ns": 9420000.0,
       "python_ns": null
     },
@@ -60,120 +60,128 @@
   ],
   "benchmarks": {
     "advanced/dcl_40x40": {
-      "median_ns": 15382.86,
-      "mean_ns": 15389.39
+      "median_ns": 9072.67,
+      "mean_ns": 9084.93
     },
     "advanced/euler_tvar_10k_x_5": {
-      "median_ns": 129278.17,
-      "mean_ns": 129469.71
+      "median_ns": 130470.71,
+      "mean_ns": 131605.01
     },
     "advanced/kalman_genins_10x10": {
-      "median_ns": 26668.02,
-      "mean_ns": 26799.1
+      "median_ns": 30087.25,
+      "mean_ns": 30138.31
     },
     "advanced/micro_simulate_1000": {
-      "median_ns": 1569083.77,
-      "mean_ns": 1569457.18
+      "median_ns": 1029222.1,
+      "mean_ns": 1031886.32
     },
     "advanced/multivariate_cl_gmcl_2line_10x10": {
-      "median_ns": 3320.75,
-      "mean_ns": 3330.84
+      "median_ns": 3417.14,
+      "mean_ns": 3426.04
     },
     "advanced/multivariate_mack_2line_40x40": {
-      "median_ns": 22273.27,
-      "mean_ns": 22279.99
+      "median_ns": 17816.82,
+      "mean_ns": 17801.47
     },
     "advanced/myers_read_ratio_10k_x_5": {
-      "median_ns": 168389.79,
-      "mean_ns": 168385.78
+      "median_ns": 166366.53,
+      "mean_ns": 171636.97
     },
     "advanced/pic_friedland_10x10": {
-      "median_ns": 6940.8,
-      "mean_ns": 6952.83
+      "median_ns": 6560.95,
+      "mean_ns": 6696.46
     },
     "advanced/ptf_genins_10x10": {
-      "median_ns": 16888.02,
-      "mean_ns": 16894.11
+      "median_ns": 16179.17,
+      "mean_ns": 16194.41
     },
     "aggregate_excess/excess_layers_simulated_65k": {
       "median_ns": 34.56,
       "mean_ns": 34.82
     },
     "aggregate_excess/fft_aggregate_loss_4096": {
-      "median_ns": 122114.68,
-      "mean_ns": 121919.39
+      "median_ns": 124598.72,
+      "mean_ns": 126106.71
     },
     "aggregate_excess/panjer_recursion_512": {
-      "median_ns": 13868.59,
-      "mean_ns": 13738.95
+      "median_ns": 13873.46,
+      "mean_ns": 13972.11
     },
     "bootstrap/odp_cdr_genins_1000": {
-      "median_ns": 226270.15,
-      "mean_ns": 226371.45
+      "median_ns": 226863.98,
+      "mean_ns": 227303.29
     },
     "bootstrap/odp_genins/1000": {
-      "median_ns": 187937.2,
-      "mean_ns": 186590.57
+      "median_ns": 187240.22,
+      "mean_ns": 187279.28
     },
     "bootstrap/odp_genins/10000": {
-      "median_ns": 1910813.93,
-      "mean_ns": 1906904.3
+      "median_ns": 1895693.62,
+      "mean_ns": 1899302.55
     },
     "bootstrap/synchronized_odp_2line_500": {
-      "median_ns": 190722.3,
-      "mean_ns": 190995.38
+      "median_ns": 193992.35,
+      "mean_ns": 194373.66
     },
     "dependence_dist/iman_conover_2000x3": {
-      "median_ns": 314430.69,
-      "mean_ns": 316892.09
+      "median_ns": 325850.92,
+      "mean_ns": 327122.41
     },
     "dependence_dist/reserve_dist_summarize_10k": {
-      "median_ns": 19306.43,
-      "mean_ns": 19208.33
+      "median_ns": 19889.51,
+      "mean_ns": 19899.56
     },
     "dependence_dist/reserve_dist_tvar_coherent_10k": {
-      "median_ns": 9830.32,
-      "mean_ns": 9920.91
+      "median_ns": 10269.05,
+      "mean_ns": 10358.39
     },
     "deterministic/mack_40x40": {
-      "median_ns": 3073.59,
-      "mean_ns": 3100.09
+      "median_ns": 2620.72,
+      "mean_ns": 2646.78
     },
     "deterministic/mack_raa_10x10": {
-      "median_ns": 264.33,
-      "mean_ns": 265.86
+      "median_ns": 270.14,
+      "mean_ns": 270.23
     },
     "deterministic/merz_wuthrich_40x40": {
-      "median_ns": 4556.91,
-      "mean_ns": 4529.0
+      "median_ns": 3011.29,
+      "mean_ns": 3013.29
     },
     "deterministic/merz_wuthrich_raa_10x10": {
-      "median_ns": 394.36,
-      "mean_ns": 394.35
+      "median_ns": 383.24,
+      "mean_ns": 383.5
     },
     "deterministic/volume_weighted_ldfs_40x40": {
-      "median_ns": 277.07,
-      "mean_ns": 277.94
+      "median_ns": 296.69,
+      "mean_ns": 297.51
     },
     "mle_glm/clark_loglogistic_genins": {
-      "median_ns": 11523.65,
-      "mean_ns": 11525.94
+      "median_ns": 11667.53,
+      "mean_ns": 11731.92
     },
     "mle_glm/clark_weibull_genins": {
-      "median_ns": 25919.27,
-      "mean_ns": 26133.23
+      "median_ns": 26648.98,
+      "mean_ns": 26599.86
     },
     "mle_glm/glm_gamma_genins": {
-      "median_ns": 87336.63,
-      "mean_ns": 87978.0
+      "median_ns": 4787.26,
+      "mean_ns": 4785.39
     },
     "mle_glm/glm_odp_genins": {
-      "median_ns": 42892.03,
-      "mean_ns": 42820.04
+      "median_ns": 1200.7,
+      "mean_ns": 1209.06
     },
     "mle_glm/odp_fit_genins": {
-      "median_ns": 726.42,
-      "mean_ns": 732.24
+      "median_ns": 791.0,
+      "mean_ns": 793.15
+    },
+    "aggregate_excess/excess_layers_build_65k": {
+      "median_ns": 911931.59,
+      "mean_ns": 918575.32
+    },
+    "aggregate_excess/excess_layers_lookup_65k": {
+      "median_ns": 39.42,
+      "mean_ns": 39.6
     }
   }
 }

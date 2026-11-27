@@ -174,7 +174,7 @@ mod tests {
         let detrended = detrend_triangle(&triangle.view(), &factors).expect("detrend");
         let retrended = retrend_triangle(&detrended.view(), &factors).expect("retrend");
 
-        for (left, right) in triangle.data.iter().zip(retrended.data.iter()) {
+        for (left, right) in triangle.data().iter().zip(retrended.data().iter()) {
             if left.is_nan() {
                 assert!(right.is_nan());
             } else {

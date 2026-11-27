@@ -29,53 +29,53 @@
   <line x1="258.0" y1="100" x2="258.0" y2="524" stroke="#30363d" stroke-width="1"/>
   <text x="26" y="127.0" class="label">Volume-Weighted LDFs (40×40)</text>
   <rect x="258.0" y="107.0" width="2.5" height="8" rx="1.5" fill="#f97316"/>
-  <text x="267.5" y="114.5" class="val-rust">0.28 µs</text>
+  <text x="267.5" y="114.5" class="val-rust">0.30 µs</text>
   <rect x="258.0" y="119.0" width="62.4" height="8" rx="2" fill="#38bdf8" opacity="0.88"/>
   <text x="327.4" y="126.5" class="val" fill="#7dd3fc">840 µs</text>
   <rect x="258.0" y="131.0" width="424.0" height="8" rx="2" fill="#a78bfa" opacity="0.88"/>
   <text x="689.0" y="138.5" class="val" fill="#c4b5fd">5.71 ms</text>
-  <text x="892.0" y="127.0" text-anchor="end" class="speedup">3,030×–20,600×</text>
+  <text x="892.0" y="127.0" text-anchor="end" class="speedup">2,830×–19,200×</text>
   <rect x="18" y="152.0" width="884" height="50.0" rx="6" fill="#161b22" opacity="0.55"/>
   <text x="26" y="181.0" class="label">Mack Chain Ladder (RAA 10×10)</text>
   <rect x="258.0" y="161.0" width="2.5" height="8" rx="1.5" fill="#f97316"/>
-  <text x="267.5" y="168.5" class="val-rust">0.26 µs</text>
+  <text x="267.5" y="168.5" class="val-rust">0.27 µs</text>
   <rect x="258.0" y="173.0" width="97.3" height="8" rx="2" fill="#38bdf8" opacity="0.88"/>
   <text x="362.3" y="180.5" class="val" fill="#7dd3fc">5.84 ms</text>
   <rect x="258.0" y="185.0" width="424.0" height="8" rx="2" fill="#a78bfa" opacity="0.88"/>
   <text x="689.0" y="192.5" class="val" fill="#c4b5fd">25.4 ms</text>
-  <text x="892.0" y="181.0" text-anchor="end" class="speedup">22,100×–96,300×</text>
+  <text x="892.0" y="181.0" text-anchor="end" class="speedup">21,600×–94,200×</text>
   <text x="26" y="235.0" class="label">Mack Chain Ladder (40×40)</text>
   <rect x="258.0" y="215.0" width="2.5" height="8" rx="1.5" fill="#f97316"/>
-  <text x="267.5" y="222.5" class="val-rust">3.07 µs</text>
+  <text x="267.5" y="222.5" class="val-rust">2.62 µs</text>
   <rect x="258.0" y="227.0" width="347.5" height="8" rx="2" fill="#38bdf8" opacity="0.88"/>
   <text x="612.5" y="234.5" class="val" fill="#7dd3fc">24.6 ms</text>
   <rect x="258.0" y="239.0" width="424.0" height="8" rx="2" fill="#a78bfa" opacity="0.88"/>
   <text x="689.0" y="246.5" class="val" fill="#c4b5fd">30.1 ms</text>
-  <text x="892.0" y="235.0" text-anchor="end" class="speedup">8,020×–9,790×</text>
+  <text x="892.0" y="235.0" text-anchor="end" class="speedup">9,410×–11,500×</text>
   <rect x="18" y="260.0" width="884" height="50.0" rx="6" fill="#161b22" opacity="0.55"/>
   <text x="26" y="289.0" class="label">Merz–Wüthrich 1-Yr CDR (RAA)</text>
   <rect x="258.0" y="275.0" width="2.5" height="8" rx="1.5" fill="#f97316"/>
-  <text x="267.5" y="282.5" class="val-rust">0.39 µs</text>
+  <text x="267.5" y="282.5" class="val-rust">0.38 µs</text>
   <rect x="258.0" y="287.0" width="424.0" height="8" rx="2" fill="#38bdf8" opacity="0.88"/>
   <text x="689.0" y="294.5" class="val" fill="#7dd3fc">9.42 ms</text>
-  <text x="892.0" y="289.0" text-anchor="end" class="speedup">23,900×</text>
+  <text x="892.0" y="289.0" text-anchor="end" class="speedup">24,600×</text>
   <text x="26" y="343.0" class="label">Clark Loglogistic MLE (GenIns)</text>
   <rect x="258.0" y="323.0" width="2.5" height="8" rx="1.5" fill="#f97316"/>
-  <text x="267.5" y="330.5" class="val-rust">11.5 µs</text>
+  <text x="267.5" y="330.5" class="val-rust">11.7 µs</text>
   <rect x="258.0" y="335.0" width="292.6" height="8" rx="2" fill="#38bdf8" opacity="0.88"/>
   <text x="557.6" y="342.5" class="val" fill="#7dd3fc">8.30 ms</text>
   <rect x="258.0" y="347.0" width="424.0" height="8" rx="2" fill="#a78bfa" opacity="0.88"/>
   <text x="689.0" y="354.5" class="val" fill="#c4b5fd">12.0 ms</text>
-  <text x="892.0" y="343.0" text-anchor="end" class="speedup">720×–1,040×</text>
+  <text x="892.0" y="343.0" text-anchor="end" class="speedup">711×–1,030×</text>
   <rect x="18" y="368.0" width="884" height="50.0" rx="6" fill="#161b22" opacity="0.55"/>
   <text x="26" y="397.0" class="label">ODP GLM Reserve (GenIns)</text>
   <rect x="258.0" y="377.0" width="2.5" height="8" rx="1.5" fill="#f97316"/>
-  <text x="267.5" y="384.5" class="val-rust">42.9 µs</text>
+  <text x="267.5" y="384.5" class="val-rust">1.20 µs</text>
   <rect x="258.0" y="389.0" width="10.2" height="8" rx="2" fill="#38bdf8" opacity="0.88"/>
   <text x="275.2" y="396.5" class="val" fill="#7dd3fc">5.30 ms</text>
   <rect x="258.0" y="401.0" width="424.0" height="8" rx="2" fill="#a78bfa" opacity="0.88"/>
   <text x="689.0" y="408.5" class="val" fill="#c4b5fd">220 ms</text>
-  <text x="892.0" y="397.0" text-anchor="end" class="speedup">124×–5,120×</text>
+  <text x="892.0" y="397.0" text-anchor="end" class="speedup">4,410×–183,000×</text>
   <text x="26" y="451.0" class="label">ODP Bootstrap (GenIns, 1k sims)</text>
   <rect x="258.0" y="431.0" width="2.5" height="8" rx="1.5" fill="#f97316"/>
   <text x="267.5" y="438.5" class="val-rust">0.19 ms</text>
@@ -83,15 +83,15 @@
   <text x="689.0" y="450.5" class="val" fill="#7dd3fc">216 ms</text>
   <rect x="258.0" y="455.0" width="150.4" height="8" rx="2" fill="#a78bfa" opacity="0.88"/>
   <text x="415.4" y="462.5" class="val" fill="#c4b5fd">76.8 ms</text>
-  <text x="892.0" y="451.0" text-anchor="end" class="speedup">409×–1,150×</text>
+  <text x="892.0" y="451.0" text-anchor="end" class="speedup">410×–1,160×</text>
   <rect x="18" y="476.0" width="884" height="50.0" rx="6" fill="#161b22" opacity="0.55"/>
   <text x="26" y="505.0" class="label">ODP Bootstrap (GenIns, 10k sims)</text>
   <rect x="258.0" y="485.0" width="2.5" height="8" rx="1.5" fill="#f97316"/>
-  <text x="267.5" y="492.5" class="val-rust">1.91 ms</text>
+  <text x="267.5" y="492.5" class="val-rust">1.90 ms</text>
   <rect x="258.0" y="497.0" width="424.0" height="8" rx="2" fill="#38bdf8" opacity="0.88"/>
   <text x="689.0" y="504.5" class="val" fill="#7dd3fc">2.22 s</text>
   <rect x="258.0" y="509.0" width="79.4" height="8" rx="2" fill="#a78bfa" opacity="0.88"/>
   <text x="344.4" y="516.5" class="val" fill="#c4b5fd">416 ms</text>
-  <text x="892.0" y="505.0" text-anchor="end" class="speedup">218×–1,160×</text>
+  <text x="892.0" y="505.0" text-anchor="end" class="speedup">220×–1,170×</text>
   <text x="26" y="552" class="foot">i9-14900K · rustc 1.97 · ChainLadder 0.2.21 (R) · chainladder-python 0.10.1 · flat f64 slices vs. S3/S4 &amp; DataFrame overhead</text>
 </svg>

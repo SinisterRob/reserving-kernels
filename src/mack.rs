@@ -72,6 +72,7 @@ impl MackTailSpec {
 
 /// Full Mack chain-ladder result: point estimates and standard errors.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Mack {
     /// Volume-weighted LDFs, length `n − 1`.
     pub ldf: Vec<f64>,

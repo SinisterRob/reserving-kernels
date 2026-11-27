@@ -69,12 +69,9 @@ impl TryFrom<RawTriangle> for Triangle {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "RawTriangle")]
 pub struct Triangle {
-    /// Number of origin (accident / policy) periods.
-    pub n_origins: usize,
-    /// Number of development periods.
-    pub n_devs: usize,
-    /// Row-major buffer of length `n_origins * n_devs`.
-    pub data: Vec<f64>,
+    n_origins: usize,
+    n_devs: usize,
+    data: Vec<f64>,
 }
 
 impl PartialEq for Triangle {
@@ -198,6 +195,24 @@ impl Triangle {
         let len = n.saturating_sub(i);
         let start = i * self.n_devs;
         &self.data[start..start + len]
+    }
+
+    /// Number of origin (accident / policy) periods.
+    #[inline]
+    pub fn n_origins(&self) -> usize {
+        self.n_origins
+    }
+
+    /// Number of development periods.
+    #[inline]
+    pub fn n_devs(&self) -> usize {
+        self.n_devs
+    }
+
+    /// Borrow the underlying row-major slice of length `n_origins * n_devs`.
+    #[inline]
+    pub fn data(&self) -> &[f64] {
+        &self.data
     }
 
     /// Square triangle dimension `min(n_origins, n_devs)`.

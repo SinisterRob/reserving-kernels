@@ -39,6 +39,7 @@ use crate::validate::{
 
 /// Benktander–Hovinen projection result.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct BenktanderProjection {
     /// Number of iterations `m` applied (`m = 1` is BF, `m = 2` is Benktander).
     pub iterations: usize,

@@ -142,10 +142,10 @@ mod tests {
         let triangle = triangle_3x3();
         let capped = cap_triangle(&triangle.view(), 300.0).expect("cap");
 
-        assert!(close(capped.data[0], 100.0));
-        assert!(close(capped.data[1], 250.0));
-        assert!(close(capped.data[2], 300.0));
-        assert!(close(capped.data[4], 300.0));
+        assert!(close(capped.data()[0], 100.0));
+        assert!(close(capped.data()[1], 250.0));
+        assert!(close(capped.data()[2], 300.0));
+        assert!(close(capped.data()[4], 300.0));
     }
 
     #[test]
@@ -154,10 +154,10 @@ mod tests {
         let excess = excess_triangle(&triangle.view(), 200.0).expect("excess");
         let layer = layer_triangle(&triangle.view(), 200.0, 150.0).expect("layer");
 
-        assert!(close(excess.data[0], 0.0));
-        assert!(close(excess.data[2], 300.0));
-        assert!(close(layer.data[1], 50.0));
-        assert!(close(layer.data[2], 150.0));
+        assert!(close(excess.data()[0], 0.0));
+        assert!(close(excess.data()[2], 300.0));
+        assert!(close(layer.data()[1], 50.0));
+        assert!(close(layer.data()[2], 150.0));
     }
 
     #[test]
@@ -167,7 +167,7 @@ mod tests {
         let excess = excess_triangle(&triangle.view(), 300.0).expect("excess");
         let restored = large_loss_addback(&removed.view(), &excess.view()).expect("restored");
 
-        for (left, right) in triangle.data.iter().zip(restored.data.iter()) {
+        for (left, right) in triangle.data().iter().zip(restored.data().iter()) {
             if left.is_nan() {
                 assert!(right.is_nan());
             } else {

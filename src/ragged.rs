@@ -170,3 +170,34 @@ pub fn volume_weighted_last_n_observed_counts(
         out[j] = if den > 0.0 { num / den } else { f64::NAN };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observed_count_selectors_match_manual_ratios() {
+        #[rustfmt::skip]
+        let cum = [
+            100.0, 150.0, 180.0,
+            100.0, 200.0, 240.0,
+            100.0, 160.0, f64::NAN,
+            100.0, f64::NAN, f64::NAN,
+        ];
+        let counts = [3, 3, 2, 1];
+        let mut out = [0.0; 2];
+
+        simple_average_observed_counts(&cum, 4, 3, &counts, None, &mut out);
+        assert!((out[0] - (1.5 + 2.0 + 1.6) / 3.0).abs() < 1e-12);
+        assert!((out[1] - 1.2).abs() < 1e-12);
+
+        simple_average_observed_counts(&cum, 4, 3, &counts, Some(2), &mut out);
+        assert!((out[0] - f64::midpoint(2.0, 1.6)).abs() < 1e-12);
+
+        ex_hi_lo_observed_counts(&cum, 4, 3, &counts, &mut out);
+        assert!((out[0] - 1.6).abs() < 1e-12);
+
+        volume_weighted_last_n_observed_counts(&cum, 4, 3, &counts, 2, &mut out);
+        assert!((out[0] - (200.0 + 160.0) / 200.0).abs() < 1e-12);
+    }
+}

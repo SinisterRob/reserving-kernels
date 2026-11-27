@@ -19,6 +19,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> &nbsp;·&nbsp;
+  <a href="https://github.com/SinisterRob/reserving-kernels/blob/main/docs/examples/mack-chain-ladder-raa.md">Worked Example</a> &nbsp;·&nbsp;
   <a href="#implemented-modules">Modules</a> &nbsp;·&nbsp;
   <a href="#performance">Performance</a> &nbsp;·&nbsp;
   <a href="#verification">Verification</a> &nbsp;·&nbsp;
@@ -42,7 +43,7 @@ Add `reserving-kernels` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-reserving-kernels = "0.2"
+reserving-kernels = "0.3"
 ```
 
 Basic triangle reserving and aggregate loss convolution:
@@ -172,14 +173,14 @@ Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kerne
 
 | Benchmark | `reserving-kernels` | R `ChainLadder` | `chainladder-python` | vs. R | vs. Python |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Volume-Weighted LDFs (40×40) | **0.28 µs** | 840 µs | 5,710 µs | 3,030× | 20,610× |
-| Mack Chain Ladder (RAA 10×10) | **0.26 µs** | 5,840 µs | 25,446 µs | 22,090× | 96,270× |
-| Mack Chain Ladder (40×40) | **3.07 µs** | 24,650 µs | 30,077 µs | 8,020× | 9,790× |
-| Merz–Wüthrich 1-Yr CDR (RAA) | **0.39 µs** | 9,420 µs | — | 23,890× | — |
-| Clark Loglogistic MLE (GenIns) | **11.5 µs** | 8,300 µs | 12,026 µs | 720× | 1,040× |
-| ODP GLM Reserve (GenIns) | **42.9 µs** | 5,300 µs | 219.6 ms | 124× | 5,120× |
-| ODP Bootstrap (GenIns, 1k sims) | **0.19 ms** | 216.5 ms | 76.8 ms | 1,150× | 409× |
-| ODP Bootstrap (GenIns, 10k sims) | **1.91 ms** | 2,223 ms | 416.2 ms | 1,160× | 218× |
+| Volume-Weighted LDFs (40×40) | **0.30 µs** | 840 µs | 5,710 µs | 2,830× | 19,250× |
+| Mack Chain Ladder (RAA 10×10) | **0.27 µs** | 5,840 µs | 25,446 µs | 21,620× | 94,200× |
+| Mack Chain Ladder (40×40) | **2.62 µs** | 24,650 µs | 30,077 µs | 9,410× | 11,480× |
+| Merz–Wüthrich 1-Yr CDR (RAA) | **0.38 µs** | 9,420 µs | — | 24,580× | — |
+| Clark Loglogistic MLE (GenIns) | **11.7 µs** | 8,300 µs | 12,026 µs | 711× | 1,030× |
+| ODP GLM Reserve (GenIns) | **1.20 µs** | 5,300 µs | 219.6 ms | 4,410× | 182,860× |
+| ODP Bootstrap (GenIns, 1k sims) | **0.19 ms** | 216.5 ms | 76.8 ms | 1,160× | 410× |
+| ODP Bootstrap (GenIns, 10k sims) | **1.90 ms** | 2,223 ms | 416.2 ms | 1,170× | 220× |
 
 *Note: `reserving-kernels` operates directly on validated `f64` slices with reusable scratch space, whereas the R and Python libraries carry DataFrame and S3/S4 object overhead. All point estimates and Mack / Merz–Wüthrich standard errors were verified for numerical parity before timing.*
 
@@ -187,6 +188,7 @@ Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kerne
 
 Kernels are tested against published actuarial datasets and closed-form mathematical identities:
 
+- **Worked example:** [Mack Chain-Ladder in Rust: A Worked Example](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/examples/mack-chain-ladder-raa.md) reproduces Mack (1993) Table 2 on the RAA 10×10 triangle cell-for-cell (`cargo run --example mack_raa`).
 - **Benchmark triangles:** Mack (1993) RAA, Taylor & Ashe / England & Verrall GenIns, Friedland US Industry Auto, and Quarg & Mack (2004).
 - **Exact identities:** Merz–Wüthrich multi-year run-off summing to Mack ultimate MSEP; ODP GLM matching exact analytical leverages and dispersion; Panjer vs. FFT aggregate loss agreement; and full-allocation conservation for Euler TVaR and Myers–Read.
 
@@ -199,7 +201,8 @@ Full citations and equation mappings live in [`docs/SOURCES.md`](https://github.
 cargo test --all-targets --all-features
 cargo test --doc --all-features
 
-# Run the JSON exhibit example
+# Run the Mack (1993) RAA worked example or JSON exhibit example
+cargo run --example mack_raa
 cargo run --example export_exhibit
 
 # Run Criterion benchmarks (benches/kernels.rs & benches/triangle_algebra.rs)

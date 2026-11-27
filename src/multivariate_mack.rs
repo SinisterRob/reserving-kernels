@@ -434,7 +434,7 @@ mod tests {
             &[160.0],
         ])
         .unwrap();
-        let data2: Vec<f64> = t1.data.iter().map(|&v| v * 2.5).collect();
+        let data2: Vec<f64> = t1.data().iter().map(|&v| v * 2.5).collect();
         let t2 = Triangle::try_new(5, 5, data2).unwrap();
 
         let mv = analyze(&[t1.view(), t2.view()], 1.0).unwrap();

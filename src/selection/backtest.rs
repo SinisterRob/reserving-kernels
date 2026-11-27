@@ -316,9 +316,9 @@ mod tests {
         let holdout = holdout_latest_diagonal(&tri.view());
 
         assert_eq!(holdout.held_out.len(), 2);
-        assert!(holdout.training.data[4 + 2].is_nan());
-        assert!(holdout.training.data[2 * 4 + 1].is_nan());
-        assert!(holdout.training.data[3 * 4].is_finite());
+        assert!(holdout.training.data()[4 + 2].is_nan());
+        assert!(holdout.training.data()[2 * 4 + 1].is_nan());
+        assert!(holdout.training.data()[3 * 4].is_finite());
     }
 
     #[test]

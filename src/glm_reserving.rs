@@ -195,6 +195,7 @@ impl GlmOptions {
 
 /// Complete output from [`fit_glm`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct GlmReservingResult {
     /// GLM family fitted.
     pub family: GlmFamily,
@@ -3149,9 +3150,9 @@ mod tests {
         // 2. Tiny triangle near the `eta = -50` clamp triggers the fast-path clamp guard
         //    and falls back to QR IRLS cleanly.
         let tiny_data: Vec<f64> = sample_tri()
-            .data
-            .into_iter()
-            .map(|v| if v.is_finite() { v * 1e-23 } else { v })
+            .data()
+            .iter()
+            .map(|&v| if v.is_finite() { v * 1e-23 } else { v })
             .collect();
         let tiny_tri = Triangle::new(5, 5, tiny_data);
         let tiny_latest = test_latest(&tiny_tri.view(), true);

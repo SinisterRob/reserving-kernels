@@ -80,3 +80,40 @@ pub fn link_count(n: usize, j: usize) -> usize {
     // for j = 0..n-2.
     if j + 2 > n { 0 } else { n - j - 1 }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Triangle;
+
+    #[test]
+    fn latest_diagonal_conversions_and_age_to_age_work() {
+        let tri =
+            Triangle::try_from_upper_rows(&[&[100.0, 150.0, 180.0], &[120.0, 180.0], &[140.0]])
+                .expect("triangle");
+        let v = tri.view();
+        assert_eq!(latest_diagonal(&v), vec![180.0, 180.0, 140.0]);
+        assert!((age_to_age(&v, 0, 0) - 1.5).abs() < 1e-12);
+        assert!((age_to_age(&v, 0, 1) - 1.2).abs() < 1e-12);
+        assert!(age_to_age(&v, 2, 0).is_nan());
+        assert_eq!(link_count(3, 0), 2);
+        assert_eq!(link_count(3, 1), 1);
+        assert_eq!(link_count(3, 2), 0);
+
+        let inc = cumulative_to_incremental(&v);
+        let inc_view = TriangleView {
+            n_origins: 3,
+            n_devs: 3,
+            data: &inc,
+        };
+        let roundtrip = incremental_to_cumulative(&inc_view);
+        assert_eq!(
+            v,
+            TriangleView {
+                n_origins: 3,
+                n_devs: 3,
+                data: &roundtrip,
+            }
+        );
+    }
+}

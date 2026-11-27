@@ -5,6 +5,18 @@ All notable changes to `reserving-kernels` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-26
+
+### Changed (Breaking)
+- **Encapsulated `Triangle` fields:** `n_origins`, `n_devs`, and `data` are now private with read-only accessors (`n_origins()`, `n_devs()`, `data()`) so invariants validated by `try_new` and `Deserialize` cannot be bypassed.
+- **Parameterized `excess_layers`:** Replaced hardcoded demo constants, magic `u32` preset codes, and global `OnceLock` caches with `LognormalLayerModel` (closed-form LEV/layer/exceedance/PDF) and caller-owned `LognormalLayerSampler` (deterministic antithetic Monte Carlo with $O(\log N)$ sorted prefix-sum queries).
+- **SemVer hardening:** Marked headline result structs (`Mack`, `MerzWuthrichResult`, `ChainLadderProjection`, `BornhuetterFergusonProjection`, `CapeCodProjection`, `BenktanderProjection`, `OdpFit`, `OdpBootstrapResult`, `GlmReservingResult`, `ClarkMleResult`, `AggregateLossDistribution`, `DevelopmentFactors`) as `#[non_exhaustive]`.
+
+### Added
+- Reproducible R (`scripts/parity_r.R`) and Python (`scripts/parity_python.py`) parity and timing scripts.
+- Dedicated unit tests for `cape_cod`, `validate`, `ragged`, and `triangle`, and split multi-source benchmarks in `tests/source_benchmarks.rs`.
+- Refreshed i9-14900K benchmark baseline (`benches/baseline-i9-14900k.json`), `assets/benchmarks.svg`, and `README.md` performance table.
+
 ## [0.2.3] - 2026-11-26
 
 ### Fixed

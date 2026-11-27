@@ -50,7 +50,7 @@ fn cum_incr_roundtrip() {
         n_devs: 4,
         data: &incr,
     });
-    for (a, b) in t.data.iter().zip(back.iter()) {
+    for (a, b) in t.data().iter().zip(back.iter()) {
         if a.is_finite() {
             assert!(close(*a, *b, 1e-12));
         }
@@ -508,7 +508,7 @@ fn regression_var_least_and_myers_read_exact_solver() {
 
 #[test]
 fn regression_severity_overflow_cancellation_and_excess_layers() {
-    use reserving_kernels::excess_layers::{expected_layer, simulated_layer};
+    use reserving_kernels::excess_layers::{LognormalLayerModel, LognormalLayerSampler};
     use reserving_kernels::severity::SeverityDistribution;
 
     // Pareto PDF at realistic dollar scale must not overflow theta^alpha to NaN.
@@ -539,9 +539,11 @@ fn regression_severity_overflow_cancellation_and_excess_layers() {
     };
     assert!(ln.survival(f64::NAN).is_nan());
 
-    // Excess layer with top <= ATTACHMENT must return 0.0, never negative.
-    assert_eq!(expected_layer(1, 50_000.0, 1), 0.0);
-    assert_eq!(simulated_layer(1, 50_000.0, 1), 0.0);
+    // Excess layer with top <= attachment must return 0.0, never negative.
+    let model = LognormalLayerModel::try_new(100_000.0, 1.0).expect("model");
+    let sampler = LognormalLayerSampler::try_new(model, 4_096, 2026).expect("sampler");
+    assert_eq!(model.exact_layer(100_000.0, 50_000.0), 0.0);
+    assert_eq!(sampler.simulated_layer(100_000.0, 50_000.0), 0.0);
 }
 
 #[test]

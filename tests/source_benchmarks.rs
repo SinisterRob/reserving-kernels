@@ -578,7 +578,10 @@ fn berquist_sherman_1977_and_gluck_1997_operational_benchmarks() {
         (gcc_mid.elr_by_origin[0] - gcc_mid.elr_by_origin[9]).abs() > 1e-4,
         "expected distinct origin ELRs under decay 0.75"
     );
+}
 
+#[test]
+fn berquist_sherman_1977_operational_benchmark() {
     // --- Berquist & Sherman (1977) / Friedland (2010) Ch. 13 ---
     // Case-reserve strengthening + settlement-speedup benchmark with known true ultimates.
     let n = 6usize;
@@ -740,7 +743,10 @@ fn clark_2003_genins_and_mack_2008_bf_msep_benchmarks() {
     assert_eq!(clark_cc.n_params, 3);
     assert_eq!(clark_cc.degrees_of_freedom, 52);
     assert!(clark_cc.total_parameter_se < clark_wb.total_parameter_se);
+}
 
+#[test]
+fn mack_2008_bf_msep_benchmark() {
     // --- Mack (2008) Analytical BF MSEP on RAA 10x10 ---
     let raa = raa_triangle();
     let m_cl = mack::analyze_with_policy(
@@ -820,7 +826,10 @@ fn merz_wuthrich_2008_cdr_and_2010_paid_incurred_chain_benchmarks() {
         decomp_raa.mack_ultimate_msep,
         1e-12
     ));
+}
 
+#[test]
+fn merz_wuthrich_2010_paid_incurred_chain_benchmark() {
     // --- Merz & Wuthrich (2010) Paid-Incurred Chain on Friedland US Industry Auto 10x10 ---
     let (paid, reported, _) = friedland_us_industry_auto();
     let pic = paid_incurred_chain::analyze(&paid.view(), &reported.view(), &PicOptions::default())
@@ -867,7 +876,11 @@ fn barnett_zehnwirth_2000_ptf_and_taylor_mcguire_2016_glm_benchmarks() {
     assert!(ptf_genins.r_squared > 0.75, "R2={}", ptf_genins.r_squared);
     assert!(ptf_genins.total_reserve > 12_000_000.0 && ptf_genins.total_reserve < 30_000_000.0);
     assert!(ptf_genins.total_standard_error > 0.0);
+}
 
+#[test]
+fn taylor_mcguire_2016_glm_irls_benchmark() {
+    let genins = genins_triangle();
     // --- Taylor & McGuire (2016, CAS Monograph No. 3) IRLS GLMs on GenIns ---
     // Ch. 3: Cross-classified ODP IRLS reproduces exact fit_odp & Chain Ladder.
     let odp_exact = fit_odp(&genins.view(), 1.0, MonotonicityPolicy::Strict).expect("fit_odp");
@@ -1002,7 +1015,10 @@ fn panjer_1981_robertson_1992_and_tasche_2008_myers_read_2001_benchmarks() {
     ));
     assert!(big_agg.tvar(0.95).unwrap() >= big_agg.var(0.95).unwrap());
     assert!(big_agg.stop_loss_premium(big_agg.mean).unwrap() > 0.0);
+}
 
+#[test]
+fn tasche_2008_euler_and_myers_read_2001_allocation_benchmark() {
     // --- Tasche (2008) Euler & Myers & Read (2001) Multi-Line Portfolio Allocation ---
     let genins = genins_triangle();
     let (paid, reported, _) = friedland_us_industry_auto();
@@ -1101,9 +1117,9 @@ fn extended_reserving_kernels_and_datasets_benchmarks() {
     let genins = datasets::genins();
     let qm = datasets::quarg_mack_2004();
     let auto = datasets::friedland_us_industry_auto();
-    assert_eq!((raa.n_origins, raa.n_devs), (10, 10));
-    assert_eq!((genins.n_origins, genins.n_devs), (10, 10));
-    assert_eq!((qm.paid.n_origins, qm.paid.n_devs), (7, 7));
+    assert_eq!((raa.n_origins(), raa.n_devs()), (10, 10));
+    assert_eq!((genins.n_origins(), genins.n_devs()), (10, 10));
+    assert_eq!((qm.paid.n_origins(), qm.paid.n_devs()), (7, 7));
     assert_eq!(auto.earned_premium.len(), 10);
 
     // 2. Case Outstanding (Friedland Ch. 11) on US Industry Auto & Quarg-Mack.

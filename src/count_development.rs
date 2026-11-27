@@ -103,8 +103,8 @@ mod tests {
     fn builds_open_count_triangle() {
         let open = open_count_triangle(&reported_triangle().view(), &closed_triangle().view())
             .expect("open");
-        assert_eq!(open.data[0], 20.0);
-        assert_eq!(open.data[1], 20.0);
+        assert_eq!(open.data()[0], 20.0);
+        assert_eq!(open.data()[1], 20.0);
     }
 
     #[test]
@@ -116,7 +116,7 @@ mod tests {
 
         assert_eq!(ultimate.len(), 4);
         assert_eq!(ibnr.len(), 4);
-        assert!(ultimate[3] >= reported.data[12]);
+        assert!(ultimate[3] >= reported.data()[12]);
         assert!(ibnr[0] >= 0.0);
     }
 }

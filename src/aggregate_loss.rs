@@ -234,6 +234,7 @@ impl FrequencyDistribution {
 
 /// Discretized aggregate loss distribution on the uniform lattice `0, step, 2*step, ...`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct AggregateLossDistribution {
     /// Grid step size `h > 0`.
     pub step: f64,

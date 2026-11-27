@@ -44,7 +44,7 @@ fn bench_ldf_and_deterministic(c: &mut Criterion) {
 
     group.throughput(Throughput::Elements((40 * 41 / 2) as u64));
     group.bench_function("volume_weighted_ldfs_40x40", |b| {
-        b.iter(|| ldf::volume_weighted_ldfs(black_box(&tri40.data), 40, 40, &mut out40));
+        b.iter(|| ldf::volume_weighted_ldfs(black_box(tri40.data()), 40, 40, &mut out40));
     });
 
     let raa = raa_triangle();
@@ -134,10 +134,10 @@ fn bench_bootstrap(c: &mut Criterion) {
 
     let sync_opts = OdpBootstrapOptions::shapland(500, 42069);
     let genins2 = Triangle::new(
-        genins.n_origins,
-        genins.n_devs,
+        genins.n_origins(),
+        genins.n_devs(),
         genins
-            .data
+            .data()
             .iter()
             .map(|&v| if v.is_finite() { v * 1.35 } else { f64::NAN })
             .collect(),
@@ -207,8 +207,21 @@ fn bench_aggregate_and_excess(c: &mut Criterion) {
         b.iter(|| fft_aggregate_loss(freq, black_box(&sev), 100.0, 4096, None).expect("fft"));
     });
 
-    group.bench_function("excess_layers_simulated_65k", |b| {
-        b.iter(|| excess_layers::simulated_layer(black_box(1), black_box(350_000.0), black_box(1)));
+    let layer_model = excess_layers::LognormalLayerModel::try_new(100_000.0, 1.0).expect("model");
+    let layer_sampler =
+        excess_layers::LognormalLayerSampler::try_new(layer_model, 65_536, 2026).expect("sampler");
+    group.bench_function("excess_layers_lookup_65k", |b| {
+        b.iter(|| layer_sampler.simulated_layer(black_box(100_000.0), black_box(350_000.0)));
+    });
+    group.bench_function("excess_layers_build_65k", |b| {
+        b.iter(|| {
+            excess_layers::LognormalLayerSampler::try_new(
+                black_box(layer_model),
+                65_536,
+                black_box(2026),
+            )
+            .expect("sampler")
+        });
     });
     group.finish();
 }
