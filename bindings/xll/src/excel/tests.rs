@@ -78,7 +78,12 @@ fn worksheet_results_include_origin_rows_and_totals() {
         )
     };
     assert_eq!(&chain_ladder[..2], &[205.0, 0.0]);
-    for (chain_ladder, mack) in chain_ladder.chunks_exact(2).zip(mack.chunks_exact(3)) {
+    for (chain_ladder, mack) in chain_ladder
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(mack.as_chunks::<3>().0)
+    {
         assert_close(chain_ladder[0], mack[0], 1e-9);
         assert_close(chain_ladder[1], mack[1], 1e-9);
     }
