@@ -1501,3 +1501,93 @@ fn pure_reserving_extension_kernels_benchmarks() {
     let true_total = true_rbns + true_ibnr;
     assert!((sim.mean_total - true_total).abs() / true_total < 0.20);
 }
+
+#[test]
+fn england_verrall_wuthrich_2019_one_year_re_reserving_genins_table_2_benchmark() {
+    use reserving_kernels::bootstrap_odp::OdpBootstrapOptions;
+    use reserving_kernels::datasets::genins;
+    use reserving_kernels::reserve_runoff::{
+        MackInnovation, MackRunoffOptions, mack_one_year_runoff, mack_one_year_runoff_with_options,
+        odp_one_year_runoff,
+    };
+
+    let tri = genins();
+
+    // 1. England, Verrall & Wüthrich (2019), Table 2 on GenIns:
+    //    Opening reserve: 18,680,856
+    //    1-year CDR RMSEP: 1,778,968 (9.52%)
+    //    Lifetime RMSEP:   2,447,095 (13.10%)
+    let mack_normal = mack_one_year_runoff_with_options(
+        &tri.view(),
+        1.0,
+        MackRunoffOptions::new(20_000, 20_190_111).with_innovation(MackInnovation::Normal),
+    )
+    .expect("mack normal runoff");
+    assert_eq!(mack_normal.failed_iterations, 0);
+    assert!((mack_normal.opening_total_reserve - 18_680_855.61).abs() < 1.0);
+    assert!(
+        close_rel(
+            mack_normal.adverse_development_summary.std_dev,
+            1_778_968.0,
+            0.03
+        ),
+        "Normal Mack 1yr SD={} vs 1,778,968",
+        mack_normal.adverse_development_summary.std_dev
+    );
+    assert!(
+        close_rel(
+            mack_normal.lifetime_reserve_summary.std_dev,
+            2_447_095.0,
+            0.03
+        ),
+        "Normal Mack lifetime SD={} vs 2,447,095",
+        mack_normal.lifetime_reserve_summary.std_dev
+    );
+
+    // Non-parametric Mack bootstrap residuals (default).
+    let mack_boot = mack_one_year_runoff(&tri.view(), 20_000, 20_190_111).expect("mack boot");
+    assert_eq!(mack_boot.failed_iterations, 0);
+    assert!(
+        close_rel(
+            mack_boot.adverse_development_summary.std_dev,
+            1_778_968.0,
+            0.08
+        ),
+        "Bootstrap Mack 1yr SD={} vs 1,778,968",
+        mack_boot.adverse_development_summary.std_dev
+    );
+    assert!(
+        close_rel(
+            mack_boot.lifetime_reserve_summary.std_dev,
+            2_447_095.0,
+            0.08
+        ),
+        "Bootstrap Mack lifetime SD={} vs 2,447,095",
+        mack_boot.lifetime_reserve_summary.std_dev
+    );
+
+    // Exact pathwise accounting identity L_{t+1} = P_{t+1} + R_{t+1} - R_t on every scenario.
+    for s in 0..mack_boot.total_adverse_development.len() {
+        let lhs = mack_boot.total_adverse_development[s];
+        let rhs = mack_boot.next_year_total_payments[s] + mack_boot.closing_total_reserves[s]
+            - mack_boot.opening_total_reserve;
+        assert!((lhs - rhs).abs() <= 1e-7);
+    }
+
+    // Coherent tail capital measures on one-year adverse development.
+    let var995 = mack_boot.var_adverse_development(0.995).expect("var995");
+    let tvar995 = mack_boot.tvar_adverse_development(0.995).expect("tvar995");
+    assert!(tvar995 >= var995 && var995 > 0.0);
+
+    // 2. ODP re-reserving reusing the same ChainLadderRollForward engine.
+    let odp = odp_one_year_runoff(
+        &tri.view(),
+        1.0,
+        OdpBootstrapOptions::shapland(5_000, 20_190_111),
+    )
+    .expect("odp runoff");
+    assert_eq!(odp.failed_iterations, 0);
+    assert!((odp.opening_total_reserve - 18_680_855.61).abs() < 1.0);
+    assert!(odp.adverse_development_summary.std_dev > 0.0);
+    assert!(odp.adverse_development_summary.std_dev < odp.lifetime_reserve_summary.std_dev);
+}

@@ -49,6 +49,7 @@ pub mod ptf_regression;
 pub mod ragged;
 pub mod reserve_distribution;
 pub mod reserve_rollforward;
+pub mod reserve_runoff;
 pub mod schnieper;
 pub mod selection;
 pub mod separation;
@@ -127,6 +128,11 @@ pub mod prelude {
         AccidentSpec, CalendarSpec, DevelopmentSpec, LogNormalMeanMode, PtfOptions, PtfResult,
     };
     pub use crate::reserve_distribution::{rvar, tvar_coherent, var_least};
+    pub use crate::reserve_runoff::{
+        ChainLadderRollForward, MackInnovation, MackRunoffOptions, OneYearRunoffResult,
+        RollForwardStep, mack_one_year_runoff, mack_one_year_runoff_with_options,
+        odp_one_year_runoff,
+    };
     pub use crate::schnieper::SchnieperResult;
     pub use crate::separation::{InflationProjection, SeparationMethod, SeparationResult};
     pub use crate::severity::SeverityDistribution;

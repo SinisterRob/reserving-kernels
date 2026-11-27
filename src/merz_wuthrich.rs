@@ -1,10 +1,13 @@
-//! Merz & Wüthrich (2008) 1-year Claims Development Result (CDR) analytical
-//! MSEP for Solvency II / 1-year capital horizons.
+//! Merz & Wüthrich (2008, 2014) 1-year Claims Development Result (CDR)
+//! analytical MSEP and multi-year run-off decomposition.
 //!
 //! Implements:
 //!
 //! * M. Merz & M. V. Wüthrich, *"Modelling the Claims Development Result for
-//!   Solvency Purposes"*, *CAS E-Forum*, Fall 2008, pp. 542–568.
+//!   Solvency Purposes"*, *CAS E-Forum*, Fall 2008, pp. 542–568 (1-year CDR MSEP).
+//! * M. Merz & M. V. Wüthrich, *"Claims Run-Off Uncertainty: The Full Picture"*,
+//!   *Swiss Finance Institute Research Paper* No. 14-69, 2014 (multi-year
+//!   conditional-variance MSEP decomposition in [`runoff_decomposition`]).
 //!
 //! ## Formulation
 //!

@@ -1549,14 +1549,14 @@ pub(crate) fn build_adjusted_residual_pool(
 pub(crate) struct OdpBootstrapScratch {
     n: usize,
     all_observed_positive: bool,
-    inv_phi: f64,
+    pub(crate) inv_phi: f64,
     packed_sqrt_mu: Vec<f64>,
     cell_deltas: Vec<f64>,
     base_col_den: Vec<f64>,
     base_latest: Vec<f64>,
     delta_col_den: Vec<f64>,
     latest_pseudo: Vec<f64>,
-    pseudo_ldfs: Vec<f64>,
+    pub(crate) pseudo_ldfs: Vec<f64>,
     origin_reserves: Vec<f64>,
 }
 
@@ -1605,8 +1605,8 @@ impl OdpBootstrapScratch {
 }
 
 #[derive(Clone, Copy)]
-struct RefitOutcome {
-    valid: bool,
+pub(crate) struct RefitOutcome {
+    pub(crate) valid: bool,
     all_ldfs_ge_one: bool,
 }
 
@@ -1735,7 +1735,7 @@ fn accumulate_cell_deltas_and_refit(scratch: &mut OdpBootstrapScratch) -> RefitO
 /// Fused 4-wide batched resampling (`pool[idx] * sqrt_mu`) + bounds-check-free
 /// delta accumulation + LDF refit.
 #[inline]
-fn refit_pseudo_ldfs_from_pool(
+pub(crate) fn refit_pseudo_ldfs_from_pool(
     pool: &[f64],
     sampler: &mut FastIndexSampler,
     rng: &mut DeterministicRng,
@@ -1815,7 +1815,7 @@ fn sample_positive_process(
 }
 
 #[inline]
-fn sample_process_increment_fast(
+pub(crate) fn sample_process_increment_fast(
     future_mu: f64,
     phi: f64,
     inv_phi: f64,
