@@ -95,13 +95,7 @@ pub(crate) fn validate_asymmetric_cumulative(
 }
 
 /// Compute median link ratios across arbitrary observed row widths.
-fn median_observed_counts(
-    cum: &[f64],
-    n_o: usize,
-    n_d: usize,
-    counts: &[usize],
-    out: &mut [f64],
-) {
+fn median_observed_counts(cum: &[f64], n_o: usize, n_d: usize, counts: &[usize], out: &mut [f64]) {
     let n_links = n_d.saturating_sub(1);
     let mut buf = Vec::with_capacity(n_o);
     for j in 0..n_links {

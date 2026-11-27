@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/SinisterRob/reserving-kernels"
 homepage = "https://sinisterrob.github.io"
 readme = "README.md"
-exclude = ["assets/"]
+exclude = ["assets/", ".github/", ".githooks/", "scripts/"]
 keywords = ["actuarial", "reserving", "chain-ladder", "bootstrap", "insurance"]
 categories = ["mathematics", "science", "simulation"]
 

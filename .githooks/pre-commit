@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Pre-commit hook for reserving-kernels:
+#   - Rejects conflict markers and whitespace errors in staged changes
+#   - Verifies rustfmt on staged .rs blobs only (safe alongside unstaged WIP edits)
+#
+# Bypass in an emergency with: SKIP_HOOKS=1 git commit ...
+
+set -euo pipefail
+
+if [[ "${SKIP_HOOKS:-0}" == "1" ]]; then
+  exit 0
+fi
+
+# 1. Catch merge conflict markers and trailing whitespace in staged diff.
+git diff --cached --check
+
+# 2. Check formatting of staged .rs files using index contents (leaves working tree untouched).
+STAGED_RS=()
+while IFS= read -r -d '' file; do
+  STAGED_RS+=("$file")
+done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.rs')
+
+if [[ ${#STAGED_RS[@]} -eq 0 ]]; then
+  exit 0
+fi
+
+if ! command -v rustfmt >/dev/null 2>&1; then
+  echo "pre-commit: rustfmt not found in PATH; skipping format check." >&2
+  exit 0
+fi
+
+FAILED=0
+for file in "${STAGED_RS[@]}"; do
+  if ! diff -u \
+    --label "staged/$file" <(git show ":$file") \
+    --label "rustfmt/$file" <(git show ":$file" | rustfmt --edition 2024); then
+    FAILED=1
+  fi
+done
+
+if [[ "$FAILED" -ne 0 ]]; then
+  echo "" >&2
+  echo "pre-commit: staged Rust files are not rustfmt-clean." >&2
+  echo "Run: rustfmt --edition 2024 ${STAGED_RS[*]}" >&2
+  echo "Then re-stage and commit (or set SKIP_HOOKS=1 to bypass)." >&2
+  exit 1
+fi

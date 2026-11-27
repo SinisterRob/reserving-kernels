@@ -355,7 +355,11 @@ fn optimize_exact_age_params(
 
         // Clamp step norm and backtrack until log-likelihood increases.
         let step_norm = (du * du + dv * dv).sqrt();
-        let cap = if step_norm > 1.0 { 1.0 / step_norm } else { 1.0 };
+        let cap = if step_norm > 1.0 {
+            1.0 / step_norm
+        } else {
+            1.0
+        };
         let mut alpha = cap;
         let mut improved = false;
         for _ in 0..30 {
@@ -433,7 +437,9 @@ pub fn clark_mle_exact_age(
     let mut latest_dg_dw = Vec::with_capacity(n_origins);
     let mut latest_dg_dt = Vec::with_capacity(n_origins);
     for i in 0..n_origins {
-        let (g, dw, dt) = options.curve.eval_with_grad(data.latest_ages[i], omega, theta);
+        let (g, dw, dt) = options
+            .curve
+            .eval_with_grad(data.latest_ages[i], omega, theta);
         latest_g.push(g);
         latest_dg_dw.push(dw);
         latest_dg_dt.push(dt);
@@ -446,7 +452,9 @@ pub fn clark_mle_exact_age(
         let u = weights.iter().map(|&w| w * elr).collect();
         (Some(elr), u)
     } else {
-        let u = (0..n_origins).map(|i| data.latest[i] / latest_g[i]).collect();
+        let u = (0..n_origins)
+            .map(|i| data.latest[i] / latest_g[i])
+            .collect();
         (None, u)
     };
 

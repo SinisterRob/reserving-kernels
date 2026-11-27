@@ -1,0 +1,179 @@
+{
+  "metadata": {
+    "hardware": "Intel Core i9-14900K",
+    "host": "robbit-theliomira",
+    "rustc": "1.97.0",
+    "commit": "5261ddc",
+    "updated_at": "2026-11-26",
+    "reference_r": "ChainLadder 0.2.21",
+    "reference_python": "chainladder-python 0.10.1"
+  },
+  "comparison": [
+    {
+      "id": "deterministic/volume_weighted_ldfs_40x40",
+      "label": "Volume-Weighted LDFs (40×40)",
+      "r_ns": 840000.0,
+      "python_ns": 5710000.0
+    },
+    {
+      "id": "deterministic/mack_raa_10x10",
+      "label": "Mack Chain Ladder (RAA 10×10)",
+      "r_ns": 5840000.0,
+      "python_ns": 25446000.0
+    },
+    {
+      "id": "deterministic/mack_40x40",
+      "label": "Mack Chain Ladder (40×40)",
+      "r_ns": 24650000.0,
+      "python_ns": 30077000.0
+    },
+    {
+      "id": "deterministic/merz_wuthrich_raa_10x10",
+      "label": "Merz–Wüthrich 1-Yr CDR (RAA)",
+      "r_ns": 9420000.0,
+      "python_ns": null
+    },
+    {
+      "id": "mle_glm/clark_loglogistic_genins",
+      "label": "Clark Loglogistic MLE (GenIns)",
+      "r_ns": 8300000.0,
+      "python_ns": 12026000.0
+    },
+    {
+      "id": "mle_glm/glm_odp_genins",
+      "label": "ODP GLM Reserve (GenIns)",
+      "r_ns": 5300000.0,
+      "python_ns": 219562000.0
+    },
+    {
+      "id": "bootstrap/odp_genins/1000",
+      "label": "ODP Bootstrap (GenIns, 1k sims)",
+      "r_ns": 216500000.0,
+      "python_ns": 76800000.0
+    },
+    {
+      "id": "bootstrap/odp_genins/10000",
+      "label": "ODP Bootstrap (GenIns, 10k sims)",
+      "r_ns": 2223000000.0,
+      "python_ns": 416200000.0
+    }
+  ],
+  "benchmarks": {
+    "advanced/dcl_40x40": {
+      "median_ns": 15382.86,
+      "mean_ns": 15389.39
+    },
+    "advanced/euler_tvar_10k_x_5": {
+      "median_ns": 129278.17,
+      "mean_ns": 129469.71
+    },
+    "advanced/kalman_genins_10x10": {
+      "median_ns": 26668.02,
+      "mean_ns": 26799.1
+    },
+    "advanced/micro_simulate_1000": {
+      "median_ns": 1569083.77,
+      "mean_ns": 1569457.18
+    },
+    "advanced/multivariate_cl_gmcl_2line_10x10": {
+      "median_ns": 3320.75,
+      "mean_ns": 3330.84
+    },
+    "advanced/multivariate_mack_2line_40x40": {
+      "median_ns": 22273.27,
+      "mean_ns": 22279.99
+    },
+    "advanced/myers_read_ratio_10k_x_5": {
+      "median_ns": 168389.79,
+      "mean_ns": 168385.78
+    },
+    "advanced/pic_friedland_10x10": {
+      "median_ns": 6940.8,
+      "mean_ns": 6952.83
+    },
+    "advanced/ptf_genins_10x10": {
+      "median_ns": 16888.02,
+      "mean_ns": 16894.11
+    },
+    "aggregate_excess/excess_layers_simulated_65k": {
+      "median_ns": 34.56,
+      "mean_ns": 34.82
+    },
+    "aggregate_excess/fft_aggregate_loss_4096": {
+      "median_ns": 122114.68,
+      "mean_ns": 121919.39
+    },
+    "aggregate_excess/panjer_recursion_512": {
+      "median_ns": 13868.59,
+      "mean_ns": 13738.95
+    },
+    "bootstrap/odp_cdr_genins_1000": {
+      "median_ns": 226270.15,
+      "mean_ns": 226371.45
+    },
+    "bootstrap/odp_genins/1000": {
+      "median_ns": 187937.2,
+      "mean_ns": 186590.57
+    },
+    "bootstrap/odp_genins/10000": {
+      "median_ns": 1910813.93,
+      "mean_ns": 1906904.3
+    },
+    "bootstrap/synchronized_odp_2line_500": {
+      "median_ns": 190722.3,
+      "mean_ns": 190995.38
+    },
+    "dependence_dist/iman_conover_2000x3": {
+      "median_ns": 314430.69,
+      "mean_ns": 316892.09
+    },
+    "dependence_dist/reserve_dist_summarize_10k": {
+      "median_ns": 19306.43,
+      "mean_ns": 19208.33
+    },
+    "dependence_dist/reserve_dist_tvar_coherent_10k": {
+      "median_ns": 9830.32,
+      "mean_ns": 9920.91
+    },
+    "deterministic/mack_40x40": {
+      "median_ns": 3073.59,
+      "mean_ns": 3100.09
+    },
+    "deterministic/mack_raa_10x10": {
+      "median_ns": 264.33,
+      "mean_ns": 265.86
+    },
+    "deterministic/merz_wuthrich_40x40": {
+      "median_ns": 4556.91,
+      "mean_ns": 4529.0
+    },
+    "deterministic/merz_wuthrich_raa_10x10": {
+      "median_ns": 394.36,
+      "mean_ns": 394.35
+    },
+    "deterministic/volume_weighted_ldfs_40x40": {
+      "median_ns": 277.07,
+      "mean_ns": 277.94
+    },
+    "mle_glm/clark_loglogistic_genins": {
+      "median_ns": 11523.65,
+      "mean_ns": 11525.94
+    },
+    "mle_glm/clark_weibull_genins": {
+      "median_ns": 25919.27,
+      "mean_ns": 26133.23
+    },
+    "mle_glm/glm_gamma_genins": {
+      "median_ns": 87336.63,
+      "mean_ns": 87978.0
+    },
+    "mle_glm/glm_odp_genins": {
+      "median_ns": 42892.03,
+      "mean_ns": 42820.04
+    },
+    "mle_glm/odp_fit_genins": {
+      "median_ns": 726.42,
+      "mean_ns": 732.24
+    }
+  }
+}

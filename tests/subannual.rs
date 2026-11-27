@@ -229,7 +229,8 @@ fn interim_bf_and_cape_cod_reduce_identically_to_standard_engines_on_friedland_a
     let unit_exp = vec![1.0; n];
 
     let std_cc = CapeCodEngine::project(&auto.paid.view(), &factors, &auto.earned_premium).unwrap();
-    let int_cc = interim_cape_cod(&latest, &cdfs_at_origin, &auto.earned_premium, &unit_exp).unwrap();
+    let int_cc =
+        interim_cape_cod(&latest, &cdfs_at_origin, &auto.earned_premium, &unit_exp).unwrap();
     assert!((std_cc.elr - int_cc.elr).abs() < 1e-12);
     assert!((std_cc.bf_projection.total_reserve - int_cc.total_ibnr).abs() < 1e-6);
 

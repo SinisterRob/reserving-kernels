@@ -271,7 +271,10 @@ mod tests {
 
         let sw = interp_swimon(&annual_ages, &annual_cdfs, &monthly_ages).unwrap();
         let sw_check = equilibrium_ibnr_check(&sw.ages_months, &sw.cdfs, 12, 1e-9).unwrap();
-        assert!(sw_check.passed, "SWIMON should pass equilibrium check: {sw_check:?}");
+        assert!(
+            sw_check.passed,
+            "SWIMON should pass equilibrium check: {sw_check:?}"
+        );
         assert_eq!(sw_check.oscillation_count, 0);
 
         let ex = interp_exponential(&annual_ages, &annual_cdfs, &monthly_ages).unwrap();
