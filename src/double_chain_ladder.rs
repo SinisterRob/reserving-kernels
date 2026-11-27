@@ -249,9 +249,8 @@ pub fn analyze_with_inflation(
         }
     }
 
-    let total_in_triangle_by_origin: Vec<f64> = (0..n)
-        .map(|i| rbns_reserve[i] + ibnr_reserve[i])
-        .collect();
+    let total_in_triangle_by_origin: Vec<f64> =
+        (0..n).map(|i| rbns_reserve[i] + ibnr_reserve[i]).collect();
     let total_with_tail_by_origin: Vec<f64> = (0..n)
         .map(|i| rbns_reserve[i] + ibnr_reserve[i] + rbns_tail[i] + ibnr_tail[i])
         .collect();

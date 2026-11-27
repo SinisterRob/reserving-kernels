@@ -150,13 +150,42 @@ pub fn volume_weighted_link_diagnostic(
     }
 }
 
-/// Volume-weighted LDFs for all development links.
+/// Volume-weighted LDFs for all development links (row-major cache-friendly accumulation).
 pub fn volume_weighted_ldfs(cum: &[f64], n_origin: usize, n_dev: usize, out: &mut [f64]) {
     debug_assert_eq!(cum.len(), n_origin * n_dev);
-    debug_assert_eq!(out.len(), n_dev.saturating_sub(1));
+    let m = n_dev.saturating_sub(1);
+    debug_assert_eq!(out.len(), m);
+    if m == 0 || n_origin == 0 {
+        return;
+    }
 
-    for dev in 0..n_dev.saturating_sub(1) {
-        out[dev] = volume_weighted_ldf(cum, n_origin, n_dev, dev);
+    // Use a stack buffer for common triangle sizes (<= 64 links) to avoid heap allocation.
+    let mut stack_den = [0.0_f64; 64];
+    let mut heap_den;
+    let den: &mut [f64] = if m <= stack_den.len() {
+        &mut stack_den[..m]
+    } else {
+        heap_den = vec![0.0_f64; m];
+        &mut heap_den[..]
+    };
+    out.fill(0.0);
+
+    let max_rows = n_origin.min(m);
+    for i in 0..max_rows {
+        let upper = m - i;
+        let row = &cum[i * n_dev..i * n_dev + upper + 1];
+        for dev in 0..upper {
+            den[dev] += row[dev];
+            out[dev] += row[dev + 1];
+        }
+    }
+
+    for dev in 0..m {
+        out[dev] = if den[dev] > 0.0 {
+            out[dev] / den[dev]
+        } else {
+            f64::NAN
+        };
     }
 }
 
@@ -279,15 +308,30 @@ pub fn volume_weighted(t: &TriangleView<'_>) -> Vec<f64> {
     if n < 2 {
         return Vec::new();
     }
-    let mut out = vec![0.0; n - 1];
-    for j in 0..n - 1 {
-        let mut num = 0.0;
-        let mut den = 0.0;
-        for i in 0..n - j - 1 {
-            num += t.get(i, j + 1);
-            den += t.get(i, j);
+    let m = n - 1;
+    let mut out = vec![0.0; m];
+    let mut stack_den = [0.0_f64; 64];
+    let mut heap_den;
+    let den: &mut [f64] = if m <= stack_den.len() {
+        &mut stack_den[..m]
+    } else {
+        heap_den = vec![0.0_f64; m];
+        &mut heap_den[..]
+    };
+    for i in 0..m {
+        let upper = m - i;
+        let row = &t.data[i * t.n_devs..i * t.n_devs + upper + 1];
+        for j in 0..upper {
+            den[j] += row[j];
+            out[j] += row[j + 1];
         }
-        out[j] = if den > 0.0 { num / den } else { f64::NAN };
+    }
+    for j in 0..m {
+        out[j] = if den[j] > 0.0 {
+            out[j] / den[j]
+        } else {
+            f64::NAN
+        };
     }
     out
 }
@@ -542,7 +586,9 @@ pub fn weighted_volume_ldfs(
             }
         }
         if den <= 0.0 {
-            return Err(ValidationError::DivideByZero("weighted development denominator"));
+            return Err(ValidationError::DivideByZero(
+                "weighted development denominator",
+            ));
         }
         out[j] = num / den;
     }

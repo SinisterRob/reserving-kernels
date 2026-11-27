@@ -1,59 +1,134 @@
 //! Lognormal severity layering, Limited Expected Values (LEV), and Increased Limit Factors (ILFs).
 //!
 //! Provides exact closed-form lognormal limited expected value $E[X \wedge L]$
-//! alongside a deterministic SplitMix64 + Box–Muller Monte Carlo engine for
-//! primary retention and excess layer pricing.
+//! alongside a deterministic SplitMix64 + antithetic Marsaglia polar Monte Carlo
+//! engine with sorted prefix-sum $O(\log N)$ layer evaluation.
 
-use std::f64::consts::TAU;
+use std::sync::OnceLock;
 
 /// Default ground-up expected severity ($100,000).
 pub const GROUND_UP_MEAN: f64 = 100_000.0;
 /// Default primary retention / excess attachment point ($100,000).
 pub const ATTACHMENT: f64 = 100_000.0;
-const SAMPLE_SIZE: u32 = 65_536;
+const LN_GROUND_UP_MEAN: f64 = 11.512925464970229;
+const SAMPLE_SIZE: usize = 65_536;
+const HALF_SAMPLE: usize = SAMPLE_SIZE / 2;
+const INV_SAMPLE_SIZE: f64 = 1.0 / (SAMPLE_SIZE as f64);
 const SEED: u64 = 2026;
 const INV_SQRT_TAU: f64 = 0.3989422804014327;
+
+#[derive(Clone, Copy)]
+struct TailParams {
+    sigma: f64,
+    inv_sigma: f64,
+    log_mean: f64,
+    pdf_scale: f64,
+}
+
+const fn make_tail(sigma: f64) -> TailParams {
+    TailParams {
+        sigma,
+        inv_sigma: 1.0 / sigma,
+        log_mean: LN_GROUND_UP_MEAN - 0.5 * sigma * sigma,
+        pdf_scale: INV_SQRT_TAU / sigma,
+    }
+}
+
+const TAIL_PARAMS: [TailParams; 3] = [make_tail(0.55), make_tail(1.00), make_tail(1.55)];
+
+#[inline]
+const fn tail_index(tail: u32) -> usize {
+    match tail {
+        0 => 0,
+        2 => 2,
+        _ => 1,
+    }
+}
+
+static SORTED_NORMALS: OnceLock<Vec<f64>> = OnceLock::new();
+static TAIL_PREFIX_SUMS: [OnceLock<Vec<f64>>; 3] =
+    [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+
+fn sorted_normals() -> &'static [f64] {
+    SORTED_NORMALS.get_or_init(|| {
+        let mut state = SEED;
+        let mut pos = Vec::with_capacity(HALF_SAMPLE);
+        while pos.len() < HALF_SAMPLE {
+            let u = 2.0 * uniform(&mut state) - 1.0;
+            let v = 2.0 * uniform(&mut state) - 1.0;
+            let s = u * u + v * v;
+            if s > 0.0 && s < 1.0 {
+                let scale = (-2.0 * s.ln() / s).sqrt();
+                pos.push((u * scale).abs());
+                pos.push((v * scale).abs());
+            }
+        }
+        pos.sort_unstable_by(f64::total_cmp);
+        let mut all = Vec::with_capacity(SAMPLE_SIZE);
+        for &z in pos.iter().rev() {
+            all.push(-z);
+        }
+        all.extend_from_slice(&pos);
+        all
+    })
+}
+
+fn tail_prefix(t: usize) -> &'static [f64] {
+    TAIL_PREFIX_SUMS[t].get_or_init(|| {
+        let normals = sorted_normals();
+        let p = TAIL_PARAMS[t];
+        let mut prefix = Vec::with_capacity(SAMPLE_SIZE + 1);
+        let mut acc = 0.0;
+        prefix.push(0.0);
+        for &z in normals {
+            acc += (p.log_mean + p.sigma * z).exp();
+            prefix.push(acc);
+        }
+        prefix
+    })
+}
+
+#[inline]
+fn simulated_lev(tail: u32, limit: f64) -> f64 {
+    if limit <= 0.0 || limit.is_nan() {
+        return 0.0;
+    }
+    let t = tail_index(tail);
+    let normals = sorted_normals();
+    let prefix = tail_prefix(t);
+    if !limit.is_finite() {
+        return prefix[SAMPLE_SIZE] * INV_SAMPLE_SIZE;
+    }
+    let p = TAIL_PARAMS[t];
+    let z_thresh = (limit.ln() - p.log_mean) * p.inv_sigma;
+    let k = normals.partition_point(|&z| z < z_thresh);
+    (prefix[k] + ((SAMPLE_SIZE - k) as f64) * limit) * INV_SAMPLE_SIZE
+}
 
 /// Closed-form expected loss in either the retained primary layer (`layer == 0`, $0$ to `ATTACHMENT`)
 /// or the excess layer (`layer == 1`, `ATTACHMENT` to `top`).
 pub fn expected_layer(tail: u32, top: f64, layer: u32) -> f64 {
-    let sigma = log_sd(tail);
-    let lower = limited_mean(ATTACHMENT, sigma);
+    let p = TAIL_PARAMS[tail_index(tail)];
+    let lower = limited_mean_params(ATTACHMENT, p);
     if layer == 0 {
         lower
     } else if top <= ATTACHMENT {
         0.0
     } else {
-        (limited_mean(top, sigma) - lower).max(0.0)
+        (limited_mean_params(top, p) - lower).max(0.0)
     }
 }
 
-/// Deterministic Monte Carlo estimate (fixed seed `2026`, $N = 65{,}536$ synchronized draws)
-/// of layer expected loss using SplitMix64 + Box–Muller normal transformation.
+/// Deterministic Monte Carlo estimate (fixed seed `2026`, $N = 65{,}536$ synchronized
+/// antithetic draws) evaluated in $O(\log N)$ via cached sorted prefix sums.
 pub fn simulated_layer(tail: u32, top: f64, layer: u32) -> f64 {
-    if layer != 0 && top <= ATTACHMENT {
-        return 0.0;
+    if layer == 0 {
+        simulated_lev(tail, ATTACHMENT)
+    } else if top <= ATTACHMENT {
+        0.0
+    } else {
+        (simulated_lev(tail, top) - simulated_lev(tail, ATTACHMENT)).max(0.0)
     }
-    let sigma = log_sd(tail);
-    let log_mean = GROUND_UP_MEAN.ln() - sigma * sigma / 2.0;
-    let mut state = SEED;
-    let mut total = 0.0;
-    let pairs = SAMPLE_SIZE / 2;
-    for _ in 0..pairs {
-        let radius = (-2.0 * uniform(&mut state).ln()).sqrt();
-        let angle = TAU * uniform(&mut state);
-        let (sin_a, cos_a) = angle.sin_cos();
-        for z in [radius * cos_a, radius * sin_a] {
-            let severity = (log_mean + sigma * z).exp();
-            let lower = severity.min(ATTACHMENT);
-            total += if layer == 0 {
-                lower
-            } else {
-                (severity.min(top) - lower).max(0.0)
-            };
-        }
-    }
-    total / f64::from(SAMPLE_SIZE)
 }
 
 /// Probability that a single ground-up loss exceeds `threshold`, $P(X > \text{threshold})$.
@@ -61,21 +136,32 @@ pub fn exceedance_prob(tail: u32, threshold: f64) -> f64 {
     if threshold <= 0.0 {
         return 1.0;
     }
-    let sigma = log_sd(tail);
-    let log_mean = GROUND_UP_MEAN.ln() - sigma * sigma / 2.0;
-    let z = (threshold.ln() - log_mean) / sigma;
+    let p = TAIL_PARAMS[tail_index(tail)];
+    let z = (threshold.ln() - p.log_mean) * p.inv_sigma;
     crate::severity::normal_cdf_exact(-z)
 }
 
 /// Lognormal probability density function $f_X(x)$ at loss amount `x`.
 pub fn severity_pdf(tail: u32, x: f64) -> f64 {
-    if x <= 0.0 {
+    if x <= 0.0 || !x.is_finite() {
         return 0.0;
     }
-    let sigma = log_sd(tail);
-    let log_mean = GROUND_UP_MEAN.ln() - sigma * sigma / 2.0;
-    let z = (x.ln() - log_mean) / sigma;
-    (INV_SQRT_TAU / (x * sigma)) * (-0.5 * z * z).exp()
+    let p = TAIL_PARAMS[tail_index(tail)];
+    let z = (x.ln() - p.log_mean) * p.inv_sigma;
+    (p.pdf_scale / x) * (-0.5 * z * z).exp()
+}
+
+#[inline]
+fn limited_mean_params(limit: f64, p: TailParams) -> f64 {
+    if !limit.is_finite() {
+        return f64::NAN;
+    }
+    if limit <= 0.0 {
+        return 0.0;
+    }
+    let z = (limit.ln() - p.log_mean) * p.inv_sigma;
+    GROUND_UP_MEAN * crate::severity::normal_cdf_exact(z - p.sigma)
+        + limit * crate::severity::normal_cdf_exact(-z)
 }
 
 /// Lognormal Limited Expected Value $E[X \wedge L]$ for ground-up mean `GROUND_UP_MEAN` and log-SD `sigma`.
@@ -86,18 +172,10 @@ pub fn limited_mean(limit: f64, sigma: f64) -> f64 {
     if limit <= 0.0 {
         return 0.0;
     }
-    let log_mean = GROUND_UP_MEAN.ln() - sigma * sigma / 2.0;
+    let log_mean = LN_GROUND_UP_MEAN - 0.5 * sigma * sigma;
     let z = (limit.ln() - log_mean) / sigma;
     GROUND_UP_MEAN * crate::severity::normal_cdf_exact(z - sigma)
         + limit * crate::severity::normal_cdf_exact(-z)
-}
-
-fn log_sd(tail: u32) -> f64 {
-    match tail {
-        0 => 0.55,
-        2 => 1.55,
-        _ => 1.0,
-    }
 }
 
 fn uniform(state: &mut u64) -> f64 {

@@ -529,8 +529,33 @@ pub fn fit_clark_cape_cod(
 struct PreparedClarkInputs {
     n: usize,
     ages: Vec<f64>,
+    ln_ages: Vec<f64>,
     inc: Vec<f64>,
     latest: Vec<f64>,
+    sum_latest: f64,
+    /// Column sums of observed increments: `col_inc_sum[j] = sum_{i=0}^{n-1-j} inc[i, j]`.
+    col_inc_sum: Vec<f64>,
+}
+
+/// Reusable scratch buffers for zero-allocation Clark MLE profile evaluations.
+struct ClarkWorkspace {
+    g_vals: Vec<f64>,
+    dg_inc: Vec<f64>,
+    d_dg_dw: Vec<f64>,
+    d_dg_dt: Vec<f64>,
+    scale_prefix: Vec<f64>,
+}
+
+impl ClarkWorkspace {
+    fn new(n: usize) -> Self {
+        Self {
+            g_vals: vec![0.0; n],
+            dg_inc: vec![0.0; n],
+            d_dg_dw: vec![0.0; n],
+            d_dg_dt: vec![0.0; n],
+            scale_prefix: vec![0.0; n + 1],
+        }
+    }
 }
 
 fn prepare_inputs(
@@ -587,12 +612,259 @@ fn prepare_inputs(
 
     let inc = cumulative_to_incremental(triangle);
     let latest = latest_diagonal(triangle);
+    let ln_ages: Vec<f64> = ages.iter().map(|&a| a.ln()).collect();
+    let sum_latest: f64 = latest.iter().sum();
+    let mut col_inc_sum = vec![0.0; n];
+    for i in 0..n {
+        let row = &inc[i * n..i * n + (n - i)];
+        for (j, &v) in row.iter().enumerate() {
+            col_inc_sum[j] += v;
+        }
+    }
     Ok(PreparedClarkInputs {
         n,
         ages,
+        ln_ages,
         inc,
         latest,
+        sum_latest,
+        col_inc_sum,
     })
+}
+
+/// Evaluate only `G(x_j)` and `dG_j` into `ws` using precomputed `ln_ages` (zero `ln()` calls).
+#[inline]
+fn eval_curve_values_into(
+    ln_ages: &[f64],
+    omega: f64,
+    v: f64,
+    curve: GrowthCurve,
+    ws: &mut ClarkWorkspace,
+) -> bool {
+    let n = ln_ages.len();
+    let mut prev_g = 0.0;
+    for j in 0..n {
+        let z = omega * (ln_ages[j] - v);
+        let g = match curve {
+            GrowthCurve::Loglogistic => {
+                if z >= 0.0 {
+                    1.0 / (1.0 + (-z).exp())
+                } else {
+                    let ez = z.exp();
+                    ez / (1.0 + ez)
+                }
+            }
+            GrowthCurve::Weibull => {
+                if z > 7.0 {
+                    1.0
+                } else {
+                    -(-(z.exp())).exp_m1()
+                }
+            }
+        };
+        let dg = g - prev_g;
+        if !g.is_finite() || g <= 1e-15 || !dg.is_finite() || dg <= 1e-15 {
+            return false;
+        }
+        ws.g_vals[j] = g;
+        ws.dg_inc[j] = dg;
+        prev_g = g;
+    }
+    true
+}
+
+/// Evaluate `G(x_j)`, `dG_j`, `d(dG_j)/domega`, and `d(dG_j)/dtheta` into `ws`
+/// using precomputed `ln_ages` (zero `ln()` calls, zero heap allocations).
+#[inline]
+fn eval_curve_and_grad_into(
+    ln_ages: &[f64],
+    omega: f64,
+    theta: f64,
+    v: f64,
+    curve: GrowthCurve,
+    ws: &mut ClarkWorkspace,
+) -> bool {
+    let n = ln_ages.len();
+    let omega_over_theta = omega / theta;
+    let mut prev_g = 0.0;
+    let mut prev_dw = 0.0;
+    let mut prev_dt = 0.0;
+    for j in 0..n {
+        let ln_r = ln_ages[j] - v;
+        let z = omega * ln_r;
+        let (g, dw, dt) = match curve {
+            GrowthCurve::Loglogistic => {
+                let g = if z >= 0.0 {
+                    1.0 / (1.0 + (-z).exp())
+                } else {
+                    let ez = z.exp();
+                    ez / (1.0 + ez)
+                };
+                let g1mg = g * (1.0 - g);
+                (g, g1mg * ln_r, -g1mg * omega_over_theta)
+            }
+            GrowthCurve::Weibull => {
+                if z > 7.0 {
+                    (1.0, 0.0, 0.0)
+                } else {
+                    let ev = z.exp();
+                    let surv = (-ev).exp();
+                    let g = -(-ev).exp_m1();
+                    let sv = surv * ev;
+                    (g, sv * ln_r, -sv * omega_over_theta)
+                }
+            }
+        };
+        let dg = g - prev_g;
+        if !g.is_finite() || g <= 1e-15 || !dg.is_finite() || dg <= 1e-15 {
+            return false;
+        }
+        ws.g_vals[j] = g;
+        ws.dg_inc[j] = dg;
+        ws.d_dg_dw[j] = dw - prev_dw;
+        ws.d_dg_dt[j] = dt - prev_dt;
+        prev_g = g;
+        prev_dw = dw;
+        prev_dt = dt;
+    }
+    true
+}
+
+/// Evaluate O(n) profile ODP log-likelihood only (for grid search and line search).
+fn profile_ll_only(
+    u: f64,
+    v: f64,
+    prep: &PreparedClarkInputs,
+    premium: Option<&[f64]>,
+    curve: GrowthCurve,
+    ws: &mut ClarkWorkspace,
+) -> Option<f64> {
+    if !(-6.0..=4.0).contains(&u) || !(-12.0..=12.0).contains(&v) {
+        return None;
+    }
+    let n = prep.n;
+    let omega = u.exp();
+    if !eval_curve_values_into(&prep.ln_ages, omega, v, curve, ws) {
+        return None;
+    }
+
+    // Algebraic O(n) reduction of sum_{i,j} [c_{i,j} ln(U_i dG_j) - U_i dG_j]:
+    //   = sum_i L_i ln(U_i) + sum_j S_j ln(dG_j) - sum_i U_i G(x_{n-1-i}).
+    let mut ll = 0.0;
+    match premium {
+        None => {
+            for i in 0..n {
+                let li = prep.latest[i];
+                let ui = li / ws.g_vals[n - 1 - i];
+                if !(ui > 0.0) || !ui.is_finite() {
+                    return None;
+                }
+                ll += li * ui.ln() - li;
+            }
+        }
+        Some(prem) => {
+            let mut sum_used = 0.0;
+            for i in 0..n {
+                sum_used += prem[i] * ws.g_vals[n - 1 - i];
+            }
+            if !(sum_used > 0.0) || !sum_used.is_finite() {
+                return None;
+            }
+            let elr = prep.sum_latest / sum_used;
+            if !(elr > 0.0) || !elr.is_finite() {
+                return None;
+            }
+            for i in 0..n {
+                let ui = prem[i] * elr;
+                if !(ui > 0.0) || !ui.is_finite() {
+                    return None;
+                }
+                ll += prep.latest[i] * ui.ln() - ui * ws.g_vals[n - 1 - i];
+            }
+        }
+    }
+    for j in 0..n {
+        ll += prep.col_inc_sum[j] * ws.dg_inc[j].ln();
+    }
+    ll.is_finite().then_some(ll)
+}
+
+/// Evaluate O(n) profile ODP log-likelihood and its exact analytic gradient w.r.t.
+/// `(u, v) = (ln omega, ln theta)` via the Envelope Theorem (zero allocations).
+fn profile_ll_and_grad(
+    u: f64,
+    v: f64,
+    prep: &PreparedClarkInputs,
+    premium: Option<&[f64]>,
+    curve: GrowthCurve,
+    ws: &mut ClarkWorkspace,
+) -> Option<(f64, [f64; 2])> {
+    if !(-6.0..=4.0).contains(&u) || !(-12.0..=12.0).contains(&v) {
+        return None;
+    }
+    let n = prep.n;
+    let omega = u.exp();
+    let theta = v.exp();
+    if !eval_curve_and_grad_into(&prep.ln_ages, omega, theta, v, curve, ws) {
+        return None;
+    }
+
+    let mut ll = 0.0;
+    ws.scale_prefix[0] = 0.0;
+    match premium {
+        None => {
+            let mut acc_u = 0.0;
+            for i in 0..n {
+                let li = prep.latest[i];
+                let ui = li / ws.g_vals[n - 1 - i];
+                if !(ui > 0.0) || !ui.is_finite() {
+                    return None;
+                }
+                acc_u += ui;
+                ws.scale_prefix[i + 1] = acc_u;
+                ll += li * ui.ln() - li;
+            }
+        }
+        Some(prem) => {
+            let mut sum_used = 0.0;
+            for i in 0..n {
+                sum_used += prem[i] * ws.g_vals[n - 1 - i];
+            }
+            if !(sum_used > 0.0) || !sum_used.is_finite() {
+                return None;
+            }
+            let elr = prep.sum_latest / sum_used;
+            if !(elr > 0.0) || !elr.is_finite() {
+                return None;
+            }
+            let mut acc_u = 0.0;
+            for i in 0..n {
+                let ui = prem[i] * elr;
+                if !(ui > 0.0) || !ui.is_finite() {
+                    return None;
+                }
+                acc_u += ui;
+                ws.scale_prefix[i + 1] = acc_u;
+                ll += prep.latest[i] * ui.ln() - ui * ws.g_vals[n - 1 - i];
+            }
+        }
+    }
+
+    let mut grad_omega = 0.0;
+    let mut grad_theta = 0.0;
+    for j in 0..n {
+        let dg = ws.dg_inc[j];
+        let col_sum = prep.col_inc_sum[j];
+        ll += col_sum * dg.ln();
+        let weight = col_sum / dg - ws.scale_prefix[n - j];
+        grad_omega += weight * ws.d_dg_dw[j];
+        grad_theta += weight * ws.d_dg_dt[j];
+    }
+    if !ll.is_finite() || !grad_omega.is_finite() || !grad_theta.is_finite() {
+        return None;
+    }
+    // Chain rule: d/du = omega * d/domega, d/dv = theta * d/dtheta.
+    Some((ll, [grad_omega * omega, grad_theta * theta]))
 }
 
 #[allow(clippy::type_complexity)]
@@ -628,75 +900,6 @@ fn evaluate_curve_arrays(
     (g_vals, dg_dw, dg_dt, dg_inc, d_dg_dw, d_dg_dt)
 }
 
-/// Evaluate profile ODP log-likelihood and its exact analytic gradient w.r.t.
-/// `(u, v) = (ln omega, ln theta)` via the Envelope Theorem.
-fn profile_ll_and_grad(
-    u: f64,
-    v: f64,
-    prep: &PreparedClarkInputs,
-    premium: Option<&[f64]>,
-    curve: GrowthCurve,
-) -> Option<(f64, [f64; 2])> {
-    if !(-6.0..=4.0).contains(&u) || !(-12.0..=12.0).contains(&v) {
-        return None;
-    }
-    let n = prep.n;
-    let omega = u.exp();
-    let theta = v.exp();
-    let (g_vals, _dg_dw, _dg_dt, dg_inc, d_dg_dw, d_dg_dt) =
-        evaluate_curve_arrays(&prep.ages, omega, theta, curve);
-
-    if dg_inc.iter().any(|&d| !d.is_finite() || d <= 1e-15)
-        || g_vals.iter().any(|&g| !g.is_finite() || g <= 1e-15)
-    {
-        return None;
-    }
-
-    let mut scale_by_origin = vec![0.0; n];
-    match premium {
-        None => {
-            for i in 0..n {
-                scale_by_origin[i] = prep.latest[i] / g_vals[n - 1 - i];
-            }
-        }
-        Some(prem) => {
-            let sum_latest: f64 = prep.latest.iter().sum();
-            let sum_used: f64 = (0..n).map(|i| prem[i] * g_vals[n - 1 - i]).sum();
-            if !(sum_used > 0.0) || !sum_used.is_finite() {
-                return None;
-            }
-            let elr = sum_latest / sum_used;
-            for i in 0..n {
-                scale_by_origin[i] = prem[i] * elr;
-            }
-        }
-    }
-
-    let mut ll = 0.0;
-    let mut grad_omega = 0.0;
-    let mut grad_theta = 0.0;
-    for i in 0..n {
-        let ui = scale_by_origin[i];
-        for j in 0..(n - i) {
-            let obs = prep.inc[i * n + j];
-            let dg = dg_inc[j];
-            let mu = ui * dg;
-            if !(mu > 0.0) || !mu.is_finite() {
-                return None;
-            }
-            ll += obs * mu.ln() - mu;
-            let weight = obs / dg - ui;
-            grad_omega += weight * d_dg_dw[j];
-            grad_theta += weight * d_dg_dt[j];
-        }
-    }
-    if !ll.is_finite() || !grad_omega.is_finite() || !grad_theta.is_finite() {
-        return None;
-    }
-    // Chain rule: d/du = omega * d/domega, d/dv = theta * d/dtheta.
-    Some((ll, [grad_omega * omega, grad_theta * theta]))
-}
-
 /// Deterministic multi-start grid search + damped Newton–Raphson maximization
 /// of the 2D profile log-likelihood over `(u, v) = (ln omega, ln theta)`.
 fn optimize_growth_params(
@@ -707,6 +910,7 @@ fn optimize_growth_params(
     let mid_age = prep.ages[prep.n / 2];
     let omega_grid: [f64; 6] = [0.4, 0.8, 1.2, 1.8, 2.6, 3.8];
     let theta_mults: [f64; 6] = [0.2, 0.5, 1.0, 2.0, 4.0, 8.0];
+    let mut ws = ClarkWorkspace::new(prep.n);
 
     let mut best_u = 0.0_f64;
     let mut best_v = mid_age.ln();
@@ -716,7 +920,7 @@ fn optimize_growth_params(
         let u = om.ln();
         for &tm in &theta_mults {
             let v = (mid_age * tm).ln();
-            if let Some((ll, _)) = profile_ll_and_grad(u, v, prep, premium, curve) {
+            if let Some(ll) = profile_ll_only(u, v, prep, premium, curve, &mut ws) {
                 if ll > best_ll {
                     best_ll = ll;
                     best_u = u;
@@ -738,7 +942,7 @@ fn optimize_growth_params(
     let mut cur_grad = [0.0; 2];
 
     for _iter in 0..80 {
-        let Some((ll, grad)) = profile_ll_and_grad(u, v, prep, premium, curve) else {
+        let Some((ll, grad)) = profile_ll_and_grad(u, v, prep, premium, curve, &mut ws) else {
             break;
         };
         cur_ll = ll;
@@ -751,10 +955,10 @@ fn optimize_growth_params(
 
         // Numerical 2×2 Hessian of log-likelihood via central differences of exact gradient.
         let h = 1e-5;
-        let g_up = profile_ll_and_grad(u + h, v, prep, premium, curve).map(|x| x.1);
-        let g_um = profile_ll_and_grad(u - h, v, prep, premium, curve).map(|x| x.1);
-        let g_vp = profile_ll_and_grad(u, v + h, prep, premium, curve).map(|x| x.1);
-        let g_vm = profile_ll_and_grad(u, v - h, prep, premium, curve).map(|x| x.1);
+        let g_up = profile_ll_and_grad(u + h, v, prep, premium, curve, &mut ws).map(|x| x.1);
+        let g_um = profile_ll_and_grad(u - h, v, prep, premium, curve, &mut ws).map(|x| x.1);
+        let g_vp = profile_ll_and_grad(u, v + h, prep, premium, curve, &mut ws).map(|x| x.1);
+        let g_vm = profile_ll_and_grad(u, v - h, prep, premium, curve, &mut ws).map(|x| x.1);
 
         let step = if let (Some(gup), Some(gum), Some(gvp), Some(gvm)) = (g_up, g_um, g_vp, g_vm) {
             let h00 = (gup[0] - gum[0]) / (2.0 * h);
@@ -797,7 +1001,7 @@ fn optimize_growth_params(
         for _ in 0..30 {
             let nu = u + alpha * step[0];
             let nv = v + alpha * step[1];
-            if let Some((nll, _)) = profile_ll_and_grad(nu, nv, prep, premium, curve) {
+            if let Some(nll) = profile_ll_only(nu, nv, prep, premium, curve, &mut ws) {
                 if nll >= cur_ll - 1e-12 {
                     u = nu;
                     v = nv;
@@ -809,11 +1013,24 @@ fn optimize_growth_params(
             alpha *= 0.5;
         }
         if !accepted || (alpha * max_step) < 1e-13 {
+            // Near the optimum, 1 ULP of |ll| (~1e-7 for ~1e9 triangles) can mask
+            // tiny improvements; accept a full damped Newton step if it reduces |grad|.
+            let nu = u + cap * step[0];
+            let nv = v + cap * step[1];
+            if let Some((nll, ngrad)) = profile_ll_and_grad(nu, nv, prep, premium, curve, &mut ws) {
+                let next_gnorm = ngrad[0].abs().max(ngrad[1].abs());
+                if next_gnorm < grad_norm {
+                    u = nu;
+                    v = nv;
+                    cur_ll = nll;
+                    continue;
+                }
+            }
             break;
         }
     }
 
-    if let Some((ll, grad)) = profile_ll_and_grad(u, v, prep, premium, curve) {
+    if let Some((ll, grad)) = profile_ll_and_grad(u, v, prep, premium, curve, &mut ws) {
         cur_ll = ll;
         cur_grad = grad;
     }

@@ -161,7 +161,11 @@ pub fn project_incremental_additive(
             completed_cumulative[i * n_devs + j] = acc;
         }
         ultimate.push(acc);
-        let lp = if latest[i].is_finite() { latest[i] } else { 0.0 };
+        let lp = if latest[i].is_finite() {
+            latest[i]
+        } else {
+            0.0
+        };
         reserve.push(acc - lp);
     }
 

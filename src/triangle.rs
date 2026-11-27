@@ -28,16 +28,12 @@ pub fn cumulative_to_incremental(t: &TriangleView<'_>) -> Vec<f64> {
     let n = t.n_origins.min(t.n_devs);
     let mut out = vec![f64::NAN; n * n];
     for i in 0..n {
-        for j in 0..n {
-            if i + j > n - 1 {
-                continue;
-            }
-            let v = if j == 0 {
-                t.get(i, 0)
-            } else {
-                t.get(i, j) - t.get(i, j - 1)
-            };
-            out[i * n + j] = v;
+        let row_len = n - i;
+        let in_row = &t.data[i * t.n_devs..i * t.n_devs + row_len];
+        let out_row = &mut out[i * n..i * n + row_len];
+        out_row[0] = in_row[0];
+        for j in 1..row_len {
+            out_row[j] = in_row[j] - in_row[j - 1];
         }
     }
     out
@@ -48,13 +44,13 @@ pub fn incremental_to_cumulative(t: &TriangleView<'_>) -> Vec<f64> {
     let n = t.n_origins.min(t.n_devs);
     let mut out = vec![f64::NAN; n * n];
     for i in 0..n {
+        let row_len = n - i;
+        let in_row = &t.data[i * t.n_devs..i * t.n_devs + row_len];
+        let out_row = &mut out[i * n..i * n + row_len];
         let mut acc = 0.0;
-        for j in 0..n {
-            if i + j > n - 1 {
-                continue;
-            }
-            acc += t.get(i, j);
-            out[i * n + j] = acc;
+        for j in 0..row_len {
+            acc += in_row[j];
+            out_row[j] = acc;
         }
     }
     out

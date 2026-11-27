@@ -1129,8 +1129,12 @@ fn extended_reserving_kernels_and_datasets_benchmarks() {
     assert!(ia.total_reserve > 0.0 && ia.total_reserve.is_finite());
 
     // 4. Generalized Mack alpha (0, 1, 2) and cell weight mask on RAA.
-    let m1 = mack::analyze_with_policy(&raa.view(), 1.0, MonotonicityPolicy::AllowNegativeIncrements)
-        .expect("mack alpha=1");
+    let m1 = mack::analyze_with_policy(
+        &raa.view(),
+        1.0,
+        MonotonicityPolicy::AllowNegativeIncrements,
+    )
+    .expect("mack alpha=1");
     let m_opt1 = mack::analyze_with_options(
         &raa.view(),
         &MackOptions::default()
@@ -1138,7 +1142,11 @@ fn extended_reserving_kernels_and_datasets_benchmarks() {
             .with_policy(MonotonicityPolicy::AllowNegativeIncrements),
     )
     .expect("mack opt alpha=1");
-    assert!(close_rel(m1.total_standard_error, m_opt1.total_standard_error, 1e-12));
+    assert!(close_rel(
+        m1.total_standard_error,
+        m_opt1.total_standard_error,
+        1e-12
+    ));
 
     let m_alpha0 = mack::analyze_with_options(
         &raa.view(),
@@ -1170,11 +1178,17 @@ fn extended_reserving_kernels_and_datasets_benchmarks() {
     assert!(geo_ldfs.iter().all(|&x| x.is_finite() && x > 0.0));
 
     // 5. Clark tail -> MackTailSpec integration.
-    let clark_spec = tail::clark_tail(&genins.view(), GrowthCurve::Loglogistic).expect("clark tail");
+    let clark_spec =
+        tail::clark_tail(&genins.view(), GrowthCurve::Loglogistic).expect("clark tail");
     assert!(clark_spec.tail_factor > 1.0 && clark_spec.tail_se >= 0.0);
     let m_clark_tail = mack::analyze_with_tail_uncertainty(&genins.view(), clark_spec)
         .expect("mack with clark tail");
-    assert!(m_clark_tail.total_standard_error > mack::analyze(&genins.view(), 1.0).unwrap().total_standard_error);
+    assert!(
+        m_clark_tail.total_standard_error
+            > mack::analyze(&genins.view(), 1.0)
+                .unwrap()
+                .total_standard_error
+    );
 
     // 6. 1-Year CDR Re-Reserving ODP Bootstrap on GenIns:
     //    1-year CDR SE must be strictly less than ultimate ODP bootstrap SE.
@@ -1209,8 +1223,16 @@ fn extended_reserving_kernels_and_datasets_benchmarks() {
     .expect("2-line diagonal MCL");
     let m_gen = mack::analyze(&genins.view(), 1.0).unwrap();
     let m_auto = mack::analyze(&auto.paid.view(), 1.0).unwrap();
-    assert!(close_rel(mcl_2.line_standard_errors[0], m_gen.total_standard_error, 1e-10));
-    assert!(close_rel(mcl_2.line_standard_errors[1], m_auto.total_standard_error, 1e-10));
+    assert!(close_rel(
+        mcl_2.line_standard_errors[0],
+        m_gen.total_standard_error,
+        1e-10
+    ));
+    assert!(close_rel(
+        mcl_2.line_standard_errors[1],
+        m_auto.total_standard_error,
+        1e-10
+    ));
 
     let gmcl_2 = analyze_multivariate_cl(
         &[qm.paid.view(), qm.incurred.view()],
@@ -1306,7 +1328,11 @@ fn pure_reserving_extension_kernels_benchmarks() {
         },
     )
     .unwrap();
-    assert!(close_rel(cred_mack.total_reserve, m_gen.total_reserve, 1e-12));
+    assert!(close_rel(
+        cred_mack.total_reserve,
+        m_gen.total_reserve,
+        1e-12
+    ));
     assert!(close_rel(
         cred_mack.total_standard_error,
         m_gen.total_standard_error,
@@ -1330,8 +1356,7 @@ fn pure_reserving_extension_kernels_benchmarks() {
     let mv_solo = multivariate_mack::analyze(&[genins.view()], 1.0).unwrap();
     assert!(close_rel(mv_solo.total_mse, m_gen.total_mse, 1e-12));
 
-    let mv_pair =
-        multivariate_mack::analyze(&[genins.view(), auto.paid.view()], 1.0).unwrap();
+    let mv_pair = multivariate_mack::analyze(&[genins.view(), auto.paid.view()], 1.0).unwrap();
     assert_eq!(mv_pair.n_triangles, 2);
     assert!(mv_pair.total_standard_error <= mv_pair.undiversified_se + 1e-8);
     assert!(mv_pair.reserve_correlation_matrix[1].abs() <= 1.0 + 1e-12);

@@ -253,10 +253,7 @@ impl SeverityDistribution {
     }
 
     /// Construct a Mixed Exponential severity from weights and component means.
-    pub fn mixed_exponential(
-        weights: impl Into<Vec<f64>>,
-        means: impl Into<Vec<f64>>,
-    ) -> Self {
+    pub fn mixed_exponential(weights: impl Into<Vec<f64>>, means: impl Into<Vec<f64>>) -> Self {
         Self::MixedExponential {
             weights: weights.into(),
             means: means.into(),

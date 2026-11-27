@@ -432,8 +432,24 @@ fn regression_var_least_and_myers_read_exact_solver() {
     assert_eq!(var_least(&xs100, 0.29).expect("p29"), 29.0);
 
     // Power-of-2 sample with tied maximum and tiny target default ratio must succeed.
-    let line_a: Vec<f64> = (0..16).map(|i| if i >= 14 { 500.0 } else { 10.0 * (i as f64 + 1.0) }).collect();
-    let line_b: Vec<f64> = (0..16).map(|i| if i >= 14 { 500.0 } else { 5.0 * (i as f64 + 1.0) }).collect();
+    let line_a: Vec<f64> = (0..16)
+        .map(|i| {
+            if i >= 14 {
+                500.0
+            } else {
+                10.0 * (i as f64 + 1.0)
+            }
+        })
+        .collect();
+    let line_b: Vec<f64> = (0..16)
+        .map(|i| {
+            if i >= 14 {
+                500.0
+            } else {
+                5.0 * (i as f64 + 1.0)
+            }
+        })
+        .collect();
     let mr = myers_read_from_default_ratio(&[&line_a, &line_b], 1e-6).expect("myers read");
     let sum_q: f64 = mr.allocated_surplus.iter().sum();
     assert!(close(sum_q, mr.portfolio_surplus, 1e-9));
@@ -483,12 +499,8 @@ fn regression_mack_zero_cell_and_mack_bf_unbiased_process_variance() {
     use reserving_kernels::validate::ValidationError;
 
     // Mack must return DivideByZero when c_k == 0 && c_{k+1} > 0 instead of masking NaN SE to 0.
-    let zero_tri = Triangle::try_from_upper_rows(&[
-        &[0.0, 50.0, 100.0],
-        &[100.0, 150.0],
-        &[120.0],
-    ])
-    .expect("tri");
+    let zero_tri = Triangle::try_from_upper_rows(&[&[0.0, 50.0, 100.0], &[100.0, 150.0], &[120.0]])
+        .expect("tri");
     assert!(matches!(
         zero_tri.mack(1.0),
         Err(ValidationError::DivideByZero(_))

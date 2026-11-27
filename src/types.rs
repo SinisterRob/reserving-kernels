@@ -10,7 +10,9 @@ use std::fmt;
 
 use crate::benktander::{BenktanderEngine, BenktanderProjection};
 use crate::bf::{BornhuetterFergusonEngine, BornhuetterFergusonProjection};
-use crate::bootstrap_odp::{OdpBootstrapOptions, OdpBootstrapResult, OdpFit, bootstrap_odp, fit_odp};
+use crate::bootstrap_odp::{
+    OdpBootstrapOptions, OdpBootstrapResult, OdpFit, bootstrap_odp, fit_odp,
+};
 use crate::brosius::{self, Brosius};
 use crate::cape_cod::{CapeCodEngine, CapeCodProjection};
 use crate::chain_ladder::{ChainLadderEngine, ChainLadderProjection};

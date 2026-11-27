@@ -34,7 +34,7 @@
 
 use std::f64::consts::TAU;
 
-use crate::ldf::{DevelopmentFactorEngine, volume_weighted_ldfs};
+use crate::ldf::DevelopmentFactorEngine;
 use crate::reserve_distribution::{
     ReserveDistributionSummary, summarize as summarize_distribution,
 };
@@ -340,31 +340,39 @@ impl DeterministicRng {
         ((self.next_u64() >> 11) as f64 + 0.5) * (1.0 / 9_007_199_254_740_992.0)
     }
 
-    /// Unbiased uniform index in `0..upper`.
+    /// Unbiased uniform index in `0..upper` via Lemire's nearly-divisionless multiply-high.
     #[inline]
     pub(crate) fn next_index(&mut self, upper: usize) -> usize {
         debug_assert!(upper > 0);
         let bound = upper as u64;
-        let threshold = bound.wrapping_neg() % bound;
-        loop {
-            let r = self.next_u64();
-            if r >= threshold {
-                return (r % bound) as usize;
+        let mut prod = (self.next_u64() as u128) * (bound as u128);
+        let mut low = prod as u64;
+        if low < bound {
+            let threshold = bound.wrapping_neg() % bound;
+            while low < threshold {
+                prod = (self.next_u64() as u128) * (bound as u128);
+                low = prod as u64;
             }
         }
+        (prod >> 64) as usize
     }
 
-    /// Standard normal `N(0, 1)` via paired Box–Muller transform.
+    /// Standard normal `N(0, 1)` via Marsaglia polar method (avoids libm sin/cos).
+    #[inline]
     pub(crate) fn next_standard_normal(&mut self) -> f64 {
         if let Some(z) = self.cached_normal.take() {
             return z;
         }
-        let u1 = self.next_open01();
-        let u2 = self.next_open01();
-        let r = (-2.0 * u1.ln()).sqrt();
-        let theta = TAU * u2;
-        self.cached_normal = Some(r * theta.sin());
-        r * theta.cos()
+        loop {
+            let u = 2.0 * self.next_open01() - 1.0;
+            let v = 2.0 * self.next_open01() - 1.0;
+            let s = u * u + v * v;
+            if s > 0.0 && s < 1.0 {
+                let scale = (-2.0 * s.ln() / s).sqrt();
+                self.cached_normal = Some(v * scale);
+                return u * scale;
+            }
+        }
     }
 
     /// Exact Gamma(shape, scale) via Marsaglia & Tsang (2000).
@@ -468,7 +476,7 @@ pub(crate) fn ln_gamma(z: f64) -> f64 {
 }
 
 // Re-use the crate's scale-invariant Cholesky and triangular solvers.
-pub(crate) use crate::linalg::{cholesky_lower, solve_lower};
+pub(crate) use crate::linalg::{cholesky_lower, solve_lower_into};
 
 // ===========================================================================
 // ODP GLM Fit (Backward Chain-Ladder Recursion + Exact Hat Matrix)
@@ -610,6 +618,7 @@ pub fn fit_odp(
     let mut residuals = Vec::with_capacity(n_observed);
     let mut pearson_sq_sum = 0.0;
     let mut x_vec = vec![0.0; param_count];
+    let mut y_buf = vec![0.0; param_count];
     for &(origin, dev) in &active_cells {
         let obs = observed_incremental[origin * n + dev];
         let mu = fitted_incremental[origin * n + dev];
@@ -624,8 +633,8 @@ pub fn fit_odp(
         if let Some(c) = dev_col[dev] {
             x_vec[c] = 1.0;
         }
-        let y = solve_lower(&chol, param_count, &x_vec);
-        let leverage = (mu * y.iter().map(|v| v * v).sum::<f64>()).clamp(0.0, 1.0);
+        solve_lower_into(&chol, param_count, &x_vec, &mut y_buf);
+        let leverage = (mu * y_buf.iter().map(|v| v * v).sum::<f64>()).clamp(0.0, 1.0);
         let saturated = (1.0 - leverage) <= 1e-10;
 
         residuals.push(OdpCellResidual {
@@ -647,10 +656,11 @@ pub fn fit_odp(
     let mut analytic_origin_param_se = vec![0.0; n];
     let mut analytic_origin_prediction_error = vec![0.0; n];
     let mut g_total = vec![0.0; param_count];
+    let mut g_origin = vec![0.0; param_count];
     let mut pre_tail_total_reserve = 0.0;
 
     for origin in 0..n {
-        let mut g_origin = vec![0.0; param_count];
+        g_origin.fill(0.0);
         let mut r_pre_tail = 0.0;
         for dev in (n - origin)..n {
             let mu = fitted_incremental[origin * n + dev];
@@ -670,8 +680,8 @@ pub fn fit_odp(
         let tail_increment = fitted_cumulative[origin * n + (n - 1)] * (tail - 1.0);
         origin_reserves[origin] = r_pre_tail + tail_increment;
 
-        let y_origin = solve_lower(&chol, param_count, &g_origin);
-        let param_var = (dispersion * y_origin.iter().map(|v| v * v).sum::<f64>()).max(0.0);
+        solve_lower_into(&chol, param_count, &g_origin, &mut y_buf);
+        let param_var = (dispersion * y_buf.iter().map(|v| v * v).sum::<f64>()).max(0.0);
         let proc_var = (dispersion * r_pre_tail).max(0.0);
         analytic_origin_process_se[origin] = proc_var.sqrt();
         analytic_origin_param_se[origin] = param_var.sqrt();
@@ -679,8 +689,8 @@ pub fn fit_odp(
     }
 
     let total_reserve: f64 = origin_reserves.iter().sum();
-    let y_total = solve_lower(&chol, param_count, &g_total);
-    let total_param_var = (dispersion * y_total.iter().map(|v| v * v).sum::<f64>()).max(0.0);
+    solve_lower_into(&chol, param_count, &g_total, &mut y_buf);
+    let total_param_var = (dispersion * y_buf.iter().map(|v| v * v).sum::<f64>()).max(0.0);
     let total_proc_var = (dispersion * pre_tail_total_reserve).max(0.0);
 
     Ok(OdpFit {
@@ -743,11 +753,13 @@ pub(crate) fn build_adjusted_residual_pool(
     Ok((pool, pool_mean))
 }
 
-/// Reusable scratch buffers and precomputed `sqrt(mu)` for zero-allocation ODP
-/// bootstrap iterations.
+/// Reusable scratch buffers and precomputed `sqrt(mu)` for zero-allocation,
+/// single-pass ODP bootstrap iterations (no intermediate `n × n` pseudo-triangle).
 pub(crate) struct OdpBootstrapScratch {
     sqrt_mu: Vec<f64>,
-    pseudo_cum: Vec<f64>,
+    col_den: Vec<f64>,
+    col_num: Vec<f64>,
+    latest_pseudo: Vec<f64>,
     pseudo_ldfs: Vec<f64>,
     origin_reserves: Vec<f64>,
 }
@@ -755,6 +767,7 @@ pub(crate) struct OdpBootstrapScratch {
 impl OdpBootstrapScratch {
     pub(crate) fn for_fit(fit: &OdpFit) -> Self {
         let n = fit.n_origins;
+        let m = n.saturating_sub(1);
         let sqrt_mu: Vec<f64> = fit
             .fitted_incremental
             .iter()
@@ -762,11 +775,65 @@ impl OdpBootstrapScratch {
             .collect();
         Self {
             sqrt_mu,
-            pseudo_cum: vec![f64::NAN; n * n],
-            pseudo_ldfs: vec![0.0; n.saturating_sub(1)],
+            col_den: vec![0.0; m],
+            col_num: vec![0.0; m],
+            latest_pseudo: vec![0.0; n],
+            pseudo_ldfs: vec![0.0; m],
             origin_reserves: vec![0.0; n],
         }
     }
+}
+
+/// Fused single-pass pseudo-triangle accumulation + volume-weighted LDF refit.
+/// Returns `true` if all pseudo-LDFs are finite and strictly positive.
+#[inline]
+fn refit_pseudo_ldfs_fused(
+    fit: &OdpFit,
+    sampled_residuals: &[f64],
+    scratch: &mut OdpBootstrapScratch,
+) -> bool {
+    let n = fit.n_origins;
+    let m = n.saturating_sub(1);
+    scratch.col_den.fill(0.0);
+    scratch.col_num.fill(0.0);
+
+    let mut idx = 0usize;
+    for origin in 0..n {
+        let mut running = 0.0;
+        let row_off = origin * n;
+        let last_dev = n - 1 - origin;
+        for dev in 0..=last_dev {
+            let mu = fit.fitted_incremental[row_off + dev];
+            let inc = if mu > 0.0 {
+                let r = sampled_residuals[idx];
+                idx += 1;
+                mu + r * scratch.sqrt_mu[row_off + dev]
+            } else {
+                0.0
+            };
+            running += inc;
+            if dev < last_dev {
+                scratch.col_den[dev] += running;
+            }
+            if dev > 0 {
+                scratch.col_num[dev - 1] += running;
+            }
+        }
+        scratch.latest_pseudo[origin] = running;
+    }
+
+    for k in 0..m {
+        let den = scratch.col_den[k];
+        if !(den > 0.0) || !den.is_finite() {
+            return false;
+        }
+        let f = scratch.col_num[k] / den;
+        if !f.is_finite() || f <= 0.0 {
+            return false;
+        }
+        scratch.pseudo_ldfs[k] = f;
+    }
+    true
 }
 
 /// Execute one ODP bootstrap iteration into reusable `scratch` buffers.
@@ -780,42 +847,15 @@ pub(crate) fn run_odp_iteration_with_scratch<'a>(
     rng: &mut DeterministicRng,
     scratch: &'a mut OdpBootstrapScratch,
 ) -> Option<&'a [f64]> {
-    let n = fit.n_origins;
-    scratch.pseudo_cum.fill(f64::NAN);
-    let mut idx = 0usize;
-
-    for origin in 0..n {
-        let mut running = 0.0;
-        let row_off = origin * n;
-        for dev in 0..(n - origin) {
-            let mu = fit.fitted_incremental[row_off + dev];
-            let inc = if mu > 0.0 {
-                let r = sampled_residuals[idx];
-                idx += 1;
-                mu + r * scratch.sqrt_mu[row_off + dev]
-            } else {
-                0.0
-            };
-            running += inc;
-            scratch.pseudo_cum[row_off + dev] = running;
-        }
-    }
-
-    // Refit volume-weighted LDFs on the pseudo-cumulative triangle.
-    volume_weighted_ldfs(&scratch.pseudo_cum, n, n, &mut scratch.pseudo_ldfs);
-    if scratch
-        .pseudo_ldfs
-        .iter()
-        .any(|f| !f.is_finite() || *f <= 0.0)
-    {
+    if !refit_pseudo_ldfs_fused(fit, sampled_residuals, scratch) {
         return None;
     }
 
-    // Square the pseudo-triangle forward and add process variance once per future cell.
+    let n = fit.n_origins;
     let phi = fit.dispersion;
     for origin in 0..n {
         let latest_dev = n - 1 - origin;
-        let mut prev_cum = scratch.pseudo_cum[origin * n + latest_dev];
+        let mut prev_cum = scratch.latest_pseudo[origin];
         if !prev_cum.is_finite() {
             return None;
         }
@@ -837,22 +877,6 @@ pub(crate) fn run_odp_iteration_with_scratch<'a>(
     }
 
     Some(&scratch.origin_reserves)
-}
-
-/// Execute one ODP bootstrap iteration given a pre-sampled array of adjusted
-/// residuals (one per observed cell in `(origin, dev)` row-major order).
-///
-/// Returns `Some(origin_reserves)` on valid refit or `None` if the pseudo-
-/// triangle has a degenerate non-positive column sum.
-pub(crate) fn run_odp_iteration_from_residuals(
-    fit: &OdpFit,
-    sampled_residuals: &[f64],
-    process_distribution: ProcessDistribution,
-    rng: &mut DeterministicRng,
-) -> Option<Vec<f64>> {
-    let mut scratch = OdpBootstrapScratch::for_fit(fit);
-    run_odp_iteration_with_scratch(fit, sampled_residuals, process_distribution, rng, &mut scratch)
-        .map(|slice| slice.to_vec())
 }
 
 #[inline]
@@ -1030,77 +1054,59 @@ pub fn bootstrap_odp_cdr(
     let mut simulated_cdr_by_origin = vec![Vec::with_capacity(options.iterations); n];
     let mut sampled_residuals = vec![0.0; fit.n_observed];
     let mut scratch = OdpBootstrapScratch::for_fit(&fit);
-    let mut ext_cum = vec![f64::NAN; n * n];
     let mut ext_ldfs = vec![1.0; m];
+    let mut ext_cdfs = vec![tail; n];
     let mut next_pay = vec![0.0; n];
+    let mut next_cum_diag = vec![0.0; n];
     let mut failed_iterations = 0usize;
+
+    // Precompute observed column sums once: each 1-year CDR draw only appends a
+    // single simulated diagonal cell (i = n - 1 - k, j = k + 1) to link k.
+    let mut obs_den = vec![0.0; m];
+    let mut obs_num = vec![0.0; m];
+    for i in 0..m {
+        let row = &triangle.data[i * n..i * n + (n - i)];
+        for k in 0..(n - 1 - i) {
+            let c0 = row[k];
+            let c1 = row[k + 1];
+            if c0.is_finite() && c1.is_finite() {
+                obs_den[k] += c0;
+                obs_num[k] += c1;
+            }
+        }
+    }
+    let obs_diag: Vec<f64> = (0..n).map(|i| triangle.get(i, n - 1 - i)).collect();
+    let r1_origin0 = obs_diag[0] * (tail - 1.0);
 
     for _ in 0..options.iterations {
         for slot in &mut sampled_residuals {
             *slot = pool[rng.next_index(pool.len())];
         }
 
-        // 1. Build pseudo-triangle & refit pseudo-LDFs into scratch (matching
-        //    run_odp_iteration_with_scratch so zero-fitted cells don't poison rows).
-        scratch.pseudo_cum.fill(f64::NAN);
-        let mut r_idx = 0usize;
-        for origin in 0..n {
-            let mut running = 0.0;
-            let row_off = origin * n;
-            for dev in 0..(n - origin) {
-                let mu = fit.fitted_incremental[row_off + dev];
-                let pseudo_inc = if mu > 0.0 {
-                    let r = sampled_residuals[r_idx];
-                    r_idx += 1;
-                    mu + r * scratch.sqrt_mu[row_off + dev]
-                } else {
-                    0.0
-                };
-                running += pseudo_inc;
-                scratch.pseudo_cum[row_off + dev] = running;
-            }
-        }
-        volume_weighted_ldfs(&scratch.pseudo_cum, n, n, &mut scratch.pseudo_ldfs);
-        if scratch
-            .pseudo_ldfs
-            .iter()
-            .any(|f| !f.is_finite() || *f <= 0.0)
-        {
+        // 1. Fused single-pass pseudo-triangle & LDF refit.
+        if !refit_pseudo_ldfs_fused(&fit, &sampled_residuals, &mut scratch) {
             failed_iterations += 1;
             continue;
         }
 
-        // 2. Copy observed triangle & simulate next calendar diagonal (i + j == n).
-        ext_cum.copy_from_slice(triangle.data);
-        next_pay.fill(0.0);
+        // 2. Simulate next calendar diagonal (i + j == n) and update extended LDFs in O(n).
+        let mut valid_ext = true;
         for i in 1..n {
-            let j_next = n - i;
-            let c_prev = triangle.get(i, j_next - 1);
-            let expected_inc = c_prev * (scratch.pseudo_ldfs[j_next - 1] - 1.0);
+            let k = n - 1 - i; // link k -> k + 1 (j_next = k + 1 = n - i)
+            let c_prev = obs_diag[i];
+            let expected_inc = c_prev * (scratch.pseudo_ldfs[k] - 1.0);
             let sim_inc = sample_process_increment(
                 expected_inc,
                 fit.dispersion,
                 options.process_distribution,
                 &mut rng,
             );
+            let c_next = c_prev + sim_inc;
             next_pay[i] = sim_inc;
-            ext_cum[i * n + j_next] = c_prev + sim_inc;
-        }
+            next_cum_diag[i] = c_next;
 
-        // 3. Re-estimate LDFs on the 1-year-extended triangle (observed + simulated diagonal).
-        let mut valid_ext = true;
-        for k in 0..m {
-            let nk_ext = (n - k).min(n);
-            let mut num = 0.0;
-            let mut den = 0.0;
-            for i in 0..nk_ext {
-                let c0 = ext_cum[i * n + k];
-                let c1 = ext_cum[i * n + (k + 1)];
-                if c0.is_finite() && c1.is_finite() {
-                    den += c0;
-                    num += c1;
-                }
-            }
+            let den = obs_den[k] + c_prev;
+            let num = obs_num[k] + c_next;
             if !den.is_finite() || den <= 0.0 || !num.is_finite() || num <= 0.0 {
                 valid_ext = false;
                 break;
@@ -1112,24 +1118,25 @@ pub fn bootstrap_odp_cdr(
             continue;
         }
 
-        // 4. Compute updated reserve R^{(1)} and 1-year CDR = R^{(0)} - (Y_next + R^{(1)}).
-        let mut total_cdr = 0.0;
-        let mut iter_cdrs = [0.0_f64; 0];
-        let _ = &mut iter_cdrs;
+        // 3. Compound extended CDFs right-to-left in O(n).
+        ext_cdfs[m] = tail;
+        for k in (0..m).rev() {
+            ext_cdfs[k] = ext_ldfs[k] * ext_cdfs[k + 1];
+        }
+
+        // 4. Compute updated reserve R^{(1)} and 1-year CDR = R^{(0)} - (Y_next + R^{(1)}) in O(n).
+        let cdr0 = fit.origin_reserves[0] - r1_origin0;
+        if !cdr0.is_finite() {
+            failed_iterations += 1;
+            continue;
+        }
+        scratch.origin_reserves[0] = cdr0;
+        let mut total_cdr = cdr0;
         let mut ok = true;
-        for i in 0..n {
-            let r1 = if i == 0 {
-                // Origin 0 is already at age n - 1; only tail remains.
-                let c_last = triangle.get(0, n - 1);
-                c_last * (tail - 1.0)
-            } else {
-                let j_next = n - i;
-                let mut proj = ext_cum[i * n + j_next];
-                for &f in &ext_ldfs[j_next..m] {
-                    proj *= f;
-                }
-                proj * tail - ext_cum[i * n + j_next]
-            };
+        for i in 1..n {
+            let j_next = n - i;
+            let c_next = next_cum_diag[i];
+            let r1 = c_next * (ext_cdfs[j_next] - 1.0);
             let cdr_i = fit.origin_reserves[i] - (next_pay[i] + r1);
             if !cdr_i.is_finite() {
                 ok = false;

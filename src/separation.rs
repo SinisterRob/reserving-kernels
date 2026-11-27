@@ -22,9 +22,7 @@
 use crate::linalg::weighted_least_squares_qr_beta_only;
 use crate::triangle::{cumulative_to_incremental, latest_diagonal};
 use crate::types::TriangleView;
-use crate::validate::{
-    ValidationError, validate_positive_finite_slice, validate_triangle,
-};
+use crate::validate::{ValidationError, validate_positive_finite_slice, validate_triangle};
 
 /// Variant of Taylor's (1977) Separation Method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -138,9 +136,7 @@ pub fn analyze(
                 ));
             }
             let base = calendar_indices[n - 1];
-            (1..n)
-                .map(|h| base * (1.0 + rate).powi(h as i32))
-                .collect()
+            (1..n).map(|h| base * (1.0 + rate).powi(h as i32)).collect()
         }
         InflationProjection::HistoricalGeometricMean => {
             let first = calendar_indices[0];

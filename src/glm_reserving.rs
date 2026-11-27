@@ -32,7 +32,10 @@
 //! with deviance-monotone step-halving, returning exact Pearson & deviance
 //! dispersions, hat-matrix leverages, and analytic process + parameter MSEP.
 
-use crate::linalg::{quad_form, weighted_least_squares_qr};
+use crate::linalg::{
+    QrWorkspace, quad_form, weighted_least_squares_qr, weighted_least_squares_qr_beta_into,
+    weighted_least_squares_qr_with_workspace,
+};
 use crate::triangle::{cumulative_to_incremental, latest_diagonal};
 use crate::types::TriangleView;
 use crate::validate::{
@@ -348,31 +351,41 @@ pub fn fit_glm(
     let positive_mean = y_obs.iter().copied().filter(|&v| v > 0.0).sum::<f64>()
         / (y_obs.iter().filter(|&&v| v > 0.0).count().max(1) as f64);
     let y_floor = (positive_mean * 1e-4).max(1e-8);
-    let init_z: Vec<f64> = y_obs
+    let mut working_z: Vec<f64> = y_obs
         .iter()
         .zip(offsets_obs.iter())
         .map(|(&y, &off)| y.max(y_floor).ln() - off)
         .collect();
-    let ones = vec![1.0; n_obs];
-    let mut beta = crate::linalg::weighted_least_squares_qr_beta_only(&x_obs, &init_z, &ones, n_obs, q)?;
+    let mut weights = vec![1.0; n_obs];
+    let mut qr_ws = QrWorkspace::with_capacity(n_obs, q);
+    let mut beta = vec![0.0; q];
+    weighted_least_squares_qr_beta_into(
+        &x_obs, &working_z, &weights, n_obs, q, &mut qr_ws, &mut beta,
+    )?;
 
-    let mut eta = eval_linear_predictor(&x_obs, &offsets_obs, &beta, n_obs, q);
-    let mut mu: Vec<f64> = eta.iter().map(|&e| e.clamp(-50.0, 50.0).exp()).collect();
+    let mut eta = vec![0.0; n_obs];
+    let mut mu = vec![0.0; n_obs];
+    eval_linear_predictor_and_mu(&x_obs, &offsets_obs, &beta, n_obs, q, &mut eta, &mut mu);
     let mut cur_obj = total_tweedie_objective(&y_obs, &mu, power);
 
     let mut converged = false;
     let mut iterations = 0usize;
 
-    let mut weights = vec![0.0; n_obs];
-    let mut working_z = vec![0.0; n_obs];
+    let is_odp = (power - 1.0).abs() < 1e-12;
+    let is_gamma = (power - 2.0).abs() < 1e-12;
+    let mut beta_target = vec![0.0; q];
+    let mut delta = vec![0.0; q];
+    let mut next_beta = vec![0.0; q];
+    let mut next_eta = vec![0.0; n_obs];
+    let mut next_mu = vec![0.0; n_obs];
 
     for iter in 1..=options.max_iterations {
         iterations = iter;
         for k in 0..n_obs {
             let mk = mu[k];
-            weights[k] = if (power - 1.0).abs() < 1e-12 {
+            weights[k] = if is_odp {
                 mk
-            } else if (power - 2.0).abs() < 1e-12 {
+            } else if is_gamma {
                 1.0
             } else {
                 mk.powf(2.0 - power)
@@ -381,22 +394,31 @@ pub fn fit_glm(
             working_z[k] = (eta[k] - offsets_obs[k]) + (y_obs[k] - mk) / mk;
         }
 
-        let beta_target =
-            crate::linalg::weighted_least_squares_qr_beta_only(&x_obs, &working_z, &weights, n_obs, q)?;
-        let delta: Vec<f64> = beta_target
-            .iter()
-            .zip(beta.iter())
-            .map(|(&bt, &b)| bt - b)
-            .collect();
+        weighted_least_squares_qr_beta_into(
+            &x_obs,
+            &working_z,
+            &weights,
+            n_obs,
+            q,
+            &mut qr_ws,
+            &mut beta_target,
+        )?;
+        for j in 0..q {
+            delta[j] = beta_target[j] - beta[j];
+            next_beta[j] = beta_target[j];
+        }
 
         // Step-halving line search guaranteeing non-increasing quasi-deviance.
         let mut step_len = 1.0_f64;
-        let mut next_beta = beta_target;
-        let mut next_eta = eval_linear_predictor(&x_obs, &offsets_obs, &next_beta, n_obs, q);
-        let mut next_mu: Vec<f64> = next_eta
-            .iter()
-            .map(|&e| e.clamp(-50.0, 50.0).exp())
-            .collect();
+        eval_linear_predictor_and_mu(
+            &x_obs,
+            &offsets_obs,
+            &next_beta,
+            n_obs,
+            q,
+            &mut next_eta,
+            &mut next_mu,
+        );
         let mut next_obj = total_tweedie_objective(&y_obs, &next_mu, power);
 
         let mut halvings = 0usize;
@@ -408,11 +430,15 @@ pub fn fit_glm(
             for j in 0..q {
                 next_beta[j] = beta[j] + step_len * delta[j];
             }
-            next_eta = eval_linear_predictor(&x_obs, &offsets_obs, &next_beta, n_obs, q);
-            next_mu = next_eta
-                .iter()
-                .map(|&e| e.clamp(-50.0, 50.0).exp())
-                .collect();
+            eval_linear_predictor_and_mu(
+                &x_obs,
+                &offsets_obs,
+                &next_beta,
+                n_obs,
+                q,
+                &mut next_eta,
+                &mut next_mu,
+            );
             next_obj = total_tweedie_objective(&y_obs, &next_mu, power);
         }
 
@@ -423,9 +449,9 @@ pub fn fit_glm(
             .fold(0.0_f64, f64::max);
         let rel_obj_change = (cur_obj - next_obj).abs() / (1.0 + cur_obj.abs());
 
-        beta = next_beta;
-        eta = next_eta;
-        mu = next_mu;
+        std::mem::swap(&mut beta, &mut next_beta);
+        std::mem::swap(&mut eta, &mut next_eta);
+        std::mem::swap(&mut mu, &mut next_mu);
         cur_obj = next_obj;
 
         if max_rel_change < options.tolerance && rel_obj_change < options.tolerance {
@@ -439,16 +465,18 @@ pub fn fit_glm(
     // Compute exact final (X^T W X)^{-1} and hat leverages once at converged mu.
     for k in 0..n_obs {
         let mk = mu[k];
-        weights[k] = if (power - 1.0).abs() < 1e-12 {
+        weights[k] = if is_odp {
             mk
-        } else if (power - 2.0).abs() < 1e-12 {
+        } else if is_gamma {
             1.0
         } else {
             mk.powf(2.0 - power)
         };
         working_z[k] = eta[k] - offsets_obs[k];
     }
-    let final_sol = weighted_least_squares_qr(&x_obs, &working_z, &weights, n_obs, q)?;
+    let final_sol = weighted_least_squares_qr_with_workspace(
+        &x_obs, &working_z, &weights, n_obs, q, &mut qr_ws,
+    )?;
     let final_xtwx_inv = final_sol.xtwx_inv;
     let final_leverages = final_sol.leverages;
 
@@ -456,7 +484,13 @@ pub fn fit_glm(
     let mut pearson_chi_sq = 0.0;
     for k in 0..n_obs {
         let diff = y_obs[k] - mu[k];
-        let v_mu = mu[k].powf(power);
+        let v_mu = if is_odp {
+            mu[k]
+        } else if is_gamma {
+            mu[k] * mu[k]
+        } else {
+            mu[k].powf(power)
+        };
         pearson_chi_sq += (diff * diff) / v_mu;
     }
     let pearson_dispersion = (pearson_chi_sq / dof as f64).max(0.0);
@@ -475,27 +509,35 @@ pub fn fit_glm(
     let mut parameter_se = vec![0.0; n];
     let mut prediction_error = vec![0.0; n];
     let mut grad_total = vec![0.0; q];
+    let mut grad_origin = vec![0.0; q];
     let mut total_proc_var = 0.0;
 
     let mut x_cell = vec![0.0; q];
     for i in 0..n {
         let log_exp = options.exposure.as_ref().map_or(0.0, |e| e[i].ln());
-        let mut grad_origin = vec![0.0; q];
+        grad_origin.fill(0.0);
         let mut proc_var_i = 0.0;
         let mut r_i = 0.0;
 
         for j in 0..n {
             schema.fill_row(i, j, &mut x_cell);
             let mut e_ij = log_exp;
-            for col in 0..q {
-                e_ij += x_cell[col] * beta[col];
+            for (&xc, &bc) in x_cell.iter().zip(beta.iter()) {
+                e_ij += xc * bc;
             }
             let mu_ij = e_ij.clamp(-50.0, 50.0).exp();
             fitted_incremental[i * n + j] = mu_ij;
 
             if i + j >= n {
                 r_i += mu_ij;
-                proc_var_i += pearson_dispersion * mu_ij.powf(power);
+                let v_mu = if is_odp {
+                    mu_ij
+                } else if is_gamma {
+                    mu_ij * mu_ij
+                } else {
+                    mu_ij.powf(power)
+                };
+                proc_var_i += pearson_dispersion * v_mu;
                 for col in 0..q {
                     let g = mu_ij * x_cell[col];
                     grad_origin[col] += g;
@@ -816,22 +858,25 @@ fn fit_log_normal_glm(
     })
 }
 
-fn eval_linear_predictor(
+#[inline]
+fn eval_linear_predictor_and_mu(
     x: &[f64],
     offsets: &[f64],
     beta: &[f64],
     n_obs: usize,
     q: usize,
-) -> Vec<f64> {
-    let mut eta = vec![0.0; n_obs];
+    eta_out: &mut [f64],
+    mu_out: &mut [f64],
+) {
     for k in 0..n_obs {
         let mut s = offsets[k];
-        for j in 0..q {
-            s += x[k * q + j] * beta[j];
+        let x_row = &x[k * q..(k + 1) * q];
+        for (&xj, &bj) in x_row.iter().zip(beta.iter()) {
+            s += xj * bj;
         }
-        eta[k] = s;
+        eta_out[k] = s;
+        mu_out[k] = s.clamp(-50.0, 50.0).exp();
     }
-    eta
 }
 
 /// Exact unit deviance for Tweedie family `p in [1, 2]`, written with `exp_m1`

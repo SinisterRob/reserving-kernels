@@ -402,9 +402,8 @@ pub fn analyze(
                 let lk = &links[k];
                 let ci = proj[i * n + k];
                 let cj = proj[j * n + k];
-                let step_cov = lk.var_intercept
-                    + (ci + cj) * lk.cov_intercept_slope
-                    + ci * cj * lk.var_slope;
+                let step_cov =
+                    lk.var_intercept + (ci + cj) * lk.cov_intercept_slope + ci * cj * lk.var_slope;
                 cov_ij = lk.slope * lk.slope * cov_ij + step_cov;
             }
             total_mse += 2.0 * cov_ij * tail_sq;
@@ -496,12 +495,9 @@ mod tests {
 
     #[test]
     fn delta_2_recovers_simple_average_ldf() {
-        let tri = Triangle::try_from_upper_rows(&[
-            &[100.0, 150.0, 180.0],
-            &[200.0, 340.0],
-            &[150.0],
-        ])
-        .unwrap();
+        let tri =
+            Triangle::try_from_upper_rows(&[&[100.0, 150.0, 180.0], &[200.0, 340.0], &[150.0]])
+                .unwrap();
 
         let mu = analyze(&tri.view(), MurphyOptions::simple_average()).unwrap();
         let expected_f0 = 0.5 * (150.0 / 100.0 + 340.0 / 200.0);

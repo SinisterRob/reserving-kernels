@@ -14,7 +14,7 @@ Every statistical method is derived from primary peer-reviewed actuarial literat
 
 - **Pure-Rust, zero heavy dependencies** — `#![forbid(unsafe_code)]` by default, no BLAS/LAPACK/FFTW/ndarray required; Householder QR, Cholesky, IRLS, and tilted radix-2 Cooley–Tukey FFT are built in and compile cleanly to `wasm32-unknown-unknown` (`--features wasm`).
 - **Branch-light row-major `f64` triangles** — observed cumulative or incremental values are finite `f64`, unobserved lower-right cells use `NaN` sentinels, and ingress validation (`validate`) enforces explicit `MonotonicityPolicy` (`Strict` vs. `AllowNegativeIncrements` for incurred/reinsurance triangles).
-- **Deterministic & reproducible** — fixed-seed SplitMix64 + Xoshiro256** PRNG streams with exact Marsaglia–Tsang Gamma and Knuth/Hörmann PTRD Poisson samplers across ODP bootstrap, synchronized multi-line bootstrap, Iman–Conover rank reordering, and Monte Carlo layering.
+- **Deterministic & reproducible** — fixed-seed SplitMix64 + Xoshiro256** PRNG streams with Lemire bounded indexing, Marsaglia polar normals, Marsaglia–Tsang Gamma, and Knuth/Hörmann PTRD Poisson samplers across ODP bootstrap, synchronized multi-line bootstrap, Iman–Conover rank reordering, and Monte Carlo layering.
 
 ## Quick Start
 
@@ -112,15 +112,15 @@ assert!((panjer.mean - fft.mean).abs() < 1e-8);
 | Module | Literature / Method | Capabilities |
 | --- | --- | --- |
 | `severity` | KPW App. A, Miccolis (1977), Lee (1988), Keatinge (1999) | Closed-form LEV `E[X ∧ L]`, survival/PDF, layer losses, excess ratios, and ILFs for Lognormal, Pareto II, Single-Param Pareto, Exponential, Mixed Exponential, and GPD |
-| `excess_layers` | Parametric & Monte Carlo layering | Lognormal LEV, attachment/exhaustion exceedance probabilities, ILFs, and synchronized SplitMix64 + Box–Muller simulation |
+| `excess_layers` | Parametric & Monte Carlo layering | Lognormal LEV, attachment/exhaustion exceedance probabilities, ILFs, and cached sorted antithetic Marsaglia polar $O(\log N)$ simulation |
 | `excess_development` | Pinto & Gogol (1987), Siewert (1996) | Excess-of-`L`, limited-to-`L`, and bounded-layer CDFs/LDFs from ground-up CDFs & age-dependent excess ratios with exact conservation |
 | `diagnostics` | Mack (1994 App. G & H), A-vs-E, LOO | Adjacent-factor Spearman test, calendar-year binomial test, leave-one-out fragility, Cape Cod leverage, paid/incurred reconciliation |
 | `selection`, `reserve_rollforward`, `exhibit` | Backtesting & reporting | Holdout LDF backtesting, valuation roll-forward decomposition, and serializable JSON exhibit DTOs |
 | `large_loss`, `trend`, `onlevel`, `count_development`, `apriori`, `aggregate` | Preprocessing utilities | Large-loss capping/excess splits, exponential trending, parallelogram on-leveling, count development, a priori builders |
 
-## Performance
+## Performance & Benchmarking
 
-Steady-state, single-threaded in-process timings on identical triangles (`RAA` 10×10, `GenIns` 10×10, synthetic 40×40) comparing **`reserving-kernels`** (`rustc 1.97.0 --release`) against **`mages/ChainLadder` 0.2.21** (R) and **`casact/chainladder-python` 0.10.1** (Python) on an Intel Core i9-14900K:
+Steady-state, single-threaded Criterion timings (`cargo bench --bench kernels`, 600 ms warmup, 2 s measurement window, 2% noise threshold) on identical triangles (`RAA` 10×10, `GenIns` 10×10, synthetic 40×40) comparing **`reserving-kernels`** (Rust `--release`) against **`mages/ChainLadder` 0.2.21** (R) and **`casact/chainladder-python` 0.10.1** (Python) on an Intel Core i9-14900K:
 
 <p align="center">
   <img src="assets/benchmarks.svg" alt="reserving-kernels vs R ChainLadder and chainladder-python benchmark comparison" width="100%" />
@@ -128,20 +128,26 @@ Steady-state, single-threaded in-process timings on identical triangles (`RAA` 1
 
 | Benchmark | `reserving-kernels` (Rust) | `mages/ChainLadder` (R) | `chainladder-python` (Py) | Speedup vs. R | Speedup vs. Python |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Volume-Weighted LDFs (40×40) | **0.34 µs** | 840 µs | 5,710 µs | 2,485× | 16,890× |
-| Mack Chain Ladder (`RAA` 10×10) | **0.51 µs** | 5,840 µs | 25,446 µs | 11,500× | 50,090× |
-| Mack Chain Ladder (40×40) | **9.86 µs** | 24,650 µs | 30,077 µs | 2,500× | 3,050× |
-| Merz–Wüthrich 1-Yr CDR (`RAA`) | **0.62 µs** | 9,420 µs | — | 15,145× | — |
-| Clark Loglogistic MLE (`GenIns`) | **30.3 µs** | 8,300 µs | 12,026 µs | 274× | 397× |
-| ODP GLM Reserve (`GenIns`) | **75.6 µs** | 5,300 µs | 219,562 µs | 70× | 2,903× |
-| ODP Bootstrap (`GenIns`, 1k sims) | **1.15 ms** | 216.5 ms | 76.8 ms | 188× | 67× |
-| ODP Bootstrap (`GenIns`, 10k sims) | **11.77 ms** | 2,223 ms | 416.2 ms | 189× | 35× |
+| Volume-Weighted LDFs (40×40) | **0.28 µs** | 840 µs | 5,710 µs | 3,040× | 20,680× |
+| Mack Chain Ladder (`RAA` 10×10) | **0.29 µs** | 5,840 µs | 25,446 µs | 20,280× | 88,350× |
+| Mack Chain Ladder (40×40) | **4.09 µs** | 24,650 µs | 30,077 µs | 6,025× | 7,350× |
+| Merz–Wüthrich 1-Yr CDR (`RAA`) | **0.41 µs** | 9,420 µs | — | 23,050× | — |
+| Clark Loglogistic MLE (`GenIns`) | **11.9 µs** | 8,300 µs | 12,026 µs | 695× | 1,007× |
+| ODP GLM Reserve (`GenIns`) | **42.6 µs** | 5,300 µs | 219,562 µs | 124× | 5,155× |
+| ODP Bootstrap (`GenIns`, 1k sims) | **0.80 ms** | 216.5 ms | 76.8 ms | 270× | 96× |
+| ODP Bootstrap (`GenIns`, 10k sims) | **8.20 ms** | 2,223 ms | 416.2 ms | 271× | 51× |
 
-> *Context:* `reserving-kernels` operates directly on validated flat `f64` slices with reusable scratch buffers (`~1.18 µs` per ODP bootstrap iteration), whereas `chainladder-python` and R `ChainLadder` provide 4D DataFrame / S3–S4 metadata layers and interactive workflows. All point estimates and Mack/Merz–Wüthrich standard errors were verified for numerical parity before timing.
+> *Context:* `reserving-kernels` operates on validated flat `f64` slices with reusable scratch workspaces (`~0.80 µs` per ODP bootstrap draw, `9.8 µs` for 10k-sample coherent TVaR, `35 ns` for cached 65k-draw excess-layer MC), whereas R `ChainLadder` and `chainladder-python` include DataFrame/S3–S4 metadata layers. All point estimates and Mack/Merz–Wüthrich SEs were verified for numerical parity prior to timing.
+
+### Benchmarking & Profiling Methodology
+
+- **Suites:** `benches/kernels.rs` covers 20 canonical reserving, MLE/GLM, bootstrap, dependence, distribution, and convolution workloads (`RAA`, `GenIns`, 40×40); `benches/triangle_algebra.rs` sweeps flat triangle scaling (`8..512`).
+- **Regression baselines:** Use Criterion's statistical diffing (`--save-baseline` / `--baseline`) to verify changes at `p < 0.05` with confidence intervals and throughput (`elem/s`).
+- **CPU profiling:** Pair `cargo bench --bench kernels -- --profile-time 5` with `samply record` or `cargo flamegraph` to inspect hot loops under release codegen.
 
 ## Verification & Literature Traceability
 
-All kernels are continuously tested against published datasets and exact mathematical identities (178+ automated unit, integration, doctest, and benchmark assertions):
+All kernels are continuously tested against published datasets and exact mathematical identities (208 automated unit, integration, doctest, and source-benchmark tests):
 
 - **Published Triangles:** Mack (1993) `RAA` 10×10, Taylor & Ashe (1983) / England & Verrall (1999, 2002) `GenIns` 10×10, Friedland (2010) US Industry Auto 10×10, and Quarg & Mack (2004) 7×7.
 - **Exact Identities:** Merz–Wüthrich multi-year CDR run-off summing identically to Mack ultimate MSEP; IRLS cross-classified ODP matching exact `fit_odp` leverages and dispersion; Panjer vs. tilted radix-2 FFT L∞ agreement; tie-invariant Euler TVaR and Myers–Read exact full-allocation conservation.
@@ -154,11 +160,12 @@ All kernels are continuously tested against published datasets and exact mathema
 cargo test --all-targets --all-features
 cargo test --doc
 
-# Run Criterion microbenchmarks
-cargo bench
+# Run Criterion benchmarks (save / compare statistical baselines)
+cargo bench --bench kernels -- --save-baseline main
+cargo bench --bench kernels -- --baseline main
 
-# Generate JSON exhibit example
-cargo run --example export_exhibit
+# Profile a specific kernel under release optimization
+samply record cargo bench --bench kernels -- glm_odp_genins --profile-time 5
 
 # Build WebAssembly target
 cargo build --release --target wasm32-unknown-unknown --features wasm

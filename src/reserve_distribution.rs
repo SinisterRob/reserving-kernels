@@ -51,29 +51,35 @@ fn sorted(values: &[f64]) -> Result<Vec<f64>, ValidationError> {
     }
     validate_finite_slice(values)?;
     let mut out = values.to_vec();
-    out.sort_by(f64::total_cmp);
+    out.sort_unstable_by(f64::total_cmp);
     Ok(out)
 }
 
 #[inline]
-fn quantile_sorted(ordered: &[f64], p: f64) -> f64 {
+fn quantile_rank_index(len: usize, p: f64) -> usize {
     if p <= 0.0 {
-        return ordered[0];
+        return 0;
     }
     if p >= 1.0 {
-        return *ordered.last().expect("non-empty");
+        return len - 1;
     }
     // Snap near-integer p * N within 1e-12 to avoid IEEE-754 representation jumps
     // (e.g. 0.07 * 100.0 == 7.000000000000001).
-    let pn = p * ordered.len() as f64;
+    let pn = p * len as f64;
     let rounded = pn.round();
     let rank = if (pn - rounded).abs() <= 1e-12 {
         rounded as usize
     } else {
         pn.ceil() as usize
     };
-    let idx = rank.saturating_sub(1);
-    ordered[idx.min(ordered.len() - 1)]
+    rank.saturating_sub(1).min(len - 1)
+}
+
+#[inline]
+fn select_quantile_in_place(buf: &mut [f64], p: f64) -> f64 {
+    let idx = quantile_rank_index(buf.len(), p);
+    let (_, nth, _) = buf.select_nth_unstable_by(idx, f64::total_cmp);
+    *nth
 }
 
 /// Arithmetic mean of a reserve sample (`O(n)` without sorting).
@@ -103,20 +109,22 @@ pub fn std_dev(values: &[f64]) -> Result<f64, ValidationError> {
     Ok(variance(values)?.sqrt())
 }
 
-/// Empirical quantile with upper-rank selection (`ceil(p * N) - 1`).
+/// Empirical quantile with upper-rank selection (`ceil(p * N) - 1`) in `O(n)`.
 pub fn quantile(values: &[f64], p: f64) -> Result<f64, ValidationError> {
     validate_prob(p)?;
-    let ordered = sorted(values)?;
-    Ok(quantile_sorted(&ordered, p))
+    if values.is_empty() {
+        return Err(ValidationError::ShapeMismatch);
+    }
+    validate_finite_slice(values)?;
+    let mut buf = values.to_vec();
+    Ok(select_quantile_in_place(&mut buf, p))
 }
 
 /// Discrete least-quantile Value at Risk `VaR_p(X) = F^-(p) = inf { x : F(x) >= p }`
 /// (CAS Monograph No. 15, Algorithm 3.4.2): returns `ordered[ceil(p * N) - 1]`
-/// with IEEE-754 near-integer boundary snapping.
+/// with IEEE-754 near-integer boundary snapping in `O(n)`.
 pub fn var_least(values: &[f64], p: f64) -> Result<f64, ValidationError> {
-    validate_prob(p)?;
-    let ordered = sorted(values)?;
-    Ok(quantile_sorted(&ordered, p))
+    quantile(values, p)
 }
 
 /// Tail Conditional Expectation (average of observations `>= quantile(values, p)`).
@@ -147,21 +155,28 @@ pub fn tvar(values: &[f64], p: f64) -> Result<f64, ValidationError> {
 /// distributions with ties or non-integer tail counts `N · (1 - p)`.
 pub fn tvar_coherent(values: &[f64], p: f64) -> Result<f64, ValidationError> {
     validate_prob(p)?;
-    let ordered = sorted(values)?;
-    let n_len = ordered.len();
+    if values.is_empty() {
+        return Err(ValidationError::ShapeMismatch);
+    }
+    validate_finite_slice(values)?;
+    let n_len = values.len();
     if p <= 0.0 {
-        return Ok(ordered.iter().sum::<f64>() / n_len as f64);
+        return Ok(values.iter().sum::<f64>() / n_len as f64);
     }
     if p >= 1.0 {
-        return Ok(ordered[n_len - 1]);
+        return Ok(values.iter().copied().fold(f64::NEG_INFINITY, f64::max));
     }
     let pn = p * n_len as f64;
     let n_idx = (pn.floor() as usize).min(n_len - 1);
     if n_idx + 1 >= n_len {
-        return Ok(ordered[n_len - 1]);
+        return Ok(values.iter().copied().fold(f64::NEG_INFINITY, f64::max));
     }
-    let t1: f64 = ordered[(n_idx + 1)..].iter().sum();
-    let t2 = ((n_idx + 1) as f64 - pn) * ordered[n_idx];
+    // O(n) partial selection: buf[n_idx] == ordered[n_idx] and buf[n_idx+1..] is
+    // the exact upper-tail multiset (sum is order-invariant).
+    let mut buf = values.to_vec();
+    let (_, nth, upper) = buf.select_nth_unstable_by(n_idx, f64::total_cmp);
+    let t1: f64 = upper.iter().sum();
+    let t2 = ((n_idx + 1) as f64 - pn) * *nth;
     Ok((t1 + t2) / ((1.0 - p) * n_len as f64))
 }
 
@@ -204,25 +219,65 @@ pub fn probability_exceeding(values: &[f64], threshold: f64) -> Result<f64, Vali
     Ok(count as f64 / values.len() as f64)
 }
 
-/// Build a standard reserve-distribution summary bundle (single sort pass).
+/// Build a standard reserve-distribution summary bundle in `O(n)` via cascading
+/// partial selection (no full `O(n log n)` sort required).
 pub fn summarize(values: &[f64]) -> Result<ReserveDistributionSummary, ValidationError> {
-    let ordered = sorted(values)?;
-    let n = ordered.len() as f64;
-    let avg = ordered.iter().sum::<f64>() / n;
-    let var = if ordered.len() <= 1 {
+    if values.is_empty() {
+        return Err(ValidationError::ShapeMismatch);
+    }
+    validate_finite_slice(values)?;
+    let len = values.len();
+    let n = len as f64;
+    let avg = values.iter().sum::<f64>() / n;
+    let var = if len <= 1 {
         0.0
     } else {
-        ordered.iter().map(|v| (v - avg).powi(2)).sum::<f64>() / (n - 1.0)
+        values.iter().map(|v| (v - avg).powi(2)).sum::<f64>() / (n - 1.0)
     };
+
+    let mut buf = values.to_vec();
+    let i50 = quantile_rank_index(len, 0.50);
+    let i75 = quantile_rank_index(len, 0.75);
+    let i90 = quantile_rank_index(len, 0.90);
+    let i95 = quantile_rank_index(len, 0.95);
+    let i99 = quantile_rank_index(len, 0.99);
+
+    let (_, p50_ref, rest) = buf.select_nth_unstable_by(i50, f64::total_cmp);
+    let p50 = *p50_ref;
+    let (p75, rest) = if i75 == i50 {
+        (p50, rest)
+    } else {
+        let (_, r, next) = rest.select_nth_unstable_by(i75 - i50 - 1, f64::total_cmp);
+        (*r, next)
+    };
+    let (p90, rest) = if i90 == i75 {
+        (p75, rest)
+    } else {
+        let (_, r, next) = rest.select_nth_unstable_by(i90 - i75 - 1, f64::total_cmp);
+        (*r, next)
+    };
+    let (p95, rest) = if i95 == i90 {
+        (p90, rest)
+    } else {
+        let (_, r, next) = rest.select_nth_unstable_by(i95 - i90 - 1, f64::total_cmp);
+        (*r, next)
+    };
+    let p99 = if i99 == i95 {
+        p95
+    } else {
+        let (_, r, _) = rest.select_nth_unstable_by(i99 - i95 - 1, f64::total_cmp);
+        *r
+    };
+
     Ok(ReserveDistributionSummary {
         mean: avg,
         variance: var,
         std_dev: var.sqrt(),
-        p50: quantile_sorted(&ordered, 0.50),
-        p75: quantile_sorted(&ordered, 0.75),
-        p90: quantile_sorted(&ordered, 0.90),
-        p95: quantile_sorted(&ordered, 0.95),
-        p99: quantile_sorted(&ordered, 0.99),
+        p50,
+        p75,
+        p90,
+        p95,
+        p99,
     })
 }
 

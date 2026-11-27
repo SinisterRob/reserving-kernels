@@ -21,8 +21,8 @@
 use std::f64::consts::PI;
 
 use crate::bootstrap_odp::{
-    DeterministicRng, OdpBootstrapOptions, OdpFit, ResidualAdjustment,
-    build_adjusted_residual_pool, cholesky_lower, fit_odp, run_odp_iteration_from_residuals,
+    DeterministicRng, OdpBootstrapOptions, OdpBootstrapScratch, OdpFit, ResidualAdjustment,
+    build_adjusted_residual_pool, cholesky_lower, fit_odp, run_odp_iteration_with_scratch,
 };
 use crate::reserve_distribution::{ReserveDistributionSummary, summarize};
 use crate::types::TriangleView;
@@ -150,7 +150,7 @@ pub(crate) fn inv_normal_cdf(p: f64) -> f64 {
 pub(crate) fn average_ranks(values: &[f64]) -> Vec<f64> {
     let n = values.len();
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| values[a].total_cmp(&values[b]));
+    order.sort_unstable_by(|&a, &b| values[a].total_cmp(&values[b]));
 
     let mut ranks = vec![0.0; n];
     let mut i = 0;
@@ -212,15 +212,49 @@ pub fn spearman_correlation(x: &[f64], y: &[f64]) -> f64 {
 fn correlation_matrix(columns: &[Vec<f64>], spearman: bool) -> Vec<f64> {
     let k = columns.len();
     let mut out = vec![0.0; k * k];
-    let transformed: Vec<Vec<f64>> = if spearman {
+    let ranked: Vec<Vec<f64>> = if spearman {
         columns.iter().map(|c| average_ranks(c)).collect()
     } else {
-        columns.to_vec()
+        Vec::new()
     };
+    let slice_at = |idx: usize| -> &[f64] {
+        if spearman {
+            &ranked[idx]
+        } else {
+            &columns[idx]
+        }
+    };
+
+    // Precompute column means and inverse norms once so each pair is a single dot product.
+    let mut means = vec![0.0; k];
+    let mut inv_norms = vec![0.0; k];
+    for i in 0..k {
+        let col = slice_at(i);
+        let nf = col.len() as f64;
+        let m = col.iter().sum::<f64>() / nf;
+        means[i] = m;
+        let ss: f64 = col.iter().map(|&v| (v - m) * (v - m)).sum();
+        inv_norms[i] = if ss > 0.0 { 1.0 / ss.sqrt() } else { f64::NAN };
+    }
+
     for i in 0..k {
         out[i * k + i] = 1.0;
+        let ci = slice_at(i);
+        let mi = means[i];
+        let ni = inv_norms[i];
         for j in (i + 1)..k {
-            let r = pearson_correlation(&transformed[i], &transformed[j]);
+            let cj = slice_at(j);
+            let mj = means[j];
+            let nj = inv_norms[j];
+            let r = if ni.is_finite() && nj.is_finite() {
+                let mut sxy = 0.0;
+                for (&a, &b) in ci.iter().zip(cj.iter()) {
+                    sxy += (a - mi) * (b - mj);
+                }
+                (sxy * ni * nj).clamp(-1.0, 1.0)
+            } else {
+                f64::NAN
+            };
             out[i * k + j] = r;
             out[j * k + i] = r;
         }
@@ -387,28 +421,38 @@ pub fn iman_conover(
     // Form T = M * A and reorder each input column to match the rank order of T[:, col].
     let mut permutations = Vec::with_capacity(k);
     let mut reordered_columns = Vec::with_capacity(k);
+    let mut t_col = vec![0.0; n];
+    let mut t_order: Vec<usize> = (0..n).collect();
+    let mut val_order: Vec<usize> = (0..n).collect();
 
     for col_j in 0..k {
-        let mut t_col = vec![0.0; n];
-        for row_r in 0..n {
-            let mut sum = 0.0;
-            for p in 0..k {
-                sum += m_cols[p][row_r] * a_cols[col_j][p];
+        let a_col = &a_cols[col_j];
+        t_col.fill(0.0);
+        for p in 0..k {
+            let ap = a_col[p];
+            if ap != 0.0 {
+                for (dst, &mp) in t_col.iter_mut().zip(m_cols[p].iter()) {
+                    *dst += mp * ap;
+                }
             }
-            t_col[row_r] = sum;
         }
 
-        let mut t_order: Vec<usize> = (0..n).collect();
-        t_order.sort_by(|&a, &b| t_col[a].total_cmp(&t_col[b]));
+        for (idx, slot) in t_order.iter_mut().enumerate() {
+            *slot = idx;
+        }
+        t_order.sort_unstable_by(|&a, &b| t_col[a].total_cmp(&t_col[b]));
 
-        let mut val_order: Vec<usize> = (0..n).collect();
-        val_order.sort_by(|&a, &b| columns[col_j][a].total_cmp(&columns[col_j][b]));
+        let col_vals = columns[col_j];
+        for (idx, slot) in val_order.iter_mut().enumerate() {
+            *slot = idx;
+        }
+        val_order.sort_unstable_by(|&a, &b| col_vals[a].total_cmp(&col_vals[b]));
         // Randomly break ties within equal-value runs to avoid inheriting original row order.
         let mut tie_start = 0usize;
         while tie_start < n {
-            let v0 = columns[col_j][val_order[tie_start]];
+            let v0 = col_vals[val_order[tie_start]];
             let mut tie_end = tie_start + 1;
-            while tie_end < n && columns[col_j][val_order[tie_end]] == v0 {
+            while tie_end < n && col_vals[val_order[tie_end]] == v0 {
                 tie_end += 1;
             }
             if tie_end - tie_start > 1 {
@@ -426,7 +470,7 @@ pub fn iman_conover(
             let dst_row = t_order[rank_idx];
             let src_row = val_order[rank_idx];
             perm[dst_row] = src_row;
-            reordered[dst_row] = columns[col_j][src_row];
+            reordered[dst_row] = col_vals[src_row];
         }
         permutations.push(perm);
         reordered_columns.push(reordered);
@@ -523,28 +567,31 @@ pub fn synchronized_odp_bootstrap(
     let mut aggregate_totals = Vec::with_capacity(options.iterations);
     let mut shared_indices = vec![0usize; n_obs];
     let mut line_residuals = vec![0.0; n_obs];
+    let mut scratches: Vec<OdpBootstrapScratch> =
+        line_fits.iter().map(OdpBootstrapScratch::for_fit).collect();
+    let mut draw_totals = vec![0.0; k];
     let mut failed_iterations = 0usize;
 
     for _ in 0..options.iterations {
         for slot in &mut shared_indices {
             *slot = rng.next_index(pool_len);
         }
-        let mut draw_totals = Vec::with_capacity(k);
         let mut all_ok = true;
         for line in 0..k {
             for (dst, &pool_idx) in line_residuals.iter_mut().zip(shared_indices.iter()) {
                 *dst = pools[line][pool_idx];
             }
-            match run_odp_iteration_from_residuals(
+            match run_odp_iteration_with_scratch(
                 &line_fits[line],
                 &line_residuals,
                 options.process_distribution,
                 &mut rng,
+                &mut scratches[line],
             ) {
                 Some(origin_res) => {
                     let tot: f64 = origin_res.iter().sum();
                     if tot.is_finite() {
-                        draw_totals.push(tot);
+                        draw_totals[line] = tot;
                     } else {
                         all_ok = false;
                         break;
@@ -559,7 +606,7 @@ pub fn synchronized_odp_bootstrap(
         if all_ok {
             let agg: f64 = draw_totals.iter().sum();
             aggregate_totals.push(agg);
-            for (line, tot) in draw_totals.into_iter().enumerate() {
+            for (line, &tot) in draw_totals.iter().enumerate() {
                 line_totals[line].push(tot);
             }
         } else {

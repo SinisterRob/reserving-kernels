@@ -362,10 +362,22 @@ mod tests {
         .unwrap();
         // Signed development on prior known claims (can include releases).
         let dev_data = vec![
-            0.0, 15.0, -5.0, -2.0,
-            0.0, 18.0, -6.0, f64::NAN,
-            0.0, 20.0, f64::NAN, f64::NAN,
-            0.0, f64::NAN, f64::NAN, f64::NAN,
+            0.0,
+            15.0,
+            -5.0,
+            -2.0,
+            0.0,
+            18.0,
+            -6.0,
+            f64::NAN,
+            0.0,
+            20.0,
+            f64::NAN,
+            f64::NAN,
+            0.0,
+            f64::NAN,
+            f64::NAN,
+            f64::NAN,
         ];
         let known_dev = Triangle::new(4, 4, dev_data);
         let exposures = [1000.0, 1100.0, 1200.0, 1300.0];
@@ -374,9 +386,7 @@ mod tests {
 
         for i in 0..4 {
             let expected_res = res.ultimate[i] - res.latest_incurred[i];
-            assert!(
-                ((res.ibnr_reserve[i] + res.ibner_reserve[i]) - expected_res).abs() < 1e-10
-            );
+            assert!(((res.ibnr_reserve[i] + res.ibner_reserve[i]) - expected_res).abs() < 1e-10);
         }
         assert!(((res.total_ibnr + res.total_ibner) - res.total_reserve).abs() < 1e-10);
         assert!(res.total_ibnr > 0.0);

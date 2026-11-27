@@ -369,19 +369,39 @@ pub fn panjer_recursion(
     let mut g = vec![0.0_f64; n_steps];
     g[0] = g0;
     let m_max = severity_pmf.len() - 1;
+    // Precompute f_y and y * f_y for y = 1..=m_max so the inner loop splits into
+    // two pure dot-products without per-element float casts or branchy index math.
+    let f_pos = &severity_pmf[1..=m_max];
+    let yf_pos: Vec<f64> = f_pos
+        .iter()
+        .enumerate()
+        .map(|(idx, &fy)| (idx + 1) as f64 * fy)
+        .collect();
+    let is_poisson = a == 0.0;
 
     for x in 1..n_steps {
         let upper = x.min(m_max);
         let inv_x = 1.0 / x as f64;
-        let mut acc = 0.0;
-        // Contiguous forward slice access on severity_pmf[1..=upper] and reverse on g[x-upper..x].
-        let f_slice = &severity_pmf[1..=upper];
         let g_slice = &g[(x - upper)..x];
-        for idx in 0..upper {
-            let y = idx + 1;
-            let coeff = a + b * (y as f64) * inv_x;
-            acc += coeff * f_slice[idx] * g_slice[upper - 1 - idx];
-        }
+        let acc = if is_poisson {
+            let mut acc_b = 0.0;
+            for (&yfy, &g_prev) in yf_pos[..upper].iter().zip(g_slice.iter().rev()) {
+                acc_b += yfy * g_prev;
+            }
+            (b * inv_x) * acc_b
+        } else {
+            let mut acc_a = 0.0;
+            let mut acc_b = 0.0;
+            for ((&fy, &yfy), &g_prev) in f_pos[..upper]
+                .iter()
+                .zip(yf_pos[..upper].iter())
+                .zip(g_slice.iter().rev())
+            {
+                acc_a += fy * g_prev;
+                acc_b += yfy * g_prev;
+            }
+            a * acc_a + (b * inv_x) * acc_b
+        };
         let gx = acc * inv_denom;
         if !gx.is_finite() || gx < -1e-6 {
             return Err(ValidationError::InvalidParameter(
@@ -434,16 +454,26 @@ pub fn fft_aggregate_loss(
 
     let mut re = vec![0.0; fft_size];
     let mut im = vec![0.0; fft_size];
-    for (k, &fk) in severity_pmf.iter().enumerate() {
-        re[k] = if theta > 0.0 {
-            fk * (-theta * k as f64).exp()
-        } else {
-            fk
-        };
+    if theta > 0.0 {
+        let step_down = (-theta).exp();
+        let mut scale = 1.0;
+        for (k, &fk) in severity_pmf.iter().enumerate() {
+            if k & 63 == 0 {
+                scale = (-theta * k as f64).exp();
+            }
+            re[k] = fk * scale;
+            scale *= step_down;
+        }
+    } else {
+        re[..severity_pmf.len()].copy_from_slice(severity_pmf);
     }
 
+    // Precompute exact N/2 twiddle table once and share across forward & inverse FFTs
+    // (cuts sin_cos calls by 4x while preserving exact twiddle precision).
+    let (tw_re, tw_im) = build_fft_twiddles(fft_size);
+
     // Forward radix-2 FFT: severity characteristic function.
-    fft_radix2_in_place(&mut re, &mut im, false);
+    fft_radix2_in_place(&mut re, &mut im, &tw_re, &tw_im, false);
 
     // Compound PGF evaluation in frequency domain: phi_S(u) = P_N(phi_X(u)).
     for u in 0..fft_size {
@@ -453,27 +483,35 @@ pub fn fft_aggregate_loss(
     }
 
     // Inverse radix-2 FFT back to loss lattice.
-    fft_radix2_in_place(&mut re, &mut im, true);
+    fft_radix2_in_place(&mut re, &mut im, &tw_re, &tw_im, true);
 
     // Untilt and suppress sub-noise-floor FFT roundoff dust that exponential
     // untilting by exp(theta * k) would otherwise amplify into one-sided bias.
     let noise_floor = if theta > 0.0 { 4.0 * f64::EPSILON } else { 0.0 };
     let mut g = vec![0.0; fft_size];
-    for k in 0..fft_size {
-        if !re[k].is_finite() || re[k] <= noise_floor {
-            g[k] = 0.0;
-            continue;
+    if theta > 0.0 {
+        let step_up = theta.exp();
+        let mut scale = 1.0;
+        for k in 0..fft_size {
+            if k & 63 == 0 {
+                scale = (theta * k as f64).exp();
+            }
+            let rk = re[k];
+            if rk.is_finite() && rk > noise_floor {
+                let raw = rk * scale;
+                if raw.is_finite() && raw > 0.0 {
+                    g[k] = raw;
+                }
+            }
+            scale *= step_up;
         }
-        let raw = if theta > 0.0 {
-            re[k] * (theta * k as f64).exp()
-        } else {
-            re[k]
-        };
-        g[k] = if raw.is_finite() && raw > 0.0 {
-            raw
-        } else {
-            0.0
-        };
+    } else {
+        for k in 0..fft_size {
+            let rk = re[k];
+            if rk.is_finite() && rk > 0.0 {
+                g[k] = rk;
+            }
+        }
     }
 
     Ok(summarize_aggregate(frequency, severity_pmf, step, g))
@@ -624,8 +662,28 @@ fn summarize_aggregate(
     }
 }
 
+/// Build exact forward twiddle factors `exp(-i * 2*pi*k / n)` for `k = 0..n/2`.
+fn build_fft_twiddles(n: usize) -> (Vec<f64>, Vec<f64>) {
+    let half = n >> 1;
+    let mut tw_re = Vec::with_capacity(half);
+    let mut tw_im = Vec::with_capacity(half);
+    let angle_step = -TAU / n as f64;
+    for k in 0..half {
+        let (s, c) = (k as f64 * angle_step).sin_cos();
+        tw_re.push(c);
+        tw_im.push(s);
+    }
+    (tw_re, tw_im)
+}
+
 /// Pure-Rust iterative in-place radix-2 Cooley–Tukey FFT (`len` must be power of 2).
-fn fft_radix2_in_place(re: &mut [f64], im: &mut [f64], inverse: bool) {
+fn fft_radix2_in_place(
+    re: &mut [f64],
+    im: &mut [f64],
+    tw_re: &[f64],
+    tw_im: &[f64],
+    inverse: bool,
+) {
     let n = re.len();
     debug_assert_eq!(n, im.len());
     debug_assert!(n.is_power_of_two());
@@ -645,16 +703,17 @@ fn fft_radix2_in_place(re: &mut [f64], im: &mut [f64], inverse: bool) {
         }
     }
 
-    // Cooley–Tukey butterfly stages: compute exact twiddle (cos, sin) per k
-    // to prevent O(N * eps) recurrence drift on large tilted FFTs.
-    let sign = if inverse { 1.0 } else { -1.0 };
+    // Cooley–Tukey butterfly stages using precomputed exact twiddles (inverse conjugates wi).
+    let im_sign = if inverse { -1.0 } else { 1.0 };
     let mut len = 2usize;
     while len <= n {
         let half = len >> 1;
-        let angle_step = sign * TAU / len as f64;
+        let stride = n / len;
 
         for k in 0..half {
-            let (wi, wr) = (k as f64 * angle_step).sin_cos();
+            let tw_idx = k * stride;
+            let wr = tw_re[tw_idx];
+            let wi = im_sign * tw_im[tw_idx];
             let mut start = k;
             while start < n {
                 let odd = start + half;

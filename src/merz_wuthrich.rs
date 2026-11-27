@@ -137,21 +137,25 @@ pub fn analyze_with_policy(
     let sigma_sq = &m.sigma_sq;
     let latest = latest_diagonal(t);
 
-    // Precompute S_j^{[I]} = sum_{r=0}^{I-j-1} C_{r,j} and alpha_j = C_{I-j, j} / (S_j^{[I]} + C_{I-j, j}).
-    let mut s_col = vec![0.0; n - 1];
-    let mut alpha = vec![0.0; n - 1];
-    let mut param_update_term = vec![0.0; n - 1]; // sigma_j^2 / f_j^2 * (alpha_j / S_j^{[I]})
-    let mut link_param_base = vec![0.0; n - 1]; // sigma_j^2 / (f_j^2 * S_j^{[I]})
-
-    for j in 0..(n - 1) {
-        let nk = last_idx - j; // rows 0..nk are in S_j^{[I]}
-        let mut s_i = 0.0;
-        for r in 0..nk {
-            s_i += t.get(r, j);
+    // Row-major pass for S_j^{[I]} = sum_{r=0}^{I-j-1} C_{r,j}, avoiding strided column reads.
+    let m_links = n - 1;
+    let mut s_col = vec![0.0; m_links];
+    let n_devs = t.n_devs;
+    for r in 0..m_links {
+        let row = &t.data[r * n_devs..r * n_devs + (n - r)];
+        for j in 0..(last_idx - r) {
+            s_col[j] += row[j];
         }
-        let diag_c = t.get(nk, j); // C_{I - j, j}, sits on latest diagonal
+    }
+
+    let mut alpha = vec![0.0; m_links];
+    let mut param_update_term = vec![0.0; m_links]; // sigma_j^2 / f_j^2 * (alpha_j / S_j^{[I]})
+    let mut link_param_base = vec![0.0; m_links]; // sigma_j^2 / (f_j^2 * S_j^{[I]})
+
+    for j in 0..m_links {
+        let s_i = s_col[j];
+        let diag_c = latest[last_idx - j]; // C_{I - j, j}, sits on latest diagonal
         let s_ip1 = s_i + diag_c;
-        s_col[j] = s_i;
         alpha[j] = if s_ip1 > 0.0 { diag_c / s_ip1 } else { 0.0 };
 
         let fk = ldf[j];
@@ -195,16 +199,15 @@ pub fn analyze_with_policy(
 
     let sum_origin_cdr_msep: f64 = cdr_msep.iter().sum();
 
-    // Cross-origin covariance (Theorem 2):
+    // Cross-origin covariance (Theorem 2) in O(n) via suffix sum of m.ultimate:
     // For 1 <= i < k <= I, d_i = I - i > d_k = I - k.
     let mut total_covariance = 0.0;
-    for i in 1..n {
+    let mut ult_suffix = 0.0;
+    for i in (1..n).rev() {
         let d_i = last_idx - i;
         let cov_bracket = link_param_base[d_i] + suffix_update[d_i + 1];
-        let u_i = m.ultimate[i];
-        for k in (i + 1)..n {
-            total_covariance += 2.0 * u_i * m.ultimate[k] * cov_bracket;
-        }
+        total_covariance += 2.0 * m.ultimate[i] * ult_suffix * cov_bracket;
+        ult_suffix += m.ultimate[i];
     }
 
     let total_cdr_msep = (sum_origin_cdr_msep + total_covariance).max(0.0);

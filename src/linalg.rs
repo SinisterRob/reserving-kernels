@@ -46,17 +46,24 @@ pub(crate) fn cholesky_lower(a: &[f64], dim: usize) -> Result<Vec<f64>, Validati
     Ok(l)
 }
 
+/// Solve lower-triangular `L y = b` by forward substitution into `y` (zero allocation).
+#[allow(dead_code)]
+pub(crate) fn solve_lower_into(l: &[f64], dim: usize, b: &[f64], y: &mut [f64]) {
+    for i in 0..dim {
+        let mut sum = b[i];
+        let row = &l[i * dim..i * dim + i];
+        for (lij, &yk) in row.iter().zip(y[..i].iter()) {
+            sum -= lij * yk;
+        }
+        y[i] = sum / l[i * dim + i];
+    }
+}
+
 /// Solve lower-triangular `L y = b` by forward substitution.
 #[allow(dead_code)]
 pub(crate) fn solve_lower(l: &[f64], dim: usize, b: &[f64]) -> Vec<f64> {
     let mut y = vec![0.0; dim];
-    for i in 0..dim {
-        let mut sum = b[i];
-        for k in 0..i {
-            sum -= l[i * dim + k] * y[k];
-        }
-        y[i] = sum / l[i * dim + i];
-    }
+    solve_lower_into(l, dim, b, &mut y);
     y
 }
 
@@ -197,53 +204,86 @@ pub(crate) struct WlsQrSolution {
     pub leverages: Vec<f64>,
 }
 
-struct WeightedQrFactorization {
-    a: Vec<f64>,
+/// Reusable workspace for allocation-free column-major Householder QR WLS solves
+/// inside iterative loops such as GLM IRLS.
+#[derive(Debug, Default)]
+pub(crate) struct QrWorkspace {
+    /// Column-major `n × p` weighted matrix (`col j` at `j * n .. (j + 1) * n`).
+    a_cm: Vec<f64>,
     b: Vec<f64>,
     sqrt_w: Vec<f64>,
+    v: Vec<f64>,
 }
 
-/// Factorize `W^{1/2} X` via in-place Householder QR.
-fn qr_factorize_weighted(
+impl QrWorkspace {
+    pub(crate) fn with_capacity(n: usize, p: usize) -> Self {
+        Self {
+            a_cm: vec![0.0; n * p],
+            b: vec![0.0; n],
+            sqrt_w: vec![0.0; n],
+            v: vec![0.0; n],
+        }
+    }
+}
+
+/// Factorize `W^{1/2} X` via in-place column-major Householder QR into `ws`.
+///
+/// Storing `A = W^{1/2} X` column-major makes every Householder dot-product and
+/// AXPY update a contiguous slice loop that auto-vectorizes cleanly.
+fn qr_factorize_weighted_into(
     x: &[f64],
     y: &[f64],
     weights: &[f64],
     n: usize,
     p: usize,
-) -> Result<WeightedQrFactorization, ValidationError> {
+    ws: &mut QrWorkspace,
+) -> Result<(), ValidationError> {
     if n == 0 || p == 0 || p > n || x.len() != n * p || y.len() != n || weights.len() != n {
         return Err(ValidationError::ShapeMismatch);
     }
 
-    let mut a = vec![0.0; n * p];
-    let mut b = vec![0.0; n];
-    let mut sqrt_w = vec![0.0; n];
+    if ws.a_cm.len() != n * p {
+        ws.a_cm.resize(n * p, 0.0);
+    }
+    if ws.b.len() != n {
+        ws.b.resize(n, 0.0);
+    }
+    if ws.sqrt_w.len() != n {
+        ws.sqrt_w.resize(n, 0.0);
+    }
+    if ws.v.len() != n {
+        ws.v.resize(n, 0.0);
+    }
+
     for i in 0..n {
         let w = weights[i];
-        if !w.is_finite() || w < 0.0 || !y[i].is_finite() {
+        let yi = y[i];
+        if !w.is_finite() || w < 0.0 || !yi.is_finite() {
             return Err(ValidationError::InvalidParameter(
                 "WLS requires finite non-negative weights and finite responses",
             ));
         }
         let sw = w.sqrt();
-        sqrt_w[i] = sw;
-        b[i] = sw * y[i];
+        ws.sqrt_w[i] = sw;
+        ws.b[i] = sw * yi;
+        let x_row = &x[i * p..(i + 1) * p];
         for j in 0..p {
-            let xij = x[i * p + j];
+            let xij = x_row[j];
             if !xij.is_finite() {
                 return Err(ValidationError::NotFinite);
             }
-            a[i * p + j] = sw * xij;
+            ws.a_cm[j * n + i] = sw * xij;
         }
     }
 
-    // In-place Householder QR: transforms `a` into upper-triangular `R` in its
-    // top `p` rows and transforms `b` into `Q^T b`.
-    let mut v = vec![0.0; n];
+    // In-place column-major Householder QR: `ws.a_cm[j * n + i]` holds R[i, j] for i <= j.
     for k in 0..p {
+        let len = n - k;
+        let col_k_start = k * n + k;
+        let col_k = &ws.a_cm[col_k_start..col_k_start + len];
+
         let mut norm_sq = 0.0;
-        for i in k..n {
-            let val = a[i * p + k];
+        for &val in col_k {
             norm_sq += val * val;
         }
         let norm = norm_sq.sqrt();
@@ -252,44 +292,49 @@ fn qr_factorize_weighted(
                 "design matrix is rank-deficient or collinear",
             ));
         }
-        let x0 = a[k * p + k];
+        let x0 = col_k[0];
         let sign = if x0 >= 0.0 { 1.0 } else { -1.0 };
         let alpha = -sign * norm;
 
-        let mut v_norm_sq = 0.0;
-        for i in k..n {
-            let vi = if i == k { x0 - alpha } else { a[i * p + k] };
-            v[i] = vi;
-            v_norm_sq += vi * vi;
+        let v_slice = &mut ws.v[..len];
+        v_slice[0] = x0 - alpha;
+        let mut v_norm_sq = v_slice[0] * v_slice[0];
+        for (dst, &src) in v_slice[1..].iter_mut().zip(col_k[1..].iter()) {
+            *dst = src;
+            v_norm_sq += src * src;
         }
         if v_norm_sq <= 1e-30 * norm_sq {
             continue;
         }
         let tau = 2.0 / v_norm_sq;
 
-        // Apply reflector H = I - tau v v^T to remaining columns k..p.
-        a[k * p + k] = alpha;
-        for i in (k + 1)..n {
-            a[i * p + k] = 0.0;
-        }
+        ws.a_cm[col_k_start] = alpha;
+        ws.a_cm[col_k_start + 1..col_k_start + len].fill(0.0);
+
+        // Apply reflector H = I - tau v v^T to remaining columns (k + 1)..p contiguously.
+        let v_ref = &ws.v[..len];
         for j in (k + 1)..p {
+            let col_j_start = j * n + k;
+            let col_j = &mut ws.a_cm[col_j_start..col_j_start + len];
             let mut dot = 0.0;
-            for i in k..n {
-                dot += v[i] * a[i * p + j];
+            for (&vi, &aij) in v_ref.iter().zip(col_j.iter()) {
+                dot += vi * aij;
             }
             let scale = tau * dot;
-            for i in k..n {
-                a[i * p + j] -= scale * v[i];
+            for (aij, &vi) in col_j.iter_mut().zip(v_ref.iter()) {
+                *aij -= scale * vi;
             }
         }
-        // Apply reflector to RHS `b`.
+
+        // Apply reflector to RHS `b[k..n]` contiguously.
+        let b_slice = &mut ws.b[k..n];
         let mut dot_b = 0.0;
-        for i in k..n {
-            dot_b += v[i] * b[i];
+        for (&vi, &bi) in v_ref.iter().zip(b_slice.iter()) {
+            dot_b += vi * bi;
         }
         let scale_b = tau * dot_b;
-        for i in k..n {
-            b[i] -= scale_b * v[i];
+        for (bi, &vi) in b_slice.iter_mut().zip(v_ref.iter()) {
+            *bi -= scale_b * vi;
         }
     }
 
@@ -297,7 +342,7 @@ fn qr_factorize_weighted(
     let mut max_diag = 0.0_f64;
     let mut min_diag = f64::INFINITY;
     for k in 0..p {
-        let d = a[k * p + k].abs();
+        let d = ws.a_cm[k * n + k].abs();
         if !d.is_finite() {
             return Err(ValidationError::NotFinite);
         }
@@ -310,11 +355,33 @@ fn qr_factorize_weighted(
         ));
     }
 
-    Ok(WeightedQrFactorization { a, b, sqrt_w })
+    Ok(())
+}
+
+/// Zero-allocation Householder QR weighted least squares writing `beta` into `beta_out`.
+pub(crate) fn weighted_least_squares_qr_beta_into(
+    x: &[f64],
+    y: &[f64],
+    weights: &[f64],
+    n: usize,
+    p: usize,
+    ws: &mut QrWorkspace,
+    beta_out: &mut [f64],
+) -> Result<(), ValidationError> {
+    qr_factorize_weighted_into(x, y, weights, n, p, ws)?;
+    for i in (0..p).rev() {
+        let mut sum = ws.b[i];
+        for j in (i + 1)..p {
+            sum -= ws.a_cm[j * n + i] * beta_out[j];
+        }
+        beta_out[i] = sum / ws.a_cm[i * n + i];
+    }
+    Ok(())
 }
 
 /// Fast Householder QR weighted least squares returning only `beta` (skipping
 /// `R^{-1}`, `(X^T W X)^{-1}`, and hat leverages). Ideal for inner IRLS loops.
+#[allow(dead_code)]
 pub(crate) fn weighted_least_squares_qr_beta_only(
     x: &[f64],
     y: &[f64],
@@ -322,15 +389,9 @@ pub(crate) fn weighted_least_squares_qr_beta_only(
     n: usize,
     p: usize,
 ) -> Result<Vec<f64>, ValidationError> {
-    let WeightedQrFactorization { a, b, .. } = qr_factorize_weighted(x, y, weights, n, p)?;
+    let mut ws = QrWorkspace::with_capacity(n, p);
     let mut beta = vec![0.0; p];
-    for i in (0..p).rev() {
-        let mut sum = b[i];
-        for j in (i + 1)..p {
-            sum -= a[i * p + j] * beta[j];
-        }
-        beta[i] = sum / a[i * p + i];
-    }
+    weighted_least_squares_qr_beta_into(x, y, weights, n, p, &mut ws, &mut beta)?;
     Ok(beta)
 }
 
@@ -348,53 +409,78 @@ pub(crate) fn weighted_least_squares_qr(
     n: usize,
     p: usize,
 ) -> Result<WlsQrSolution, ValidationError> {
-    let WeightedQrFactorization { a, b, sqrt_w } = qr_factorize_weighted(x, y, weights, n, p)?;
+    let mut ws = QrWorkspace::with_capacity(n, p);
+    weighted_least_squares_qr_with_workspace(x, y, weights, n, p, &mut ws)
+}
+
+/// Solve weighted least squares via Householder QR reusing `ws`.
+pub(crate) fn weighted_least_squares_qr_with_workspace(
+    x: &[f64],
+    y: &[f64],
+    weights: &[f64],
+    n: usize,
+    p: usize,
+    ws: &mut QrWorkspace,
+) -> Result<WlsQrSolution, ValidationError> {
+    qr_factorize_weighted_into(x, y, weights, n, p, ws)?;
 
     // Back-substitute R * beta = (Q^T b)[0..p].
     let mut beta = vec![0.0; p];
     for i in (0..p).rev() {
-        let mut sum = b[i];
+        let mut sum = ws.b[i];
         for j in (i + 1)..p {
-            sum -= a[i * p + j] * beta[j];
+            sum -= ws.a_cm[j * n + i] * beta[j];
         }
-        beta[i] = sum / a[i * p + i];
+        beta[i] = sum / ws.a_cm[i * n + i];
     }
 
-    // Invert upper-triangular R to obtain R^{-1} and (X^T W X)^{-1} = R^{-1} R^{-T}.
+    // Invert upper-triangular R (stored column-major in ws.a_cm) to obtain R^{-1}
+    // (stored row-major in r_inv) and (X^T W X)^{-1} = R^{-1} R^{-T}.
     let mut r_inv = vec![0.0; p * p];
     for col in 0..p {
         for row in (0..=col).rev() {
             let mut sum = if row == col { 1.0 } else { 0.0 };
             for k in (row + 1)..=col {
-                sum -= a[row * p + k] * r_inv[k * p + col];
+                sum -= ws.a_cm[k * n + row] * r_inv[k * p + col];
             }
-            r_inv[row * p + col] = sum / a[row * p + row];
+            r_inv[row * p + col] = sum / ws.a_cm[row * n + row];
         }
     }
 
     let mut xtwx_inv = vec![0.0; p * p];
     for i in 0..p {
+        let r_i = &r_inv[i * p..(i + 1) * p];
         for j in i..p {
-            let mut acc = 0.0;
+            let r_j = &r_inv[j * p..(j + 1) * p];
             let k_start = i.max(j);
-            for k in k_start..p {
-                acc += r_inv[i * p + k] * r_inv[j * p + k];
+            let mut acc = 0.0;
+            for (&a_ik, &a_jk) in r_i[k_start..].iter().zip(r_j[k_start..].iter()) {
+                acc += a_ik * a_jk;
             }
             xtwx_inv[i * p + j] = acc;
             xtwx_inv[j * p + i] = acc;
         }
     }
 
+    // Column-major copy of R^{-1} for contiguous leverage dot products.
+    let mut r_inv_cm = vec![0.0; p * p];
+    for col in 0..p {
+        for row in 0..=col {
+            r_inv_cm[col * p + row] = r_inv[row * p + col];
+        }
+    }
+
     // Leverages h_i = w_i * || X_i R^{-1} ||^2.
     let mut leverages = vec![0.0; n];
     for i in 0..n {
-        let w_i = sqrt_w[i] * sqrt_w[i];
+        let w_i = ws.sqrt_w[i] * ws.sqrt_w[i];
         let x_row = &x[i * p..(i + 1) * p];
         let mut norm_sq = 0.0;
         for col in 0..p {
+            let col_slice = &r_inv_cm[col * p..col * p + col + 1];
             let mut z = 0.0;
-            for k in 0..=col {
-                z += x_row[k] * r_inv[k * p + col];
+            for (&xk, &rk) in x_row[..=col].iter().zip(col_slice.iter()) {
+                z += xk * rk;
             }
             norm_sq += z * z;
         }

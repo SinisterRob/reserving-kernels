@@ -110,7 +110,11 @@ fn select_ratio(
         CaseRatioAverage::VolumeWeighted => {
             let num_sum: f64 = slice.iter().map(|(n, _)| *n).sum();
             let den_sum: f64 = slice.iter().map(|(_, d)| *d).sum();
-            if den_sum > 0.0 { num_sum / den_sum } else { 0.0 }
+            if den_sum > 0.0 {
+                num_sum / den_sum
+            } else {
+                0.0
+            }
         }
         CaseRatioAverage::Simple => {
             let ratio_sum: f64 = slice.iter().map(|(n, d)| *n / *d).sum();
@@ -157,8 +161,18 @@ pub fn project_case_outstanding(
                 dens.push(prev_case);
             }
         }
-        paid_to_case_ratios.push(select_ratio(&p_nums, &dens, options.average, options.last_n));
-        case_to_case_ratios.push(select_ratio(&c_nums, &dens, options.average, options.last_n));
+        paid_to_case_ratios.push(select_ratio(
+            &p_nums,
+            &dens,
+            options.average,
+            options.last_n,
+        ));
+        case_to_case_ratios.push(select_ratio(
+            &c_nums,
+            &dens,
+            options.average,
+            options.last_n,
+        ));
     }
 
     let mut completed_paid = paid.data.to_vec();
@@ -279,8 +293,9 @@ mod tests {
         }
         let pt = Triangle::new(n, n, paid);
         let ct = Triangle::new(n, n, case);
-        let res = project_case_outstanding(&pt.view(), &ct.view(), &CaseOutstandingOptions::default())
-            .expect("case outstanding");
+        let res =
+            project_case_outstanding(&pt.view(), &ct.view(), &CaseOutstandingOptions::default())
+                .expect("case outstanding");
         for &rp in &res.paid_to_case_ratios {
             assert!((rp - 0.5).abs() < 1e-12, "rp={rp}");
         }

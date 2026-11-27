@@ -11,7 +11,7 @@
 //! excess ratios ([`crate::severity`], [`crate::excess_layers`]).
 //!
 //! Given ground-up cumulative development factors $\text{CDF}_j^{\text{GU}}$ and
-//! age-dependent excess ratios $R_j(L) = \frac{E[(X_j - L)_+]}{E[X_j]}$ (with
+//! age-dependent excess ratios $R_j(L) = \frac{E[(X_j - L)_+]}{E\[X_j\]}$ (with
 //! ultimate excess ratio $R_\infty(L)$):
 //!
 //! $$\text{CDF}_j^{\text{xs}}(L) = \text{CDF}_j^{\text{GU}} \cdot \frac{R_\infty(L)}{R_j(L)}$$
@@ -92,9 +92,7 @@ fn cdfs_to_ldfs(cdfs: &[f64]) -> Vec<f64> {
     if cdfs.len() < 2 {
         return Vec::new();
     }
-    (0..cdfs.len() - 1)
-        .map(|j| cdfs[j] / cdfs[j + 1])
-        .collect()
+    (0..cdfs.len() - 1).map(|j| cdfs[j] / cdfs[j + 1]).collect()
 }
 
 /// Derive excess-of-$L$ and limited-to-$L$ CDFs and LDFs from ground-up CDFs

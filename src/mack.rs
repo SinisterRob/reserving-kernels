@@ -39,8 +39,7 @@
 //! and every pair `0 ≤ i < j < n` gains cross-origin tail covariance
 //! `2 × Ĉ_{i,n−1} × Ĉ_{j,n−1} × se(f_tail)²`.
 
-use crate::ldf::volume_weighted;
-use crate::ldf::{DevelopmentFactorEngine, volume_weighted_ldfs_observed_counts};
+use crate::ldf::volume_weighted_ldfs_observed_counts;
 use crate::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
@@ -254,73 +253,104 @@ pub fn analyze_unchecked(t: &TriangleView<'_>, tail: f64) -> Mack {
 /// without validation.
 pub fn analyze_with_tail_spec_unchecked(t: &TriangleView<'_>, tail_spec: MackTailSpec) -> Mack {
     let n = t.n_origins.min(t.n_devs);
-    let ldf = volume_weighted(t);
-    let sigma_sq = sigma_sq_vec(t, &ldf);
+    let m = n.saturating_sub(1);
     let tail = tail_spec.tail_factor;
     let tail_se_sq = tail_spec.tail_se * tail_spec.tail_se;
 
-    // Column sums S_k = Σ_{i=0}^{n_k-1} C_{i,k} for k = 0..n-2.
-    let mut s_col = vec![0.0; n.saturating_sub(1)];
-    for k in 0..n.saturating_sub(1) {
-        let nk = n - k - 1;
-        let mut acc = 0.0;
-        for i in 0..nk {
-            acc += t.get(i, k);
-        }
-        s_col[k] = acc;
-    }
-
-    let latest = latest_diagonal(t);
-
-    // Projected cumulative Ĉ_{i,k} for i in 0..n, k in 0..n.
-    let mut proj = vec![0.0; n * n];
-    for i in 0..n {
-        let start = n - 1 - i;
-        proj[i * n + start] = latest[i];
-        for k in (start + 1)..n {
-            proj[i * n + k] = proj[i * n + k - 1] * ldf[k - 1];
+    // Fused row-major pass for column sums S_k and numerator sums -> LDFs.
+    let mut s_col = vec![0.0; m];
+    let mut num_col = vec![0.0; m];
+    let n_devs = t.n_devs;
+    for i in 0..m {
+        let row = &t.data[i * n_devs..i * n_devs + (n - i)];
+        let upper = n - 1 - i;
+        for k in 0..upper {
+            s_col[k] += row[k];
+            num_col[k] += row[k + 1];
         }
     }
+    let mut ldf = vec![0.0; m];
+    for k in 0..m {
+        ldf[k] = if s_col[k] > 0.0 {
+            num_col[k] / s_col[k]
+        } else {
+            f64::NAN
+        };
+    }
 
+    let sigma_sq = sigma_sq_vec(t, &ldf);
+
+    // Precompute per-link parameter & process multipliers once:
+    //   link_var[k] = sigma_k^2 / f_k^2
+    //   link_param[k] = sigma_k^2 / (f_k^2 * S_k)
+    let mut link_var = vec![0.0; m];
+    let mut link_param = vec![0.0; m];
+    for k in 0..m {
+        let fk = ldf[k];
+        let sk2 = sigma_sq[k];
+        let s = s_col[k];
+        if fk > 0.0 && s > 0.0 {
+            let lv = sk2 / (fk * fk);
+            link_var[k] = lv;
+            link_param[k] = lv / s;
+        }
+    }
+
+    // Suffix sums of link_param for O(1) covariance lookup:
+    //   cov_suffix[start] = sum_{k = start}^{m - 1} sigma_k^2 / (f_k^2 * S_k).
+    let mut cov_suffix = vec![0.0; n];
+    for k in (0..m).rev() {
+        cov_suffix[k] = cov_suffix[k + 1] + link_param[k];
+    }
+
+    // Compute ultimates, reserves, and per-origin MSE on-the-fly without an n × n matrix.
     let mut ultimate = vec![0.0; n];
     let mut reserve = vec![0.0; n];
-    for i in 0..n {
-        ultimate[i] = proj[i * n + (n - 1)] * tail;
-        reserve[i] = ultimate[i] - latest[i];
-    }
-
-    // Per-origin MSE up to age n - 1 (Mack 1993 Eq. 7), then Mack (1999) Eq. 4
-    // recursive step for the tail factor f_tail with sigma_tail^2 and se(f_tail).
+    let mut c_last_vec = vec![0.0; n];
     let mut mse = vec![0.0; n];
+    let mut total_reserve = 0.0;
+    let mut total_mse = 0.0;
+
     for i in 0..n {
-        let c_last = proj[i * n + (n - 1)];
-        let mut pre_tail_mse = 0.0;
-        if i >= 1 {
-            let start = n - 1 - i;
-            let mut acc = 0.0;
-            for k in start..n - 1 {
-                let fk = ldf[k];
-                let sk2 = sigma_sq[k];
-                let c_hat = proj[i * n + k];
-                let s = s_col[k];
-                if fk > 0.0 && c_hat > 0.0 && s > 0.0 {
-                    acc += (sk2 / (fk * fk)) * (1.0 / c_hat + 1.0 / s);
-                }
+        let start = n - 1 - i;
+        let lat = t.get(i, start);
+        let mut c_hat = lat;
+        let mut acc = 0.0;
+        for k in start..m {
+            if c_hat > 0.0 {
+                acc += link_var[k] / c_hat + link_param[k];
             }
-            pre_tail_mse = c_last * c_last * acc;
+            c_hat *= ldf[k];
         }
+        let c_last = c_hat;
+        c_last_vec[i] = c_last;
+        let ult = c_last * tail;
+        let res = ult - lat;
+        ultimate[i] = ult;
+        reserve[i] = res;
+        total_reserve += res;
+
+        let pre_tail_mse = if i >= 1 { c_last * c_last * acc } else { 0.0 };
         let tail_process = if c_last > 0.0 {
             c_last * tail_spec.tail_sigma_sq
         } else {
             0.0
         };
         let tail_param = c_last * c_last * tail_se_sq;
-        mse[i] = tail * tail * pre_tail_mse + tail_process + tail_param;
+        let mse_i = tail * tail * pre_tail_mse + tail_process + tail_param;
+        mse[i] = mse_i;
+        total_mse += mse_i;
     }
 
     let standard_error: Vec<f64> = mse
         .iter()
-        .map(|&m| if m.is_finite() { m.max(0.0).sqrt() } else { f64::NAN })
+        .map(|&v| {
+            if v.is_finite() {
+                v.max(0.0).sqrt()
+            } else {
+                f64::NAN
+            }
+        })
         .collect();
     let cv: Vec<f64> = standard_error
         .iter()
@@ -328,33 +358,20 @@ pub fn analyze_with_tail_spec_unchecked(t: &TriangleView<'_>, tail_spec: MackTai
         .map(|(s, r)| if *r > 0.0 { s / r } else { 0.0 })
         .collect();
 
-    let total_reserve: f64 = reserve.iter().sum();
-
-    // Total MSE (Mack 1993 Theorem 3 / Eq. 15 + Mack 1999 Section 3 tail covariance):
-    //   Σ MSE_i + 2 × Σ_{i<j} [ Û_i Û_j Σ_{k=n-1-i}^{n-2} σ²_k/(f²_k × S_k)
-    //                         + Ĉ_{i,n-1} Ĉ_{j,n-1} se(f_tail)² ]
-    // For i < j, origin i is older and already observed up to age n - 1 - i,
-    // so origins i and j share estimated development factors only for k >= n - 1 - i.
-    let mut total_mse: f64 = mse.iter().sum();
-    for i in 0..n {
-        let c_last_i = proj[i * n + (n - 1)];
+    // O(n) cross-origin covariance using suffix sums of ultimate[j] and c_last[j]:
+    //   2 * sum_{i < j} [ U_i U_j cov_suffix[n - 1 - i] + C_{i,n-1} C_{j,n-1} se(f_tail)^2 ].
+    let mut ult_suffix = 0.0;
+    let mut c_last_suffix = 0.0;
+    for i in (0..n).rev() {
         let start = n - 1 - i;
-        let mut cov_sum = 0.0;
         if i >= 1 {
-            for k in start..n - 1 {
-                let fk = ldf[k];
-                let sk2 = sigma_sq[k];
-                let s = s_col[k];
-                if fk > 0.0 && s > 0.0 {
-                    cov_sum += sk2 / (fk * fk * s);
-                }
-            }
+            total_mse += 2.0 * ultimate[i] * ult_suffix * cov_suffix[start];
         }
-        for j in (i + 1)..n {
-            let c_last_j = proj[j * n + (n - 1)];
-            total_mse +=
-                2.0 * ultimate[i] * ultimate[j] * cov_sum + 2.0 * c_last_i * c_last_j * tail_se_sq;
+        if tail_se_sq > 0.0 {
+            total_mse += 2.0 * c_last_vec[i] * c_last_suffix * tail_se_sq;
         }
+        ult_suffix += ultimate[i];
+        c_last_suffix += c_last_vec[i];
     }
 
     let total_standard_error = if total_mse.is_finite() {
@@ -550,17 +567,21 @@ pub fn analyze_with_tail_uncertainty_and_policy(
         validate_monotone_cumulative(t)?;
     }
     validate_tail_spec(tail_spec)?;
-    DevelopmentFactorEngine::volume_weighted_with_policy(t, tail_spec.tail_factor, policy)?;
     let n = t.n_origins;
-    for k in 0..n.saturating_sub(1) {
-        let nk = n - k - 1;
-        for i in 0..nk {
-            if t.get(i, k) == 0.0 && t.get(i, k + 1) != 0.0 {
+    let n_devs = t.n_devs;
+    for i in 0..n.saturating_sub(1) {
+        let row = &t.data[i * n_devs..i * n_devs + (n - i)];
+        for k in 0..(n - 1 - i) {
+            if row[k] == 0.0 && row[k + 1] != 0.0 {
                 return Err(ValidationError::DivideByZero("mack link denominator"));
             }
         }
     }
-    Ok(analyze_with_tail_spec_unchecked(t, tail_spec))
+    let result = analyze_with_tail_spec_unchecked(t, tail_spec);
+    if result.ldf.iter().any(|&v| !v.is_finite() || v <= 0.0) {
+        return Err(ValidationError::DivideByZero("development denominator"));
+    }
+    Ok(result)
 }
 
 /// Configuration for generalized Mack chain-ladder analysis with custom
@@ -769,7 +790,13 @@ pub fn analyze_with_options(
 
     let standard_error: Vec<f64> = mse
         .iter()
-        .map(|&m| if m.is_finite() { m.max(0.0).sqrt() } else { f64::NAN })
+        .map(|&m| {
+            if m.is_finite() {
+                m.max(0.0).sqrt()
+            } else {
+                f64::NAN
+            }
+        })
         .collect();
     let cv: Vec<f64> = standard_error
         .iter()

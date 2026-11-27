@@ -468,9 +468,8 @@ mod tests {
             344014.0, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN,
         ]);
         let m_uni = mack::analyze(&genins.view(), 1.0).expect("mack");
-        let m_multi =
-            analyze_multivariate_cl(&[genins.view()], &MultivariateClOptions::default())
-                .expect("mcl");
+        let m_multi = analyze_multivariate_cl(&[genins.view()], &MultivariateClOptions::default())
+            .expect("mcl");
         assert!((m_multi.portfolio_total_reserve - m_uni.total_reserve).abs() < 1e-6);
         assert!(
             (m_multi.portfolio_standard_error - m_uni.total_standard_error).abs() < 1e-6,

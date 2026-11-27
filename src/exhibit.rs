@@ -426,21 +426,22 @@ fn projection_comparison_exhibit(
                     .map(|projection| projection.maturity[origin])
                     .or_else(|| cape_cod.map(|projection| projection.reported_percentage[origin]))
                     .or_else(|| factor_maturity.get(latest_dev).copied()),
-            chain_ladder_ultimate: Some(chain_ladder.ultimates[origin]),
-            chain_ladder_reserve: Some(chain_ladder.reserves[origin]),
-            bf_expected: bf.map(|projection| projection.expected_ultimate[origin]),
-            bf_ultimate: bf.map(|projection| projection.ultimates[origin]),
-            bf_reserve: bf.map(|projection| projection.reserves[origin]),
-            cape_cod_expected: cape_cod.map(|projection| projection.expected_ultimate[origin]),
-            cape_cod_ultimate: cape_cod
-                .map(|projection| projection.bf_projection.ultimates[origin]),
-            cape_cod_reserve: cape_cod.map(|projection| projection.bf_projection.reserves[origin]),
-            mack_ultimate: Some(mack.ultimate[origin]),
-            mack_reserve: Some(mack.reserve[origin]),
-            mack_se: Some(mack.standard_error[origin]),
-            mack_cv: Some(mack.cv[origin]),
-            brosius_ultimate: Some(brosius.ultimate[origin]),
-            brosius_reserve: Some(brosius.reserve[origin]),
+                chain_ladder_ultimate: Some(chain_ladder.ultimates[origin]),
+                chain_ladder_reserve: Some(chain_ladder.reserves[origin]),
+                bf_expected: bf.map(|projection| projection.expected_ultimate[origin]),
+                bf_ultimate: bf.map(|projection| projection.ultimates[origin]),
+                bf_reserve: bf.map(|projection| projection.reserves[origin]),
+                cape_cod_expected: cape_cod.map(|projection| projection.expected_ultimate[origin]),
+                cape_cod_ultimate: cape_cod
+                    .map(|projection| projection.bf_projection.ultimates[origin]),
+                cape_cod_reserve: cape_cod
+                    .map(|projection| projection.bf_projection.reserves[origin]),
+                mack_ultimate: Some(mack.ultimate[origin]),
+                mack_reserve: Some(mack.reserve[origin]),
+                mack_se: Some(mack.standard_error[origin]),
+                mack_cv: Some(mack.cv[origin]),
+                brosius_ultimate: Some(brosius.ultimate[origin]),
+                brosius_reserve: Some(brosius.reserve[origin]),
             }
         })
         .collect();

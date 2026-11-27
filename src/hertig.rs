@@ -61,9 +61,9 @@ pub struct HertigResult {
     pub log_mean: Vec<f64>,
     /// Predictive log-development variance $V_i$ per origin, length $n$.
     pub log_variance: Vec<f64>,
-    /// Exact analytical expected ultimate $E[U_i]$ per origin, length $n$.
+    /// Exact analytical expected ultimate $E\[U_i\]$ per origin, length $n$.
     pub ultimate: Vec<f64>,
-    /// Exact analytical expected reserve $E[R_i] = E[U_i] - C_{i, n-1-i}$ per origin, length $n$.
+    /// Exact analytical expected reserve $E\[R_i\] = E\[U_i\] - C_{i, n-1-i}$ per origin, length $n$.
     pub reserve: Vec<f64>,
     /// Exact analytical reserve variance $\mathrm{Var}(R_i)$ per origin, length $n$.
     pub variance: Vec<f64>,
@@ -93,7 +93,8 @@ impl HertigResult {
             ));
         }
         let z = inv_normal_cdf(p);
-        let ult_q = self.latest[origin] * (self.log_mean[origin] + z * self.log_variance[origin].sqrt()).exp();
+        let ult_q = self.latest[origin]
+            * (self.log_mean[origin] + z * self.log_variance[origin].sqrt()).exp();
         Ok(ult_q - self.latest[origin])
     }
 
