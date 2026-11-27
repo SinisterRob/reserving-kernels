@@ -4,7 +4,7 @@
 
 # reserving-kernels
 
-Pure Rust numeric kernels for P&C actuarial reserving, pricing, and capital modeling.
+Pure Rust numeric kernels for P&C actuarial reserving and capital modeling.
 
 [![CI](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml/badge.svg)](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml) · `Rust 1.97+` · `MIT OR Apache-2.0` · `no unsafe` · `serde only` · `wasm32 ready`
 
@@ -73,7 +73,7 @@ fn main() -> Result<(), ValidationError> {
 | **1. Point Estimators & Adjustments** | Chain Ladder, Bornhuetter–Ferguson, Benktander, Cape Cod (standard & generalized), Berquist–Sherman, Munich & Double Chain Ladder, Separation |
 | **2. Stochastic, 1-Year Risk & GLMs** | Mack (uni/multivariate & BF), Merz–Wüthrich 1-year CDR, ODP/Gamma/Tweedie GLMs, ODP Bootstrap, Paid–Incurred Chain, Kalman & individual-claim reserving |
 | **3. Dependence & Capital Allocation** | Iman–Conover rank correlation, synchronized multi-line bootstrap, Panjer & FFT aggregate loss convolution, VaR/TVaR/RVaR, Euler & Myers–Read allocation |
-| **4. Excess Pricing & Diagnostics** | Parametric severity & LEV/ILFs, excess-layer development, Mack diagnostic tests, backtesting, roll-forwards, and preprocessing utilities |
+| **4. Excess Layering & Diagnostics** | Parametric severity & LEV/excess ratios, excess-layer development, Mack diagnostic tests, backtesting, roll-forwards, and preprocessing utilities |
 
 <details>
 <summary><strong>Full module directory (50 modules)</strong></summary>
@@ -127,11 +127,11 @@ fn main() -> Result<(), ValidationError> {
 | `aggregate_loss` | Panjer (a, b, 0) recursion, exponentially tilted FFT, and severity discretization |
 | `capital_allocation` | Euler allocation (TVaR, RVaR, SD) and Myers–Read marginal default-put allocation |
 
-#### 4. Excess Layer Pricing, Severity & Diagnostics
+#### 4. Excess Layering, Severity & Diagnostics
 
 | Module | Capabilities |
 | --- | --- |
-| `severity` | Closed-form LEV, survival/PDF, layer losses, excess ratios, and ILFs (Lognormal, Pareto, Exponential, Mixed Exp, GPD) |
+| `severity` | Closed-form LEV, survival/PDF, layer losses, and excess ratios (Lognormal, Pareto, Exponential, Mixed Exp, GPD) |
 | `excess_layers` | Parametric layering, exceedance probabilities, and antithetic Monte Carlo simulation |
 | `excess_development` | Excess-of-L, limited-to-L, and bounded-layer CDFs/LDFs with exact conservation |
 | `diagnostics` | Mack Spearman & calendar-year tests, A-vs-E, leave-one-out fragility, and paid/incurred reconciliation |
