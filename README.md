@@ -76,7 +76,7 @@ fn main() -> Result<(), ValidationError> {
 | **4. Excess Pricing & Diagnostics** | Parametric severity & LEV/ILFs, excess-layer development, Mack diagnostic tests, backtesting, roll-forwards, and preprocessing utilities |
 
 <details>
-<summary><strong>Full module directory (38 modules)</strong></summary>
+<summary><strong>Full module directory (50 modules)</strong></summary>
 
 #### 1. Loss Development, Point Estimators & Operational Adjustments
 

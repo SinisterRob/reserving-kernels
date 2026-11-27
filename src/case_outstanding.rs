@@ -13,7 +13,7 @@
 //! 2. Project future incremental paid and future case reserves cell-by-cell
 //!    across the lower-right triangle:
 //!    $$\hat{p}_{i,j} = \hat{O}_{i,j-1} \cdot r^{\text{paid}}_j, \qquad
-//!      \hat{O}_{i,j} = \hat{O}_{i,j-1} \cdot r^{\text{case}}_j.$$
+//!    \hat{O}_{i,j} = \hat{O}_{i,j-1} \cdot r^{\text{case}}_j.$$
 //! 3. Accumulate projected incremental paid (plus any remaining terminal case
 //!    reserve if `include_terminal_case` is set) to obtain paid ultimates and
 //!    total unpaid reserves.

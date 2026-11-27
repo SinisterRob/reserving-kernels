@@ -6,8 +6,8 @@
 //!
 //! Data is exchanged through static buffers:
 //!
-//! * `rk_tri_ptr`  — cumulative triangle, row-major, `N_MAX × N_MAX`.
-//!                   Write `NaN` for unobserved cells.
+//! * `rk_tri_ptr`  — cumulative triangle, row-major, `N_MAX × N_MAX`
+//!   (write `NaN` for unobserved cells).
 //! * `rk_prem_ptr` — per-origin premium vector, length `N_MAX`.
 //! * `rk_ldf_ptr`  — output LDFs, length `N_MAX − 1` meaningful.
 //! * `rk_cdf_ptr`  — output CDFs (cumulative dev factors), length `N_MAX`.

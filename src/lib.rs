@@ -2,42 +2,8 @@
 #![cfg_attr(not(feature = "wasm"), forbid(unsafe_code))]
 #![warn(missing_docs)]
 #![allow(clippy::needless_range_loop)]
+// Intentional NaN-rejecting numeric guards such as `!(x > 0.0)`.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::doc_lazy_continuation)]
-#![allow(clippy::doc_overindented_list_items)]
-
-//! Pure-Rust base kernel set for actuarial loss-reserving, stochastic
-//! variance decomposition, portfolio dependence, and severity layering.
-//!
-//! Inputs are loss-development triangles laid out row-major as `f64` slices
-//! (cumulative paid or incurred), with `NaN` marking unobserved cells. All
-//! compute kernels operate on `f64` in hot paths and assume validated inputs
-//! (see [`validate`]).
-//!
-//! Core modules:
-//!
-//! * [`ldf`] & [`tail`] — age-to-age development factors and parametric tail
-//!   extrapolation (Bondy, Generalized Bondy, Exponential, Sherman Inverse
-//!   Power, Weibull, and Mack 1999 tail variance).
-//! * [`chain_ladder`], [`bf`], [`benktander`], [`cape_cod`],
-//!   [`generalized_cape_cod`], [`berquist_sherman`], [`brosius`], and
-//!   [`munich_chain_ladder`] — deterministic point reserving and operational
-//!   adjustment methods.
-//! * [`mack`], [`mack_bf`], [`merz_wuthrich`], [`paid_incurred_chain`],
-//!   [`clark_mle`], [`ptf_regression`], [`glm_reserving`], and
-//!   [`bootstrap_odp`] — stochastic reserving, 1-year Solvency II CDR MSEP,
-//!   parametric MLE, log-linear trend families, IRLS GLMs, and ODP bootstrap.
-//! * [`dependence`], [`reserve_distribution`], [`aggregate_loss`], and
-//!   [`capital_allocation`] — Iman–Conover (Mildenhall 2006) rank reordering,
-//!   synchronized multi-line ODP bootstrap, Panjer/FFT compound distributions,
-//!   CAS Monograph No. 15 coherent risk measures, Euler allocation, and
-//!   Myers–Read default-put allocation.
-//! * [`severity`] & [`excess_layers`] — parametric LEV/ILFs, lognormal layer
-//!   expectations, and Monte Carlo layer simulation.
-//! * [`diagnostics`], [`selection`], [`reserve_rollforward`], & [`exhibit`] —
-//!   Mack (1994) assumption tests, holdout backtesting, roll-forwards, and
-//!   serializable exhibits.
 
 pub mod aggregate;
 pub mod aggregate_loss;
