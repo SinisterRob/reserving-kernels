@@ -2050,7 +2050,7 @@ pub fn bootstrap_odp(
     options: OdpBootstrapOptions,
 ) -> Result<OdpBootstrapResult, ValidationError> {
     if options.iterations == 0 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ValidationError::InvalidIterations);
     }
 
     let fit = fit_odp(triangle, tail, options.monotonicity_policy)?;
@@ -2347,7 +2347,7 @@ pub fn bootstrap_odp_cdr(
     options: OdpBootstrapOptions,
 ) -> Result<OdpCdrBootstrapResult, ValidationError> {
     if options.iterations == 0 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ValidationError::InvalidIterations);
     }
 
     let fit = fit_odp(triangle, tail, options.monotonicity_policy)?;

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="reserving-kernels — Actuarial computing in Rust" width="100%" />
+  <img src="https://raw.githubusercontent.com/SinisterRob/reserving-kernels/main/assets/banner.png" alt="reserving-kernels — Actuarial computing in Rust" width="100%" />
 </p>
 
 <p align="center">
@@ -7,11 +7,13 @@
 </p>
 
 <p align="center">
+  <a href="https://crates.io/crates/reserving-kernels"><img src="https://img.shields.io/crates/v/reserving-kernels?style=flat" alt="Crates.io" /></a>
+  <a href="https://docs.rs/reserving-kernels"><img src="https://img.shields.io/docsrs/reserving-kernels?style=flat" alt="docs.rs" /></a>
   <a href="https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/SinisterRob/reserving-kernels/ci.yml?branch=main&label=CI&style=flat" alt="CI" /></a>
-  <a href="Cargo.toml"><img src="https://img.shields.io/badge/Rust-1.97%2B-f97316?style=flat" alt="Rust 1.97+" /></a>
+  <a href="https://github.com/SinisterRob/reserving-kernels/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/Rust-1.97%2B-f97316?style=flat" alt="Rust 1.97+" /></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-30363d?style=flat" alt="License: MIT or Apache-2.0" /></a>
-  <a href="src/lib.rs"><img src="https://img.shields.io/badge/unsafe-forbidden-30363d?style=flat" alt="No unsafe code" /></a>
-  <a href="Cargo.toml"><img src="https://img.shields.io/badge/deps-serde%20only-30363d?style=flat" alt="Dependencies: serde only" /></a>
+  <a href="https://github.com/SinisterRob/reserving-kernels/blob/main/src/lib.rs"><img src="https://img.shields.io/badge/unsafe-forbidden-30363d?style=flat" alt="No unsafe code" /></a>
+  <a href="https://github.com/SinisterRob/reserving-kernels/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/deps-serde%20only-30363d?style=flat" alt="Dependencies: serde only" /></a>
   <a href="#building-and-testing"><img src="https://img.shields.io/badge/target-wasm32-30363d?style=flat" alt="WebAssembly target" /></a>
 </p>
 
@@ -21,18 +23,18 @@
   <a href="#performance">Performance</a> &nbsp;·&nbsp;
   <a href="#verification">Verification</a> &nbsp;·&nbsp;
   <a href="#building-and-testing">Build &amp; Test</a> &nbsp;·&nbsp;
-  <a href="docs/SOURCES.md">Literature</a>
+  <a href="https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md">Literature</a>
 </p>
 
 ---
 
-`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](tests/source_benchmarks.rs)).
+`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs)).
 
 ## Why `reserving-kernels`?
 
 - **Zero heavy dependencies:** Pure Rust with no BLAS, LAPACK, FFTW, or `ndarray`. Linear algebra, IRLS, and FFT routines are built in and compile cleanly to `wasm32` (`--features wasm`).
 - **Validated flat triangles:** Row-major `f64` grids using `NaN` for unobserved cells, with explicit monotonicity validation and support for negative development in incurred or reinsurance triangles.
-- **Deterministic by design:** Fixed-seed PRNG streams and custom samplers keep ODP bootstraps, multi-line correlations, and Monte Carlo runs reproducible across native and browser targets.
+- **Deterministic by design:** Fixed-seed PRNG streams and custom samplers keep ODP bootstraps, multi-line correlations, and Monte Carlo runs deterministic and reproducible on each target.
 
 ## Quick Start
 
@@ -40,7 +42,7 @@ Add `reserving-kernels` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-reserving-kernels = { git = "https://github.com/SinisterRob/reserving-kernels" }
+reserving-kernels = "0.2"
 ```
 
 Basic triangle reserving and aggregate loss convolution:
@@ -165,7 +167,7 @@ fn main() -> Result<(), ValidationError> {
 Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kernels` (`--release`) against `mages/ChainLadder` 0.2.21 (R) and `casact/chainladder-python` 0.10.1 (Python) on identical triangles:
 
 <p align="center">
-  <img src="assets/benchmarks.svg" alt="reserving-kernels vs R ChainLadder and chainladder-python benchmark comparison" width="100%" />
+  <img src="https://raw.githubusercontent.com/SinisterRob/reserving-kernels/main/assets/benchmarks.svg" alt="reserving-kernels vs R ChainLadder and chainladder-python benchmark comparison" width="100%" />
 </p>
 
 | Benchmark | `reserving-kernels` | R `ChainLadder` | `chainladder-python` | vs. R | vs. Python |
@@ -188,7 +190,7 @@ Kernels are tested against published actuarial datasets and closed-form mathemat
 - **Benchmark triangles:** Mack (1993) RAA, Taylor & Ashe / England & Verrall GenIns, Friedland US Industry Auto, and Quarg & Mack (2004).
 - **Exact identities:** Merz–Wüthrich multi-year run-off summing to Mack ultimate MSEP; ODP GLM matching exact analytical leverages and dispersion; Panjer vs. FFT aggregate loss agreement; and full-allocation conservation for Euler TVaR and Myers–Read.
 
-Full citations and equation mappings live in [`docs/SOURCES.md`](docs/SOURCES.md); parity tests live in [`tests/source_benchmarks.rs`](tests/source_benchmarks.rs).
+Full citations and equation mappings live in [`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md); parity tests live in [`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs).
 
 ## Building and Testing
 
@@ -213,4 +215,4 @@ cargo build --release --target wasm32-unknown-unknown --features wasm
 
 ## License
 
-Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
+Licensed under either of [MIT](https://github.com/SinisterRob/reserving-kernels/blob/main/LICENSE-MIT) or [Apache-2.0](https://github.com/SinisterRob/reserving-kernels/blob/main/LICENSE-APACHE) at your option.

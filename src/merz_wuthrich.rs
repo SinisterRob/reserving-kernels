@@ -114,9 +114,12 @@ pub struct RunoffCdrDecomposition {
     pub mack_ultimate_msep: f64,
 }
 
-/// Compute Merz & Wüthrich (2008) 1-year CDR MSEP with strict cumulative monotonicity.
+/// Compute Merz & Wüthrich (2008) 1-year CDR MSEP.
+///
+/// Defaults to [`MonotonicityPolicy::AllowNegativeIncrements`] to match Mack (1993).
+/// Use [`analyze_with_policy`] with [`MonotonicityPolicy::Strict`] to enforce monotone rows.
 pub fn analyze(t: &TriangleView<'_>) -> Result<MerzWuthrichResult, ValidationError> {
-    analyze_with_policy(t, MonotonicityPolicy::Strict)
+    analyze_with_policy(t, MonotonicityPolicy::AllowNegativeIncrements)
 }
 
 /// Compute Merz & Wüthrich (2008) 1-year CDR MSEP under an explicit [`MonotonicityPolicy`].
@@ -126,9 +129,9 @@ pub fn analyze_with_policy(
 ) -> Result<MerzWuthrichResult, ValidationError> {
     let m = mack::analyze_with_policy(t, 1.0, policy)?;
     let n = t.n_origins;
-    if n < 2 {
+    if n < 3 {
         return Err(ValidationError::InvalidParameter(
-            "Merz & Wuthrich CDR requires at least a 2x2 triangle",
+            "Merz & Wuthrich CDR requires at least a 3x3 triangle",
         ));
     }
 

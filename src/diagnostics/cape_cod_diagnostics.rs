@@ -72,7 +72,7 @@ pub fn used_up_premium(
             return Err(ValidationError::NotFinite);
         }
         if premium_value <= 0.0 {
-            return Err(ValidationError::DivideByZero("premium"));
+            return Err(ValidationError::NonPositive("premium"));
         }
         if !(0.0..=1.0).contains(&reported) {
             return Err(ValidationError::InvalidMaturity {

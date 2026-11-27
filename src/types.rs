@@ -28,13 +28,46 @@ use crate::ptf_regression::{self, PtfOptions, PtfResult};
 use crate::triangle::{cumulative_to_incremental, latest_diagonal};
 use crate::validate::{MonotonicityPolicy, ValidationError, validate_triangle};
 
+/// Deserialize a `Vec<f64>` where JSON `null` values map back to `f64::NAN`,
+/// enabling lossless `serde_json` round-trips for triangles containing `NaN`
+/// sentinels in unobserved cells.
+fn deserialize_vec_f64_null_as_nan<'de, D>(deserializer: D) -> Result<Vec<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let opts: Vec<Option<f64>> = Vec::deserialize(deserializer)?;
+    Ok(opts.into_iter().map(|v| v.unwrap_or(f64::NAN)).collect())
+}
+
+#[derive(serde::Deserialize)]
+struct RawTriangle {
+    n_origins: usize,
+    n_devs: usize,
+    #[serde(deserialize_with = "deserialize_vec_f64_null_as_nan")]
+    data: Vec<f64>,
+}
+
+impl TryFrom<RawTriangle> for Triangle {
+    type Error = ValidationError;
+
+    fn try_from(raw: RawTriangle) -> Result<Self, Self::Error> {
+        Self::try_new(raw.n_origins, raw.n_devs, raw.data)
+    }
+}
+
 /// An `n_origins × n_devs` cumulative loss triangle in row-major layout.
 ///
 /// `data[i * n_devs + j]` is the cumulative loss for origin `i` at
 /// development age `j`. Unobserved cells are `NaN`. The kernels assume the
 /// triangle is *square* (`n_origins == n_devs`) and that cell `(i, j)` is
 /// observed for `i + j ≤ n - 1`.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+///
+/// Equality (`PartialEq`) treats two `NaN` cells at the same position as equal
+/// so `tri == tri.clone()` holds for triangles with unobserved cells.
+/// Deserialization maps JSON `null` to `NaN` and validates via [`Self::try_new`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "RawTriangle")]
 pub struct Triangle {
     /// Number of origin (accident / policy) periods.
     pub n_origins: usize,
@@ -42,6 +75,12 @@ pub struct Triangle {
     pub n_devs: usize,
     /// Row-major buffer of length `n_origins * n_devs`.
     pub data: Vec<f64>,
+}
+
+impl PartialEq for Triangle {
+    fn eq(&self, other: &Self) -> bool {
+        self.view() == other.view()
+    }
 }
 
 impl Triangle {
@@ -223,6 +262,14 @@ impl Triangle {
         self.view().merz_wuthrich()
     }
 
+    /// Merz & Wüthrich (2008) 1-year CDR MSEP under an explicit [`MonotonicityPolicy`].
+    pub fn merz_wuthrich_with_policy(
+        &self,
+        policy: MonotonicityPolicy,
+    ) -> Result<MerzWuthrichResult, ValidationError> {
+        self.view().merz_wuthrich_with_policy(policy)
+    }
+
     /// Bornhuetter–Ferguson projection using volume-weighted LDFs.
     pub fn bf(
         &self,
@@ -327,7 +374,7 @@ impl fmt::Display for Triangle {
 }
 
 /// A non-owning view over a triangle's row-major buffer.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub struct TriangleView<'a> {
     /// Number of origin periods.
     pub n_origins: usize,
@@ -335,6 +382,19 @@ pub struct TriangleView<'a> {
     pub n_devs: usize,
     /// Row-major buffer.
     pub data: &'a [f64],
+}
+
+impl PartialEq for TriangleView<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.n_origins == other.n_origins
+            && self.n_devs == other.n_devs
+            && self.data.len() == other.data.len()
+            && self
+                .data
+                .iter()
+                .zip(other.data.iter())
+                .all(|(&a, &b)| (a.is_nan() && b.is_nan()) || a == b)
+    }
 }
 
 impl fmt::Display for TriangleView<'_> {
@@ -418,6 +478,14 @@ impl TriangleView<'_> {
     /// Merz & Wüthrich (2008) 1-year Solvency II Claims Development Result (CDR) MSEP.
     pub fn merz_wuthrich(&self) -> Result<MerzWuthrichResult, ValidationError> {
         merz_wuthrich::analyze(self)
+    }
+
+    /// Merz & Wüthrich (2008) 1-year CDR MSEP under an explicit [`MonotonicityPolicy`].
+    pub fn merz_wuthrich_with_policy(
+        &self,
+        policy: MonotonicityPolicy,
+    ) -> Result<MerzWuthrichResult, ValidationError> {
+        merz_wuthrich::analyze_with_policy(self, policy)
     }
 
     /// Bornhuetter–Ferguson projection using volume-weighted LDFs.
@@ -545,5 +613,20 @@ mod tests {
 
         assert_eq!(triangle.n_origins, 2);
         assert_eq!(triangle.n_devs, 2);
+        assert_eq!(triangle, triangle.clone());
+        assert_eq!(triangle.view(), triangle.view());
+    }
+
+    #[test]
+    fn triangle_serde_json_roundtrips_nan_and_validates() {
+        let triangle =
+            Triangle::try_from_upper_rows(&[&[100.0, 160.0, 195.0], &[120.0, 190.0], &[135.0]])
+                .expect("triangle");
+        let json = serde_json::to_string(&triangle).expect("serialize");
+        let decoded: Triangle = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(triangle, decoded);
+
+        let malformed = r#"{"n_origins":3,"n_devs":3,"data":[1.0]}"#;
+        assert!(serde_json::from_str::<Triangle>(malformed).is_err());
     }
 }

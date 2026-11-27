@@ -262,10 +262,7 @@ impl AggregateLossDistribution {
             return Err(ValidationError::NotFinite);
         }
         if !(0.0..=1.0).contains(&alpha) {
-            return Err(ValidationError::InvalidMaturity {
-                index: 0,
-                value: alpha,
-            });
+            return Err(ValidationError::InvalidProbability { value: alpha });
         }
         for (k, &f) in self.cdf.iter().enumerate() {
             if f >= alpha - 1e-15 {
@@ -282,10 +279,7 @@ impl AggregateLossDistribution {
             return Err(ValidationError::NotFinite);
         }
         if !(0.0..=1.0).contains(&alpha) {
-            return Err(ValidationError::InvalidMaturity {
-                index: 0,
-                value: alpha,
-            });
+            return Err(ValidationError::InvalidProbability { value: alpha });
         }
         if alpha <= 0.0 {
             if !(self.total_mass > 0.0) {
@@ -604,9 +598,9 @@ fn validate_compound_inputs(
     }
     validate_nonnegative_finite_slice(severity_pmf)?;
     let sum_f: f64 = severity_pmf.iter().sum();
-    if !(sum_f > 0.0) || sum_f > 1.0 + 1e-6 {
+    if (sum_f - 1.0).abs() > 1e-6 {
         return Err(ValidationError::InvalidParameter(
-            "severity PMF must sum to <= 1.0 and be non-zero",
+            "severity PMF must sum to 1.0 within 1e-6",
         ));
     }
     Ok(())

@@ -40,7 +40,7 @@ fn validate_prob(p: f64) -> Result<(), ValidationError> {
         return Err(ValidationError::NotFinite);
     }
     if !(0.0..=1.0).contains(&p) {
-        return Err(ValidationError::InvalidMaturity { index: 0, value: p });
+        return Err(ValidationError::InvalidProbability { value: p });
     }
     Ok(())
 }
@@ -420,10 +420,7 @@ mod tests {
         let values = [1.0, 2.0, 3.0];
         assert_eq!(
             quantile(&values, 1.1),
-            Err(ValidationError::InvalidMaturity {
-                index: 0,
-                value: 1.1
-            })
+            Err(ValidationError::InvalidProbability { value: 1.1 })
         );
     }
 }

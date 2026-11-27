@@ -233,7 +233,7 @@ fn cape_cod_engine_rejects_zero_premium() {
 
     assert_eq!(
         CapeCodEngine::project(&t.view(), &factors, &premium),
-        Err(ValidationError::DivideByZero("premium"))
+        Err(ValidationError::NonPositive("premium"))
     );
 }
 
@@ -288,7 +288,7 @@ fn mack_standard_errors_are_non_negative_and_finite() {
 }
 
 #[test]
-fn mack_checked_rejects_non_cumulative_triangle() {
+fn mack_checked_rejects_non_cumulative_triangle_under_strict_policy() {
     #[rustfmt::skip]
     let t = Triangle::new(4, 4, vec![
         1000.0, 1500.0, 1700.0, 1800.0,
@@ -297,7 +297,11 @@ fn mack_checked_rejects_non_cumulative_triangle() {
         1800.0,    NAN,    NAN,    NAN,
     ]);
 
-    let result = mack::analyze(&t.view(), 1.0);
+    let result = mack::analyze_with_policy(
+        &t.view(),
+        1.0,
+        reserving_kernels::validate::MonotonicityPolicy::Strict,
+    );
     assert!(matches!(
         result,
         Err(ValidationError::NonMonotoneCumulative {
@@ -307,6 +311,53 @@ fn mack_checked_rejects_non_cumulative_triangle() {
             value: 1100.0,
         })
     ));
+}
+
+#[test]
+fn mack_and_mw_accept_raa_by_default_and_reject_2x2() {
+    let raa = reserving_kernels::datasets::raa();
+    let m = raa
+        .mack(1.0)
+        .expect("RAA should succeed with default Mack policy");
+    assert!(m.total_standard_error > 0.0);
+    let cdr = raa
+        .merz_wuthrich()
+        .expect("RAA should succeed with default MW policy");
+    assert!(cdr.total_cdr_standard_error > 0.0);
+    assert!(
+        raa.merz_wuthrich_with_policy(reserving_kernels::validate::MonotonicityPolicy::Strict)
+            .is_err()
+    );
+
+    let tiny = Triangle::try_from_upper_rows(&[&[100.0, 150.0], &[120.0]]).expect("2x2");
+    assert!(matches!(
+        tiny.mack(1.0),
+        Err(ValidationError::InvalidParameter(_))
+    ));
+    let unchecked = mack::analyze_unchecked(&tiny.view(), 1.0);
+    assert!(unchecked.sigma_sq[0].is_nan());
+}
+
+#[test]
+fn panjer_rejects_defective_pmf_and_bootstrap_rejects_zero_iterations() {
+    use reserving_kernels::aggregate_loss::{FrequencyDistribution, panjer_recursion};
+    use reserving_kernels::bootstrap_odp::{OdpBootstrapOptions, bootstrap_odp};
+
+    let freq = FrequencyDistribution::Poisson { lambda: 3.0 };
+    assert!(matches!(
+        panjer_recursion(freq, &[0.0, 0.5, 0.3], 100.0, 64),
+        Err(ValidationError::InvalidParameter(_))
+    ));
+
+    let t = test_triangle();
+    let opts = OdpBootstrapOptions {
+        iterations: 0,
+        ..OdpBootstrapOptions::default()
+    };
+    assert_eq!(
+        bootstrap_odp(&t.view(), 1.0, opts),
+        Err(ValidationError::InvalidIterations)
+    );
 }
 
 #[test]

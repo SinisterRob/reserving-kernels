@@ -61,6 +61,15 @@ pub enum ValidationError {
         /// Supplied maturity value.
         value: f64,
     },
+    /// Probability or confidence level is outside `[0, 1]`.
+    InvalidProbability {
+        /// Supplied probability value.
+        value: f64,
+    },
+    /// Simulation or bootstrap iteration count is zero.
+    InvalidIterations,
+    /// A required strictly positive input was zero or negative.
+    NonPositive(&'static str),
     /// Model or matrix specification is invalid or numerically singular.
     InvalidParameter(&'static str),
 }
@@ -89,6 +98,11 @@ impl fmt::Display for ValidationError {
             Self::InvalidMaturity { index, value } => {
                 write!(f, "invalid maturity/probability {value} at index {index}")
             }
+            Self::InvalidProbability { value } => {
+                write!(f, "invalid probability {value} (must be in [0, 1])")
+            }
+            Self::InvalidIterations => write!(f, "iteration count must be at least 1"),
+            Self::NonPositive(ctx) => write!(f, "{ctx} must be strictly positive"),
             Self::InvalidParameter(msg) => write!(f, "invalid parameter: {msg}"),
         }
     }
@@ -132,7 +146,7 @@ pub fn validate_premium(premium: &[f64], n_origins: usize) -> Result<(), Validat
             return Err(ValidationError::NotFinite);
         }
         if p <= 0.0 {
-            return Err(ValidationError::DivideByZero("premium"));
+            return Err(ValidationError::NonPositive("premium"));
         }
     }
     Ok(())

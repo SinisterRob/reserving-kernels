@@ -5,6 +5,20 @@ All notable changes to `reserving-kernels` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-11-26
+
+### Fixed
+- `Triangle` JSON deserialization now maps `null` to `NaN` and validates shape/values via `Triangle::try_new`, preventing invalid triangles from being deserialized.
+- Implemented `PartialEq` for `Triangle` and `TriangleView` treating `NaN == NaN` so `tri == tri.clone()` holds for triangles with unobserved cells.
+- Mack and Merz–Wüthrich now reject `< 3x3` triangles instead of silently returning `sigma_sq = [0.0]` / `SE = 0` (`analyze_unchecked` returns `NaN` for unestimable `sigma_sq`).
+- Panjer and FFT compound aggregate loss now require the severity PMF to sum to `1.0` within `1e-6` instead of accepting defective PMFs.
+- Added dedicated `ValidationError` variants (`InvalidProbability`, `InvalidIterations`, `NonPositive`) for out-of-range probabilities, zero bootstrap iterations, and non-positive premiums.
+
+### Changed
+- Mack (`mack::analyze`, `mack::analyze_with_tail_uncertainty`, `MackOptions::default`) and Merz–Wüthrich (`merz_wuthrich::analyze`) now default to `MonotonicityPolicy::AllowNegativeIncrements` so canonical triangles with downward revisions (such as Mack's RAA dataset) work out of the box.
+- Added `Triangle::merz_wuthrich_with_policy` and `TriangleView::merz_wuthrich_with_policy`.
+- Narrowed the README determinism claim to per-target reproducibility.
+
 ## [0.2.2] - 2026-11-26
 
 ### Changed

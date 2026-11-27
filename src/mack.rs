@@ -158,10 +158,10 @@ fn sigma_sq_vec(t: &TriangleView<'_>, f: &[f64]) -> Vec<f64> {
             out[k] = if out[0].is_finite() {
                 out[0].max(0.0)
             } else {
-                0.0
+                f64::NAN
             };
         } else {
-            out[k] = 0.0;
+            out[k] = f64::NAN;
         }
     }
     out
@@ -230,7 +230,7 @@ fn extrapolate_missing_sigma(sigma_sq: &[Option<f64>]) -> Vec<f64> {
                 }
             }
             [None, Some(a)] => a,
-            _ => 0.0,
+            _ => f64::NAN,
         };
     }
     out
@@ -528,11 +528,12 @@ pub fn analyze_observed_counts(
 
 /// Run Mack analysis after validating square-triangle and development inputs.
 ///
-/// `tail > 1` scales point estimates, but tail-factor uncertainty is not
-/// included in the Mack standard errors. Use [`analyze_with_tail_uncertainty`]
-/// to incorporate Mack (1999) tail variance, or [`analyze_with_policy`] when
-/// analyzing triangles with negative incremental development (e.g., incurred
-/// case-reserve releases or Mack's 1993 RAA dataset).
+/// Defaults to [`MonotonicityPolicy::AllowNegativeIncrements`] because Mack's
+/// (1993) assumptions do not require monotonically increasing rows (allowing
+/// incurred case-reserve releases and canonical benchmarks such as Mack's RAA
+/// triangle). Use [`analyze_with_policy`] with [`MonotonicityPolicy::Strict`]
+/// to enforce monotone paid triangles, or [`analyze_with_tail_uncertainty`] to
+/// incorporate Mack (1999) tail variance.
 ///
 /// # Example
 /// ```rust
@@ -550,7 +551,7 @@ pub fn analyze_observed_counts(
 /// # Ok::<(), reserving_kernels::validate::ValidationError>(())
 /// ```
 pub fn analyze(t: &TriangleView<'_>, tail: f64) -> Result<Mack, ValidationError> {
-    analyze_with_policy(t, tail, MonotonicityPolicy::Strict)
+    analyze_with_policy(t, tail, MonotonicityPolicy::AllowNegativeIncrements)
 }
 
 /// Run Mack analysis under an explicit [`MonotonicityPolicy`].
@@ -567,7 +568,11 @@ pub fn analyze_with_tail_uncertainty(
     t: &TriangleView<'_>,
     tail_spec: MackTailSpec,
 ) -> Result<Mack, ValidationError> {
-    analyze_with_tail_uncertainty_and_policy(t, tail_spec, MonotonicityPolicy::Strict)
+    analyze_with_tail_uncertainty_and_policy(
+        t,
+        tail_spec,
+        MonotonicityPolicy::AllowNegativeIncrements,
+    )
 }
 
 /// Run Mack (1999) recursive standard-error analysis with explicit tail
@@ -583,6 +588,11 @@ pub fn analyze_with_tail_uncertainty_and_policy(
     }
     validate_tail_spec(tail_spec)?;
     let n = t.n_origins;
+    if n < 3 {
+        return Err(ValidationError::InvalidParameter(
+            "Mack variance estimation requires at least a 3x3 triangle",
+        ));
+    }
     let n_devs = t.n_devs;
     for i in 0..n.saturating_sub(1) {
         let row = &t.data[i * n_devs..i * n_devs + (n - i)];
@@ -624,7 +634,7 @@ impl Default for MackOptions {
         Self {
             tail_spec: MackTailSpec::fixed(1.0),
             alpha: 1.0,
-            policy: MonotonicityPolicy::Strict,
+            policy: MonotonicityPolicy::AllowNegativeIncrements,
             weights: None,
         }
     }
@@ -676,8 +686,10 @@ pub fn analyze_with_options(
     validate_tail_spec(options.tail_spec)?;
 
     let n = t.n_origins.min(t.n_devs);
-    if n < 2 {
-        return Err(ValidationError::ShapeMismatch);
+    if n < 3 {
+        return Err(ValidationError::InvalidParameter(
+            "Mack variance estimation requires at least a 3x3 triangle",
+        ));
     }
     if let Some(ref w) = options.weights {
         if w.len() != t.n_origins * t.n_devs {
