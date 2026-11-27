@@ -137,6 +137,22 @@ jobs:
           for js in scripts/*.mjs scripts/*.js; do
             node --check "$js"
           done
+      - name: Verify README version matches Cargo.toml
+        run: |
+          python3 - <<'PY'
+          import re, sys, tomllib
+          pkg = tomllib.load(open("Cargo.toml", "rb"))["package"]
+          name, ver = pkg["name"], pkg["version"]
+          major_minor = ".".join(ver.split(".")[:2])
+          readme = open("README.md", encoding="utf-8").read()
+          m = re.search(rf'^{re.escape(name)}\s*=\s*"([^"]+)"', readme, re.MULTILINE)
+          if not m:
+              sys.exit(f'ERROR: README.md missing `{name} = "{major_minor}"` dependency snippet')
+          found = m.group(1)
+          if found not in (major_minor, ver):
+              sys.exit(f'ERROR: README.md has `{name} = "{found}"`, expected "{major_minor}" or "{ver}" (Cargo.toml={ver})')
+          print(f'OK: README.md `{name} = "{found}"` matches Cargo.toml {ver}')
+          PY
 
   package:
     name: Package & Bench Compile

@@ -141,6 +141,15 @@ jobs:
           else
             gh release create "$TAG" dist/* --generate-notes "${EXTRA_FLAGS[@]}"
           fi
+          # Enforce single-release invariant on stable tags: remove older GitHub Releases.
+          if [[ "$TAG" != *-* ]]; then
+            for old_rel in $(gh release list --json tagName --jq '.[].tagName'); do
+              if [[ "$old_rel" != "$TAG" ]]; then
+                echo "Deleting superseded GitHub Release ${old_rel}..."
+                gh release delete "$old_rel" --yes
+              fi
+            done
+          fi
 
   publish-crates:
     name: Publish to crates.io
