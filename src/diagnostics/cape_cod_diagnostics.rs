@@ -1,7 +1,7 @@
 //! Cape Cod denominator and ELR stability diagnostics.
 
-use crate::cape_cod::{CapeCodEngine, CapeCodProjection};
-use crate::ldf::DevelopmentFactors;
+use crate::deterministic::cape_cod::{CapeCodEngine, CapeCodProjection};
+use crate::deterministic::ldf::DevelopmentFactors;
 use crate::types::TriangleView;
 use crate::validate::ValidationError;
 
@@ -273,7 +273,7 @@ pub fn diagnose(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ldf::DevelopmentFactorEngine;
+    use crate::deterministic::ldf::DevelopmentFactorEngine;
     use crate::types::Triangle;
 
     fn triangle_4x4() -> Triangle {

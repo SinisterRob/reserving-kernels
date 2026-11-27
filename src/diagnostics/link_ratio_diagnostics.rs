@@ -1,7 +1,7 @@
 //! Link-ratio diagnostics and fragility measures.
 
-use crate::ldf::LdfSelectionMethod;
-use crate::triangle::age_to_age;
+use crate::deterministic::ldf::LdfSelectionMethod;
+use crate::preprocessing::triangle::age_to_age;
 use crate::types::TriangleView;
 
 #[derive(Debug, Clone, Copy, PartialEq)]

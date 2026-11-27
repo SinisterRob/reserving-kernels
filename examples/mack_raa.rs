@@ -14,7 +14,7 @@ use reserving_kernels::datasets;
 use reserving_kernels::diagnostics::mack_tests::{
     adjacent_factor_correlation_test, calendar_year_effect_test,
 };
-use reserving_kernels::triangle::latest_diagonal;
+use reserving_kernels::preprocessing::triangle::latest_diagonal;
 use reserving_kernels::validate::ValidationError;
 
 const ORIGIN_YEARS: [u32; 10] = [1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990];

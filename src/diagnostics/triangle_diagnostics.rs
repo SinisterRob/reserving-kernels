@@ -4,7 +4,7 @@
 //! answers basic structural questions about a row-major triangle before any
 //! reserving method consumes it.
 
-use crate::triangle;
+use crate::preprocessing::triangle;
 use crate::types::TriangleView;
 
 /// Flag emitted for a cell-level diagnostic condition.

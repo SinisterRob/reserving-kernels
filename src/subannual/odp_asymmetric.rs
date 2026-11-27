@@ -10,13 +10,13 @@
 //! backward asymmetric volume-weighted chain-ladder recursion yields the exact
 //! ODP GLM maximum likelihood expectations (`log μ_{i,j} = c + α_i + β_j`).
 
-use crate::bootstrap_odp::{
+use crate::capital::reserve_distribution::{ReserveDistributionSummary, summarize_with_scratch};
+use crate::deterministic::ldf::{cdfs_from_ldfs, volume_weighted_ldfs_observed_counts};
+use crate::linalg::invert_spd;
+use crate::stochastic::bootstrap_odp::{
     DeterministicRng, FastIndexSampler, OdpBootstrapOptions, OdpCellResidual, ProcessDistribution,
     ResidualAdjustment,
 };
-use crate::ldf::{cdfs_from_ldfs, volume_weighted_ldfs_observed_counts};
-use crate::linalg::invert_spd;
-use crate::reserve_distribution::{ReserveDistributionSummary, summarize_with_scratch};
 use crate::subannual::grid::{AsymmetricAgeGrid, CalendarDiagonalMap, calendar_diagonal_index};
 use crate::subannual::reserving::validate_asymmetric_cumulative;
 use crate::validate::{MonotonicityPolicy, ValidationError, validate_tail};
@@ -577,8 +577,8 @@ fn sample_process_fast(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bootstrap_odp::fit_odp;
     use crate::datasets::genins;
+    use crate::stochastic::bootstrap_odp::fit_odp;
     use crate::subannual::grid::asymmetric_age_grid;
 
     #[test]

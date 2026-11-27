@@ -5,60 +5,16 @@
 // Intentional NaN-rejecting numeric guards such as `!(x > 0.0)`.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-pub mod aggregate;
-pub mod aggregate_loss;
-pub mod apriori;
-pub mod benktander;
-pub mod berquist_sherman;
-pub mod bf;
-pub mod bootstrap_odp;
-pub mod brosius;
-pub mod cape_cod;
-pub mod capital_allocation;
-pub mod case_outstanding;
-pub mod chain_ladder;
-pub mod clark_mle;
-pub mod count_development;
-pub mod credibility_cl;
+pub mod capital;
 pub mod datasets;
-pub mod dependence;
+pub mod deterministic;
 pub mod diagnostics;
-pub mod double_chain_ladder;
-pub mod excess_development;
-pub mod excess_layers;
-pub mod exhibit;
-pub mod generalized_cape_cod;
-pub mod glm_reserving;
-pub mod hertig;
-pub mod incremental_additive;
-pub mod kalman_reserving;
-pub mod large_loss;
-pub mod ldf;
+pub mod excess;
 pub(crate) mod linalg;
-pub mod mack;
-pub mod mack_bf;
-pub mod merz_wuthrich;
-pub mod micro_reserving;
-pub mod multivariate_cl;
-pub mod multivariate_mack;
-pub mod munich_chain_ladder;
-pub mod murphy;
-pub mod onlevel;
-pub mod paid_incurred_chain;
-pub mod ptf_regression;
-pub mod ragged;
-pub mod reserve_distribution;
-pub mod reserve_rollforward;
-pub mod reserve_runoff;
-pub mod schnieper;
-pub mod selection;
-pub mod separation;
-pub mod severity;
+pub mod preprocessing;
+pub mod stochastic;
 pub mod subannual;
-pub mod tail;
-pub mod trend;
-pub mod triangle;
-pub mod triangle_algebra;
+mod triangle_ops;
 pub mod types;
 pub mod validate;
 
@@ -68,74 +24,104 @@ pub mod wasm_exports;
 
 pub use types::{Triangle, TriangleView};
 
+/// Declarative constructor for a validated square cumulative [`Triangle`] from
+/// upper-triangle rows (coercing integer or float literals to `f64`).
+///
+/// Returns `Result<Triangle, ValidationError>`.
+///
+/// # Example
+/// ```rust
+/// use reserving_kernels::{prelude::*, triangle};
+///
+/// let tri = triangle![
+///     [100, 160, 195, 205],
+///     [120, 190, 232],
+///     [135, 218],
+///     [150],
+/// ]?;
+/// assert_eq!(tri.n(), 4);
+/// assert_eq!(tri.latest_diagonal(), vec![205.0, 232.0, 218.0, 150.0]);
+/// # Ok::<(), ValidationError>(())
+/// ```
+#[macro_export]
+macro_rules! triangle {
+    ( $( [ $( $val:expr ),+ $(,)? ] ),+ $(,)? ) => {{
+        $crate::types::Triangle::try_from_upper_rows(&[
+            $( &[ $( ($val) as f64 ),+ ] as &[f64] ),+
+        ])
+    }};
+}
+
 /// Convenient re-exports of the most commonly used reserving types and engines.
 pub mod prelude {
-    pub use crate::aggregate_loss::{
+    pub use crate::capital::aggregate_loss::{
         AggregateLossDistribution, FrequencyDistribution, fft_aggregate_loss, panjer_recursion,
     };
-    pub use crate::benktander::{BenktanderEngine, BenktanderProjection};
-    pub use crate::bf::{BornhuetterFergusonEngine, BornhuetterFergusonProjection};
-    pub use crate::bootstrap_odp::{
-        OdpBootstrapOptions, OdpBootstrapResult, OdpCdrBootstrapResult, OdpFit,
-        ProcessDistribution, ResidualAdjustment, bootstrap_odp, bootstrap_odp_cdr, fit_odp,
-    };
-    pub use crate::cape_cod::{CapeCodEngine, CapeCodProjection};
-    pub use crate::capital_allocation::{
+    pub use crate::capital::capital_allocation::{
         EulerAllocationResult, MyersReadAllocationResult, euler_rvar_allocation,
         euler_sd_allocation, euler_tvar_allocation, myers_read_allocation,
         myers_read_from_default_ratio,
     };
-    pub use crate::case_outstanding::{
+    pub use crate::capital::dependence::{CorrelationType, ImanConoverResult, iman_conover};
+    pub use crate::capital::reserve_distribution::{rvar, tvar_coherent, var_least};
+    pub use crate::datasets::{FriedlandAutoDataset, PaidIncurredDataset};
+    pub use crate::deterministic::benktander::{BenktanderEngine, BenktanderProjection};
+    pub use crate::deterministic::bf::{BornhuetterFergusonEngine, BornhuetterFergusonProjection};
+    pub use crate::deterministic::cape_cod::{CapeCodEngine, CapeCodProjection};
+    pub use crate::deterministic::case_outstanding::{
         CaseOutstandingOptions, CaseOutstandingProjection, CaseRatioAverage,
         project_case_outstanding, project_from_paid_incurred,
     };
-    pub use crate::chain_ladder::{ChainLadderEngine, ChainLadderProjection};
-    pub use crate::clark_mle::{ClarkMleResult, ClarkOptions, GrowthCurve};
-    pub use crate::credibility_cl::{
+    pub use crate::deterministic::chain_ladder::{ChainLadderEngine, ChainLadderProjection};
+    pub use crate::deterministic::credibility_cl::{
         CollectiveCredibilityParams, CredibilityClPrior, CredibilityClResult,
     };
-    pub use crate::datasets::{FriedlandAutoDataset, PaidIncurredDataset};
-    pub use crate::dependence::{CorrelationType, ImanConoverResult, iman_conover};
-    pub use crate::diagnostics::triangle_diagnostics::TriangleDiagnostics;
-    pub use crate::double_chain_ladder::DoubleChainLadderResult;
-    pub use crate::excess_development::{
-        ExcessDevelopmentFactors, ExcessProjection, LayerDevelopmentFactors,
-    };
-    pub use crate::glm_reserving::{
-        GlmDesign, GlmFamily, GlmOptions, GlmReservingResult, TweediePowerSelection, fit_glm,
-        select_tweedie_power,
-    };
-    pub use crate::hertig::{HertigOptions, HertigResult};
-    pub use crate::incremental_additive::{
+    pub use crate::deterministic::double_chain_ladder::DoubleChainLadderResult;
+    pub use crate::deterministic::incremental_additive::{
         IncrementalAdditiveOptions, IncrementalAdditiveProjection, IncrementalRatioAverage,
         project_incremental_additive,
     };
-    pub use crate::kalman_reserving::{KalmanReservingOptions, KalmanReservingResult};
-    pub use crate::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
-    pub use crate::mack::{Mack, MackOptions, MackTailSpec};
-    pub use crate::mack_bf::{BfPayoutEstimator, MackBfOptions, MackBfResult};
-    pub use crate::merz_wuthrich::MerzWuthrichResult;
-    pub use crate::micro_reserving::{
+    pub use crate::deterministic::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
+    pub use crate::deterministic::murphy::{MurphyLinkFit, MurphyOptions, MurphyResult};
+    pub use crate::deterministic::schnieper::SchnieperResult;
+    pub use crate::deterministic::separation::{
+        InflationProjection, SeparationMethod, SeparationResult,
+    };
+    pub use crate::diagnostics::triangle_diagnostics::TriangleDiagnostics;
+    pub use crate::excess::excess_development::{
+        ExcessDevelopmentFactors, ExcessProjection, LayerDevelopmentFactors,
+    };
+    pub use crate::excess::severity::SeverityDistribution;
+    pub use crate::stochastic::bootstrap_odp::{
+        OdpBootstrapOptions, OdpBootstrapResult, OdpCdrBootstrapResult, OdpFit,
+        ProcessDistribution, ResidualAdjustment, bootstrap_odp, bootstrap_odp_cdr, fit_odp,
+    };
+    pub use crate::stochastic::clark_mle::{ClarkMleResult, ClarkOptions, GrowthCurve};
+    pub use crate::stochastic::glm_reserving::{
+        GlmDesign, GlmFamily, GlmOptions, GlmReservingResult, TweediePowerSelection, fit_glm,
+        select_tweedie_power,
+    };
+    pub use crate::stochastic::hertig::{HertigOptions, HertigResult};
+    pub use crate::stochastic::kalman_reserving::{KalmanReservingOptions, KalmanReservingResult};
+    pub use crate::stochastic::mack::{Mack, MackOptions, MackTailSpec};
+    pub use crate::stochastic::mack_bf::{BfPayoutEstimator, MackBfOptions, MackBfResult};
+    pub use crate::stochastic::merz_wuthrich::MerzWuthrichResult;
+    pub use crate::stochastic::micro_reserving::{
         ClaimPayment, ClaimRecord, MicroReservingModel, MicroReservingResult,
     };
-    pub use crate::multivariate_cl::{
+    pub use crate::stochastic::multivariate_cl::{
         MultivariateClOptions, MultivariateClResult, MultivariateModel, analyze_multivariate_cl,
     };
-    pub use crate::multivariate_mack::MultivariateMackResult;
-    pub use crate::murphy::{MurphyLinkFit, MurphyOptions, MurphyResult};
-    pub use crate::paid_incurred_chain::{PaidIncurredChainResult, PicOptions};
-    pub use crate::ptf_regression::{
+    pub use crate::stochastic::multivariate_mack::MultivariateMackResult;
+    pub use crate::stochastic::paid_incurred_chain::{PaidIncurredChainResult, PicOptions};
+    pub use crate::stochastic::ptf_regression::{
         AccidentSpec, CalendarSpec, DevelopmentSpec, LogNormalMeanMode, PtfOptions, PtfResult,
     };
-    pub use crate::reserve_distribution::{rvar, tvar_coherent, var_least};
-    pub use crate::reserve_runoff::{
+    pub use crate::stochastic::reserve_runoff::{
         ChainLadderRollForward, MackInnovation, MackRunoffOptions, OneYearRunoffResult,
         RollForwardStep, mack_one_year_runoff, mack_one_year_runoff_with_options,
         odp_one_year_runoff,
     };
-    pub use crate::schnieper::SchnieperResult;
-    pub use crate::separation::{InflationProjection, SeparationMethod, SeparationResult};
-    pub use crate::severity::SeverityDistribution;
     pub use crate::subannual::{
         AsymmetricAgeGrid, AsymmetricChainLadderProjection, AsymmetricOdpBootstrapResult,
         AsymmetricOdpFit, CalendarDiagonalMap, ClarkExactAgeOptions, ClarkExactAgeResult,

@@ -11,8 +11,10 @@
 //! ```
 
 use reserving_kernels::{
-    bf, brosius, cape_cod, cape_cod::CapeCodEngine, chain_ladder, ldf,
-    ldf::DevelopmentFactorEngine, mack, triangle, types::Triangle, validate::ValidationError,
+    deterministic::bf, deterministic::brosius, deterministic::cape_cod,
+    deterministic::cape_cod::CapeCodEngine, deterministic::chain_ladder, deterministic::ldf,
+    deterministic::ldf::DevelopmentFactorEngine, preprocessing::triangle, stochastic::mack,
+    types::Triangle, validate::ValidationError,
 };
 
 const NAN: f64 = f64::NAN;
@@ -340,8 +342,8 @@ fn mack_and_mw_accept_raa_by_default_and_reject_2x2() {
 
 #[test]
 fn panjer_rejects_defective_pmf_and_bootstrap_rejects_zero_iterations() {
-    use reserving_kernels::aggregate_loss::{FrequencyDistribution, panjer_recursion};
-    use reserving_kernels::bootstrap_odp::{OdpBootstrapOptions, bootstrap_odp};
+    use reserving_kernels::capital::aggregate_loss::{FrequencyDistribution, panjer_recursion};
+    use reserving_kernels::stochastic::bootstrap_odp::{OdpBootstrapOptions, bootstrap_odp};
 
     let freq = FrequencyDistribution::Poisson { lambda: 3.0 };
     assert!(matches!(
@@ -470,8 +472,8 @@ fn ergonomic_triangle_constructors_and_fluent_methods() {
 
 #[test]
 fn regression_var_least_and_myers_read_exact_solver() {
-    use reserving_kernels::capital_allocation::myers_read_from_default_ratio;
-    use reserving_kernels::reserve_distribution::var_least;
+    use reserving_kernels::capital::capital_allocation::myers_read_from_default_ratio;
+    use reserving_kernels::capital::reserve_distribution::var_least;
 
     // Least quantile F^-(0.5) on 1..=10 is 5.0 (F(5)=0.5 >= 0.5), not 6.0.
     let xs: Vec<f64> = (1..=10).map(f64::from).collect();
@@ -508,8 +510,8 @@ fn regression_var_least_and_myers_read_exact_solver() {
 
 #[test]
 fn regression_severity_overflow_cancellation_and_excess_layers() {
-    use reserving_kernels::excess_layers::{LognormalLayerModel, LognormalLayerSampler};
-    use reserving_kernels::severity::SeverityDistribution;
+    use reserving_kernels::excess::excess_layers::{LognormalLayerModel, LognormalLayerSampler};
+    use reserving_kernels::excess::severity::SeverityDistribution;
 
     // Pareto PDF at realistic dollar scale must not overflow theta^alpha to NaN.
     let pareto = SeverityDistribution::Pareto {
@@ -548,7 +550,7 @@ fn regression_severity_overflow_cancellation_and_excess_layers() {
 
 #[test]
 fn regression_mack_zero_cell_and_mack_bf_unbiased_process_variance() {
-    use reserving_kernels::mack_bf::{self, BfPayoutEstimator, MackBfOptions};
+    use reserving_kernels::stochastic::mack_bf::{self, BfPayoutEstimator, MackBfOptions};
     use reserving_kernels::validate::ValidationError;
 
     // Mack must return DivideByZero when c_k == 0 && c_{k+1} > 0 instead of masking NaN SE to 0.
@@ -584,12 +586,12 @@ fn regression_mack_zero_cell_and_mack_bf_unbiased_process_variance() {
 
 #[test]
 fn regression_ldf_tail_onlevel_dependence_and_diagnostics() {
-    use reserving_kernels::aggregate_loss::{FrequencyDistribution, panjer_recursion};
-    use reserving_kernels::dependence::spearman_correlation;
+    use reserving_kernels::capital::aggregate_loss::{FrequencyDistribution, panjer_recursion};
+    use reserving_kernels::capital::dependence::spearman_correlation;
+    use reserving_kernels::deterministic::ldf::{DevelopmentFactorEngine, ex_hi_lo};
+    use reserving_kernels::deterministic::tail;
     use reserving_kernels::diagnostics::{calendar_effect, triangle_diagnostics};
-    use reserving_kernels::ldf::{DevelopmentFactorEngine, ex_hi_lo};
-    use reserving_kernels::onlevel::parallelogram_onlevel_factor;
-    use reserving_kernels::tail;
+    use reserving_kernels::preprocessing::onlevel::parallelogram_onlevel_factor;
     use reserving_kernels::types::TriangleView;
     use reserving_kernels::validate::ValidationError;
 

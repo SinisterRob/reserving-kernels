@@ -29,7 +29,10 @@
 #![allow(missing_docs)]
 
 use crate::types::TriangleView;
-use crate::{bf, brosius, cape_cod, chain_ladder, ldf, mack};
+use crate::{
+    deterministic::bf, deterministic::brosius, deterministic::cape_cod,
+    deterministic::chain_ladder, deterministic::ldf, stochastic::mack,
+};
 
 const N_MAX: usize = 20;
 const TRI_CAP: usize = N_MAX * N_MAX;

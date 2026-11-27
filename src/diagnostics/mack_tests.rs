@@ -14,9 +14,9 @@
 //!   exhibit systematic high/low clustering using exact binomial moments of
 //!   `Z_d = min(S_d, L_d)`.
 
-use crate::dependence::spearman_correlation;
-use crate::severity::normal_cdf_exact;
-use crate::triangle::age_to_age;
+use crate::capital::dependence::spearman_correlation;
+use crate::excess::severity::normal_cdf_exact;
+use crate::preprocessing::triangle::age_to_age;
 use crate::types::TriangleView;
 
 /// Spearman rank-correlation record for one adjacent development-link pair `(k, k + 1)`.
@@ -164,9 +164,9 @@ fn exact_min_binomial_moments(n: usize) -> (f64, f64) {
     let nf = n as f64;
     let m = (n - 1) / 2;
     // Compute C(n - 1, m) / 2^n safely in log space to avoid overflow for large triangles.
-    let log_comb = crate::bootstrap_odp::ln_gamma(nf)
-        - crate::bootstrap_odp::ln_gamma((m + 1) as f64)
-        - crate::bootstrap_odp::ln_gamma((n - m) as f64);
+    let log_comb = crate::stochastic::bootstrap_odp::ln_gamma(nf)
+        - crate::stochastic::bootstrap_odp::ln_gamma((m + 1) as f64)
+        - crate::stochastic::bootstrap_odp::ln_gamma((n - m) as f64);
     let comb_over_2n = (log_comb - nf * std::f64::consts::LN_2).exp();
     let expected = 0.5 * nf - comb_over_2n * nf;
     let variance = (0.25 * nf * (nf - 1.0) - comb_over_2n * nf * (nf - 1.0) + expected

@@ -12,8 +12,8 @@
 //! emergence curve `ΔG_{i,j}(ω, θ) = G(x_{i,j}) - G(x_{i,j-1})` without needing
 //! LDF interpolation.
 
-use crate::clark_mle::GrowthCurve;
 use crate::linalg::{invert_spd, quad_form};
+use crate::stochastic::clark_mle::GrowthCurve;
 use crate::validate::{MonotonicityPolicy, ValidationError, validate_positive_finite_slice};
 
 /// Configuration options for [`clark_mle_exact_age`].
@@ -641,8 +641,8 @@ pub fn fit_clark_cape_cod_exact_age(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clark_mle::{ClarkOptions, fit_clark_cape_cod, fit_clark_ldf};
     use crate::datasets::genins;
+    use crate::stochastic::clark_mle::{ClarkOptions, fit_clark_cape_cod, fit_clark_ldf};
 
     #[test]
     fn exact_age_reduces_identically_to_square_clark_mle_on_genins() {

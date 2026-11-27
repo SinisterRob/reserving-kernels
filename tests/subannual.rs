@@ -2,14 +2,14 @@
 //! `subannual` kernel registry (sub-annual development, asymmetric grids, and
 //! pre-12-month stub periods).
 
-use reserving_kernels::bf::BornhuetterFergusonEngine;
-use reserving_kernels::bootstrap_odp::{
+use reserving_kernels::datasets::{friedland_us_industry_auto, genins};
+use reserving_kernels::deterministic::bf::BornhuetterFergusonEngine;
+use reserving_kernels::deterministic::cape_cod::CapeCodEngine;
+use reserving_kernels::deterministic::ldf::{DevelopmentFactorEngine, LdfSelectionMethod};
+use reserving_kernels::stochastic::bootstrap_odp::{
     OdpBootstrapOptions, ProcessDistribution, ResidualAdjustment, fit_odp,
 };
-use reserving_kernels::cape_cod::CapeCodEngine;
-use reserving_kernels::clark_mle::GrowthCurve;
-use reserving_kernels::datasets::{friedland_us_industry_auto, genins};
-use reserving_kernels::ldf::{DevelopmentFactorEngine, LdfSelectionMethod};
+use reserving_kernels::stochastic::clark_mle::GrowthCurve;
 use reserving_kernels::subannual::*;
 use reserving_kernels::validate::{MonotonicityPolicy, ValidationError};
 

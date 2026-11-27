@@ -1,8 +1,9 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use reserving_kernels::{
-    bootstrap_odp::{OdpBootstrapOptions, bootstrap_odp, fit_odp},
-    dependence::{CorrelationType, iman_conover},
-    mack, triangle,
+    capital::dependence::{CorrelationType, iman_conover},
+    preprocessing::triangle,
+    stochastic::bootstrap_odp::{OdpBootstrapOptions, bootstrap_odp, fit_odp},
+    stochastic::mack,
     types::Triangle,
     validate::MonotonicityPolicy,
 };

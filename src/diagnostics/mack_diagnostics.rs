@@ -1,7 +1,7 @@
 //! Mack variance decomposition diagnostics.
 
-use crate::mack::{self, Mack};
-use crate::triangle::latest_diagonal;
+use crate::preprocessing::triangle::latest_diagonal;
+use crate::stochastic::mack::{self, Mack};
 use crate::types::TriangleView;
 use crate::validate::ValidationError;
 

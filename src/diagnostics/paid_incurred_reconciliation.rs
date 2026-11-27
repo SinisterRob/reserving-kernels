@@ -1,7 +1,7 @@
 //! Paid-versus-incurred reconciliation diagnostics.
 
-use crate::chain_ladder::{ChainLadderEngine, ChainLadderProjection};
-use crate::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
+use crate::deterministic::chain_ladder::{ChainLadderEngine, ChainLadderProjection};
+use crate::deterministic::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
 use crate::types::{Triangle, TriangleView};
 use crate::validate::{ValidationError, validate_triangle};
 

@@ -1,7 +1,7 @@
 use std::io;
 
 use reserving_kernels::Triangle;
-use reserving_kernels::exhibit::build_exhibit_bundle;
+use reserving_kernels::preprocessing::exhibit::build_exhibit_bundle;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[rustfmt::skip]

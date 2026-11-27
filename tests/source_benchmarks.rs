@@ -5,41 +5,42 @@
 //! from primary literature (see `docs/SOURCES.md` for full citations).
 
 use reserving_kernels::{
-    aggregate_loss::{
+    capital::aggregate_loss::{
         FrequencyDistribution, discretize_mean_preserving, fft_aggregate_loss, panjer_recursion,
     },
-    benktander::BenktanderEngine,
-    berquist_sherman::{
-        CaseReserveTrend, DisposalInterpolation, adjust_case_reserves, adjust_paid_disposal_rate,
-    },
-    bf::BornhuetterFergusonEngine,
-    bootstrap_odp::{
-        OdpBootstrapOptions, ProcessDistribution, ResidualAdjustment, bootstrap_odp, fit_odp,
-    },
-    cape_cod::CapeCodEngine,
-    capital_allocation::{
+    capital::capital_allocation::{
         euler_rvar_allocation, euler_sd_allocation, euler_tvar_allocation, myers_read_allocation,
         myers_read_from_default_ratio,
     },
-    chain_ladder::ChainLadderEngine,
-    clark_mle::{ClarkOptions, GrowthCurve, fit_clark_cape_cod, fit_clark_ldf},
-    dependence::{CorrelationType, iman_conover, synchronized_odp_bootstrap},
+    capital::dependence::{CorrelationType, iman_conover, synchronized_odp_bootstrap},
+    capital::reserve_distribution::{rvar, tvar_coherent, var_least},
+    deterministic::benktander::BenktanderEngine,
+    deterministic::berquist_sherman::{
+        CaseReserveTrend, DisposalInterpolation, adjust_case_reserves, adjust_paid_disposal_rate,
+    },
+    deterministic::bf::BornhuetterFergusonEngine,
+    deterministic::cape_cod::CapeCodEngine,
+    deterministic::chain_ladder::ChainLadderEngine,
+    deterministic::generalized_cape_cod::GeneralizedCapeCodEngine,
+    deterministic::ldf::DevelopmentFactorEngine,
+    deterministic::munich_chain_ladder,
+    deterministic::tail,
     diagnostics::{
         cape_cod_diagnostics, mack_diagnostics,
         mack_tests::{adjacent_factor_correlation_test, calendar_year_effect_test},
         paid_incurred_reconciliation,
     },
-    generalized_cape_cod::GeneralizedCapeCodEngine,
-    glm_reserving::{GlmDesign, GlmFamily, GlmOptions, fit_glm},
-    ldf::DevelopmentFactorEngine,
-    mack::{self, MackTailSpec},
-    mack_bf::{self, BfPayoutEstimator, MackBfOptions},
-    merz_wuthrich, munich_chain_ladder,
-    paid_incurred_chain::{self, PicOptions},
-    ptf_regression::{self, AccidentSpec, CalendarSpec, DevelopmentSpec, PtfOptions},
-    reserve_distribution::{rvar, tvar_coherent, var_least},
-    severity::SeverityDistribution,
-    tail,
+    excess::severity::SeverityDistribution,
+    stochastic::bootstrap_odp::{
+        OdpBootstrapOptions, ProcessDistribution, ResidualAdjustment, bootstrap_odp, fit_odp,
+    },
+    stochastic::clark_mle::{ClarkOptions, GrowthCurve, fit_clark_cape_cod, fit_clark_ldf},
+    stochastic::glm_reserving::{GlmDesign, GlmFamily, GlmOptions, fit_glm},
+    stochastic::mack::{self, MackTailSpec},
+    stochastic::mack_bf::{self, BfPayoutEstimator, MackBfOptions},
+    stochastic::merz_wuthrich,
+    stochastic::paid_incurred_chain::{self, PicOptions},
+    stochastic::ptf_regression::{self, AccidentSpec, CalendarSpec, DevelopmentSpec, PtfOptions},
     types::Triangle,
     validate::MonotonicityPolicy,
 };
@@ -1102,14 +1103,18 @@ fn tasche_2008_euler_and_myers_read_2001_allocation_benchmark() {
 #[test]
 fn extended_reserving_kernels_and_datasets_benchmarks() {
     use reserving_kernels::{
-        bootstrap_odp::bootstrap_odp_cdr,
-        case_outstanding::{CaseOutstandingOptions, project_from_paid_incurred},
         datasets,
-        glm_reserving::select_tweedie_power,
-        incremental_additive::{IncrementalAdditiveOptions, project_incremental_additive},
-        ldf,
-        mack::MackOptions,
-        multivariate_cl::{MultivariateClOptions, MultivariateModel, analyze_multivariate_cl},
+        deterministic::case_outstanding::{CaseOutstandingOptions, project_from_paid_incurred},
+        deterministic::incremental_additive::{
+            IncrementalAdditiveOptions, project_incremental_additive,
+        },
+        deterministic::ldf,
+        stochastic::bootstrap_odp::bootstrap_odp_cdr,
+        stochastic::glm_reserving::select_tweedie_power,
+        stochastic::mack::MackOptions,
+        stochastic::multivariate_cl::{
+            MultivariateClOptions, MultivariateModel, analyze_multivariate_cl,
+        },
     };
 
     // 1. Canonical built-in datasets match literature dimensions.
@@ -1278,9 +1283,11 @@ fn extended_reserving_kernels_and_datasets_benchmarks() {
 #[test]
 fn pure_reserving_extension_kernels_benchmarks() {
     use reserving_kernels::{
-        brosius, credibility_cl, double_chain_ladder, excess_development, hertig, kalman_reserving,
-        mack, micro_reserving, multivariate_mack, murphy, schnieper, separation,
-        severity::SeverityDistribution,
+        deterministic::brosius, deterministic::credibility_cl, deterministic::double_chain_ladder,
+        deterministic::murphy, deterministic::schnieper, deterministic::separation,
+        excess::excess_development, excess::severity::SeverityDistribution, stochastic::hertig,
+        stochastic::kalman_reserving, stochastic::mack, stochastic::micro_reserving,
+        stochastic::multivariate_mack,
     };
 
     let genins = genins_triangle();
@@ -1504,9 +1511,9 @@ fn pure_reserving_extension_kernels_benchmarks() {
 
 #[test]
 fn england_verrall_wuthrich_2019_one_year_re_reserving_genins_table_2_benchmark() {
-    use reserving_kernels::bootstrap_odp::OdpBootstrapOptions;
     use reserving_kernels::datasets::genins;
-    use reserving_kernels::reserve_runoff::{
+    use reserving_kernels::stochastic::bootstrap_odp::OdpBootstrapOptions;
+    use reserving_kernels::stochastic::reserve_runoff::{
         MackInnovation, MackRunoffOptions, mack_one_year_runoff, mack_one_year_runoff_with_options,
         odp_one_year_runoff,
     };
