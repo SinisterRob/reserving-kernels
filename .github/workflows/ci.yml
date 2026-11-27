@@ -117,6 +117,31 @@ jobs:
       - name: Smoke-test WASM C-ABI exports
         run: node scripts/wasm-smoke.mjs target/wasm32-unknown-unknown/release/reserving_kernels.wasm
 
+  xll:
+    name: Excel XLL (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/xll
+      - run: cargo fmt --manifest-path bindings/xll/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path bindings/xll/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path bindings/xll/Cargo.toml
+      - name: Build Excel add-in
+        run: |
+          cargo build --manifest-path bindings/xll/Cargo.toml --release
+          Copy-Item bindings/xll/target/release/reserving_kernels_xll.dll reserving-kernels-windows-x64.xll
+      - uses: actions/upload-artifact@v7
+        with:
+          name: reserving-kernels-windows-x64
+          path: reserving-kernels-windows-x64.xll
+          if-no-files-found: error
+
   security:
     name: Security & Scripts
     runs-on: ubuntu-latest
@@ -172,7 +197,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
-    needs: [fmt, clippy, test, msrv, docs, wasm, security, package]
+    needs: [fmt, clippy, test, msrv, docs, wasm, xll, security, package]
     steps:
       - name: Verify all required CI jobs succeeded
         shell: bash
@@ -184,6 +209,7 @@ jobs:
             msrv=${{ needs.msrv.result }}
             docs=${{ needs.docs.result }}
             wasm=${{ needs.wasm.result }}
+            xll=${{ needs.xll.result }}
             security=${{ needs.security.result }}
             package=${{ needs.package.result }}
         run: |

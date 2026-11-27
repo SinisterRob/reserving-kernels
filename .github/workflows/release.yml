@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Verify release checks, WASM bundle, and cargo package without publishing"
+        description: "Verify release checks, WASM and Excel XLL builds, and cargo package without publishing"
         required: false
         default: true
         type: boolean
@@ -110,9 +110,34 @@ jobs:
           path: dist/
           retention-days: 14
 
+  build-xll:
+    name: Build Excel XLL Artifact (Windows x64)
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/xll
+      - run: cargo test --manifest-path bindings/xll/Cargo.toml
+      - name: Build and stage Excel add-in
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          cargo build --manifest-path bindings/xll/Cargo.toml --release
+          Copy-Item bindings/xll/target/release/reserving_kernels_xll.dll "reserving-kernels-$env:VERSION-windows-x64.xll"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-xll-${{ needs.verify.outputs.version }}
+          path: reserving-kernels-*-windows-x64.xll
+          if-no-files-found: error
+          retention-days: 14
+
   github-release:
     name: Publish GitHub Release
-    needs: [verify, build-wasm]
+    needs: [verify, build-wasm, build-xll]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -126,6 +151,15 @@ jobs:
         with:
           name: release-wasm-${{ needs.verify.outputs.version }}
           path: dist/
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-xll-${{ needs.verify.outputs.version }}
+          path: dist/
+
+      - name: Checksum the release binaries
+        working-directory: dist
+        run: sha256sum ./*.wasm ./*.wasm.gz ./*.xll > SHA256SUMS.txt
 
       - name: Create or update GitHub Release
         env:

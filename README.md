@@ -254,10 +254,62 @@ cargo bench --bench kernels -- --baseline main
 
 # Profile a specific kernel under release optimization (requires samply)
 samply record cargo bench --bench kernels -- glm_odp_genins --profile-time 5
-
-# Build for WebAssembly
-cargo build --release --target wasm32-unknown-unknown --features wasm
 ```
+
+## WebAssembly
+
+Get the `.wasm` binary from [GitHub Releases](https://github.com/SinisterRob/reserving-kernels/releases) or build and smoke-test it locally.
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown --features wasm
+node scripts/wasm-smoke.mjs
+```
+
+The module exports a C ABI callable from JavaScript. Serve the binary over HTTP and instantiate it from a browser ES module. This example fits Mack to a 4×4 cumulative triangle and copies the per-origin reserves out of WASM memory.
+
+```javascript
+const response = await fetch("./reserving_kernels.wasm");
+const { instance } = await WebAssembly.instantiate(await response.arrayBuffer());
+const rk = instance.exports;
+const rows = [[100, 160, 195, 205], [120, 190, 232], [135, 218], [150]];
+const n = rows.length;
+const stride = rk.rk_tri_stride();
+if (n > rk.rk_n_max()) throw new RangeError("Triangle exceeds WASM capacity");
+
+const input = new Float64Array(rk.memory.buffer, rk.rk_tri_ptr(), stride ** 2);
+input.fill(NaN);
+rows.forEach((row, index) => input.set(row, index * stride));
+
+const standardError = rk.rk_mack(n, 1.0);
+if (!Number.isFinite(standardError)) throw new Error("Mack calculation failed");
+const reserves = new Float64Array(rk.memory.buffer, rk.rk_res_ptr(), n).slice();
+const totalReserve = rk.rk_mack_total_reserve(n);
+console.log({ reserves, totalReserve, standardError });
+```
+
+Each instance uses shared scratch buffers and supports up to 20 origins. Finish each calculation and copy its outputs before starting another on the same instance. The [runtime smoke test](scripts/wasm-smoke.mjs) also shows how to call Chain Ladder, Bornhuetter–Ferguson, Cape Cod, and Brosius.
+
+## Excel XLL
+
+Use `reserving-kernels-<version>-windows-x64.xll` from [GitHub Releases](https://github.com/SinisterRob/reserving-kernels/releases) when available. CI also uploads an XLL artifact. To build it yourself, run these commands from the repository root in PowerShell with 64-bit Windows Rust and the MSVC build tools installed.
+
+```powershell
+rustup target add x86_64-pc-windows-msvc
+cargo build --manifest-path bindings/xll/Cargo.toml --release --target x86_64-pc-windows-msvc
+Copy-Item bindings/xll/target/release/reserving_kernels_xll.dll reserving-kernels-windows-x64.xll
+```
+
+In 64-bit desktop Excel for Windows, go to **File → Options → Add-ins → Manage Excel Add-ins → Go → Browse** and select the `.xll`. Use a version of Excel that supports dynamic arrays for the spill results shown below. [Microsoft's add-in installation instructions](https://support.microsoft.com/en-us/excel/add-or-remove-add-ins-in-excel)
+
+If Excel blocks a downloaded XLL, verify it against the release checksum before unblocking the file. [Microsoft's instructions for unblocking a single trusted XLL](https://support.microsoft.com/en-gb/excel/excel-is-blocking-untrusted-xll-add-ins-by-default)
+
+| Formula | Spill columns in order | Minimum input |
+| :--- | :--- | :---: |
+| `=RK.CHAIN_LADDER(A1:D4)` | Ultimate, reserve | 2×2 |
+| `=RK.MACK(A1:D4, 1.05)` | Ultimate, reserve, standard error | 3×3 |
+
+Use a square cumulative triangle of up to 512 origins with the oldest origin first, development ages from left to right, and blank cells below the observed triangle. Both functions use volume-weighted development factors and append a totals row. Mack's total standard error includes covariance across origins. The optional tail factor defaults to `1.0` and must be finite and at least `1.0`. Invalid layouts or input types return `#VALUE!`. Numeric validation failures return `#NUM!`.
 
 ## License
 

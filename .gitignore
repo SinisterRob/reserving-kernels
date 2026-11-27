@@ -1,4 +1,5 @@
 /target
+/bindings/xll/target
 Cargo.lock
 .env
 .env.*
