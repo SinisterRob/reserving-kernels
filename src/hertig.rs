@@ -112,7 +112,7 @@ impl HertigResult {
             return Ok(0.0);
         }
         let cv2 = self.total_variance / (mean_u * mean_u);
-        let sigma2 = (1.0 + cv2).ln();
+        let sigma2 = cv2.ln_1p();
         let mu = mean_u.ln() - 0.5 * sigma2;
         let z = inv_normal_cdf(p);
         Ok((mu + z * sigma2.sqrt()).exp() - sum_lat)
@@ -310,13 +310,13 @@ mod tests {
             for k in 0..4 {
                 log_cdf += h.mu[k] + h.sigma_sq[k].sqrt() * rng.next_standard_normal();
             }
-            samples.push(h.latest[origin] * (log_cdf.exp() - 1.0));
+            samples.push(h.latest[origin] * log_cdf.exp_m1());
         }
 
         let mc_mean: f64 = samples.iter().sum::<f64>() / n_sim as f64;
         let mc_var: f64 =
             samples.iter().map(|&x| (x - mc_mean).powi(2)).sum::<f64>() / (n_sim as f64 - 1.0);
-        samples.sort_by(|a, b| a.total_cmp(b));
+        samples.sort_by(f64::total_cmp);
         let mc_q90 = samples[(0.90 * n_sim as f64) as usize];
 
         assert!((mc_mean - h.reserve[origin]).abs() / h.reserve[origin] < 0.02);

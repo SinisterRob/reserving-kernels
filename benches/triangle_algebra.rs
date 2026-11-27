@@ -78,12 +78,12 @@ fn bench_stochastic_kernels(c: &mut Criterion) {
         b.iter(|| bootstrap_odp(black_box(&view10), 1.0, opts).expect("odp boot"));
     });
 
-    let x: Vec<f64> = (0..1000).map(|i| (i as f64 + 1.0) * 1.13).collect();
+    let x: Vec<f64> = (0..1000).map(|i| (f64::from(i) + 1.0) * 1.13).collect();
     let y: Vec<f64> = (0..1000)
-        .map(|i| ((i * 7 + 3) % 1000) as f64 + 1.0)
+        .map(|i| f64::from((i * 7 + 3) % 1000) + 1.0)
         .collect();
     let z: Vec<f64> = (0..1000)
-        .map(|i| ((i * 13 + 5) % 1000) as f64 + 1.0)
+        .map(|i| f64::from((i * 13 + 5) % 1000) + 1.0)
         .collect();
     let corr = [1.0, 0.5, 0.2, 0.5, 1.0, 0.3, 0.2, 0.3, 1.0];
     group.bench_function("iman_conover_1000x3", |b| {

@@ -43,7 +43,26 @@ if ! git diff --quiet -- '*.rs'; then
   exit 0
 fi
 
-echo "pre-push: running cargo fmt, clippy, and tests..."
+echo "pre-push: running CI checks (fmt, clippy, rustdoc, tests, wasm, benches)..."
 cargo fmt --all -- --check
+cargo clippy --all-targets --no-default-features -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --lib --tests --doc
+cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::panic
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+cargo test --lib --tests --all-features
+cargo test --doc --all-features
+cargo check --benches --release
+
+if command -v rustup >/dev/null 2>&1; then
+  if rustup toolchain list 2>/dev/null | grep -q '^1\.98\.0'; then
+    echo "pre-push: checking MSRV 1.98.0..."
+    cargo +1.98.0 check --lib --tests --examples --no-default-features
+  fi
+  if rustup target list --installed 2>/dev/null | grep -qx 'wasm32-unknown-unknown'; then
+    echo "pre-push: building wasm32 release binary..."
+    cargo build --release --target wasm32-unknown-unknown --features wasm
+    if command -v node >/dev/null 2>&1 && [[ -f scripts/wasm-smoke.mjs ]]; then
+      node scripts/wasm-smoke.mjs target/wasm32-unknown-unknown/release/reserving_kernels.wasm
+    fi
+  fi
+fi

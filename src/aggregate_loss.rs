@@ -458,7 +458,7 @@ pub fn fft_aggregate_loss(
         let step_down = (-theta).exp();
         let mut scale = 1.0;
         for (k, &fk) in severity_pmf.iter().enumerate() {
-            if k & 63 == 0 {
+            if k.trailing_zeros() >= 6 {
                 scale = (-theta * k as f64).exp();
             }
             re[k] = fk * scale;
@@ -493,7 +493,7 @@ pub fn fft_aggregate_loss(
         let step_up = theta.exp();
         let mut scale = 1.0;
         for k in 0..fft_size {
-            if k & 63 == 0 {
+            if k.trailing_zeros() >= 6 {
                 scale = (theta * k as f64).exp();
             }
             let rk = re[k];

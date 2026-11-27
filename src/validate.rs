@@ -148,15 +148,15 @@ pub(crate) fn validate_monotone_cumulative(t: &TriangleView<'_>) -> Result<(), V
             if !value.is_finite() {
                 continue;
             }
-            if let Some(prev_value) = prev {
-                if value < prev_value {
-                    return Err(ValidationError::NonMonotoneCumulative {
-                        origin: i,
-                        dev: j,
-                        previous: prev_value,
-                        value,
-                    });
-                }
+            if let Some(prev_value) = prev
+                && value < prev_value
+            {
+                return Err(ValidationError::NonMonotoneCumulative {
+                    origin: i,
+                    dev: j,
+                    previous: prev_value,
+                    value,
+                });
             }
             prev = Some(value);
         }
@@ -289,15 +289,15 @@ pub(crate) fn validate_observed_count_inputs(
             if value < 0.0 {
                 return Err(ValidationError::Negative);
             }
-            if let Some(previous_value) = previous {
-                if value < previous_value {
-                    return Err(ValidationError::NonMonotoneCumulative {
-                        origin,
-                        dev,
-                        previous: previous_value,
-                        value,
-                    });
-                }
+            if let Some(previous_value) = previous
+                && value < previous_value
+            {
+                return Err(ValidationError::NonMonotoneCumulative {
+                    origin,
+                    dev,
+                    previous: previous_value,
+                    value,
+                });
             }
             previous = Some(value);
         }

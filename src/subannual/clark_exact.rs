@@ -173,12 +173,12 @@ fn prepare_exact_age_data(
         latest_ages.push(prev_age);
     }
 
-    if let Some(mx) = options.max_age {
-        if !mx.is_finite() || mx < max_obs_age - 1e-9 {
-            return Err(ValidationError::InvalidParameter(
-                "max_age must be finite and >= maximum observed cell age",
-            ));
-        }
+    if let Some(mx) = options.max_age
+        && (!mx.is_finite() || mx < max_obs_age - 1e-9)
+    {
+        return Err(ValidationError::InvalidParameter(
+            "max_age must be finite and >= maximum observed cell age",
+        ));
     }
 
     let age_scale = (age_sum / n_obs as f64).max(1e-6);
@@ -232,15 +232,14 @@ fn profile_log_lik(
 
     let mut ll = 0.0;
     for i in 0..data.n_origins {
-        let scale_i = match (exposure_weights, elr) {
-            (Some(w), Some(e)) => w[i] * e,
-            _ => {
-                let g_last = curve.eval(data.latest_ages[i], omega, theta);
-                if !(g_last > 1e-15) || !g_last.is_finite() {
-                    return f64::NEG_INFINITY;
-                }
-                data.latest[i] / g_last
+        let scale_i = if let (Some(w), Some(e)) = (exposure_weights, elr) {
+            w[i] * e
+        } else {
+            let g_last = curve.eval(data.latest_ages[i], omega, theta);
+            if !(g_last > 1e-15) || !g_last.is_finite() {
+                return f64::NEG_INFINITY;
             }
+            data.latest[i] / g_last
         };
         let mut prev_g = 0.0;
         for j in 0..data.observed_counts[i] {
@@ -348,13 +347,13 @@ fn optimize_exact_age_params(
             if d2 > 1e-15 {
                 ((n11 * gu - n01 * gv) / d2, (-n01 * gu + n00 * gv) / d2)
             } else {
-                let norm = (gu * gu + gv * gv).sqrt().max(1.0);
+                let norm = gu.hypot(gv).max(1.0);
                 (0.1 * gu / norm, 0.1 * gv / norm)
             }
         };
 
         // Clamp step norm and backtrack until log-likelihood increases.
-        let step_norm = (du * du + dv * dv).sqrt();
+        let step_norm = du.hypot(dv);
         let cap = if step_norm > 1.0 {
             1.0 / step_norm
         } else {

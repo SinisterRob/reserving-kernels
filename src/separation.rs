@@ -299,7 +299,7 @@ mod tests {
             }
             inc_rows.push(row);
         }
-        let slices: Vec<&[f64]> = inc_rows.iter().map(|r| r.as_slice()).collect();
+        let slices: Vec<&[f64]> = inc_rows.iter().map(std::vec::Vec::as_slice).collect();
         let tri = Triangle::try_from_incremental_rows(&slices).unwrap();
 
         for method in [SeparationMethod::Arithmetic, SeparationMethod::Geometric] {

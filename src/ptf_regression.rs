@@ -264,10 +264,10 @@ pub fn fit_ptf(
         }
         validate_positive_finite_slice(dw, "dev_weights")?;
     }
-    if let Some(fcr) = options.future_calendar_rate {
-        if !fcr.is_finite() {
-            return Err(ValidationError::NotFinite);
-        }
+    if let Some(fcr) = options.future_calendar_rate
+        && !fcr.is_finite()
+    {
+        return Err(ValidationError::NotFinite);
     }
 
     let inc = cumulative_to_incremental(triangle);

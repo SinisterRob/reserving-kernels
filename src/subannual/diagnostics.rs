@@ -267,7 +267,7 @@ mod tests {
     fn swimon_passes_equilibrium_ibnr_check_while_exponential_oscillates() {
         let annual_ages = [12.0, 24.0, 36.0, 48.0, 60.0];
         let annual_cdfs = [2.50, 1.45, 1.18, 1.06, 1.00];
-        let monthly_ages: Vec<f64> = (12..=60).map(|m| m as f64).collect();
+        let monthly_ages: Vec<f64> = (12..=60).map(f64::from).collect();
 
         let sw = interp_swimon(&annual_ages, &annual_cdfs, &monthly_ages).unwrap();
         let sw_check = equilibrium_ibnr_check(&sw.ages_months, &sw.cdfs, 12, 1e-9).unwrap();
@@ -290,7 +290,7 @@ mod tests {
         let annual_ages = [12.0, 24.0, 36.0, 48.0, 60.0];
         let annual_cdfs = [2.50, 1.45, 1.18, 1.06, 1.00];
         let annual_ldfs: Vec<f64> = annual_cdfs.windows(2).map(|w| w[0] / w[1]).collect();
-        let quarterly_ages: Vec<f64> = (4..=20).map(|q| (q * 3) as f64).collect();
+        let quarterly_ages: Vec<f64> = (4..=20).map(|q| f64::from(q * 3)).collect();
 
         for method in [
             SubannualInterpMethod::LinearCdf,

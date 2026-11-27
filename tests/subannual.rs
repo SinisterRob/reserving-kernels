@@ -138,7 +138,7 @@ fn inverse_power_recovers_exact_sherman_parameters() {
         cdfs[k] = cdfs[k + 1] * ldfs[k];
     }
 
-    let targets: Vec<f64> = (12..=72).step_by(6).map(|m| m as f64).collect();
+    let targets: Vec<f64> = (12..=72).step_by(6).map(f64::from).collect();
     let res = interp_inverse_power(&ages, &cdfs, &targets).unwrap();
     assert!((res.a - a_true).abs() < 1e-10);
     assert!((res.b - b_true).abs() < 1e-10);
@@ -167,7 +167,7 @@ fn spliced_weibull_reproduces_exact_weibull_emergence_curve() {
 fn ivf12_satisfies_exact_12_month_volume_factor_identity() {
     let annual_ages = [12.0, 24.0, 36.0, 48.0, 60.0];
     let annual_cdfs = [2.60, 1.50, 1.20, 1.07, 1.00];
-    let monthly_ages: Vec<f64> = (12..=60).map(|m| m as f64).collect();
+    let monthly_ages: Vec<f64> = (12..=60).map(f64::from).collect();
     let pat = interp_ivf12(&annual_ages, &annual_cdfs, &monthly_ages).unwrap();
 
     // At month 18, F_12(18) = CDF(18)/CDF(30) should equal geometric mean sqrt(F_12(12) * F_12(24)).

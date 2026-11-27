@@ -164,6 +164,15 @@ fn estimate_static_obs_variance(inc: &[f64], n: usize) -> Result<f64, Validation
     Ok((rss / df).max(1e-10))
 }
 
+struct FutureCell {
+    origin: usize,
+    steps_ahead: usize,
+    h_idx: [usize; 3],
+    h_len: usize,
+    var_state: f64,
+    mean_x: f64,
+}
+
 /// Run the De Jong–Zehnwirth (1983) / Verrall (1989) recursive Kalman filter
 /// over a square cumulative loss triangle.
 pub fn analyze(
@@ -348,7 +357,7 @@ pub fn analyze(
                     let kc = k_gain[c];
                     let val_rc = p_mat[row_r + c] - kr * ph[c] - ahr * kc + r_kr * kc;
                     let val_cr = p_mat[c * dim + r] - kc * phr - ah[c] * kr + obs_var * kc * kr;
-                    let avg = 0.5 * (val_rc + val_cr);
+                    let avg = f64::midpoint(val_rc, val_cr);
                     p_mat[row_r + c] = avg;
                     p_mat[c * dim + r] = avg;
                 }
@@ -367,15 +376,6 @@ pub fn analyze(
 
     // Forecast all future cells (i, j) with i + j >= n and compute exact log-normal
     // predictive means, variances, and cross-cell covariances using sparse 2-3 index h.
-    struct FutureCell {
-        origin: usize,
-        steps_ahead: usize,
-        h_idx: [usize; 3],
-        h_len: usize,
-        var_state: f64,
-        mean_x: f64,
-    }
-
     let mut future_cells = Vec::with_capacity(n * (n - 1) / 2);
     for i in 1..n {
         for j in (n - i)..n {
@@ -414,7 +414,7 @@ pub fn analyze(
             var_state = var_state.max(0.0);
 
             // Log-normal unbiased mean with process + state predictive variance.
-            let mean_x = (mean_y + 0.5 * (obs_var + var_state)).exp();
+            let mean_x = (mean_y + f64::midpoint(obs_var, var_state)).exp();
             future_cells.push(FutureCell {
                 origin: i,
                 steps_ahead: steps,
@@ -541,7 +541,7 @@ mod tests {
             }
             rows.push(row);
         }
-        let slices: Vec<&[f64]> = rows.iter().map(|r| r.as_slice()).collect();
+        let slices: Vec<&[f64]> = rows.iter().map(std::vec::Vec::as_slice).collect();
         let tri = Triangle::try_from_incremental_rows(&slices).unwrap();
 
         let opts = KalmanReservingOptions {

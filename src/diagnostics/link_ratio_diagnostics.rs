@@ -90,7 +90,7 @@ fn median_ratio(observations: &[LinkRatioObservation]) -> f64 {
     if n % 2 == 1 {
         ratios[n / 2]
     } else {
-        (ratios[n / 2 - 1] + ratios[n / 2]) / 2.0
+        f64::midpoint(ratios[n / 2 - 1], ratios[n / 2])
     }
 }
 
@@ -130,7 +130,11 @@ fn recent_window(observations: &[LinkRatioObservation], last_n: usize) -> &[Link
 
 fn select_factor(method: LdfSelectionMethod, observations: &[LinkRatioObservation]) -> f64 {
     match method {
-        LdfSelectionMethod::VolumeWeighted => volume_weighted_ratio(observations),
+        // `Selected` currently carries no per-link selected values, so the
+        // closest auditable baseline is the objective volume-weighted factor.
+        LdfSelectionMethod::VolumeWeighted | LdfSelectionMethod::Selected => {
+            volume_weighted_ratio(observations)
+        }
         LdfSelectionMethod::SimpleAverage => mean_ratio(observations),
         LdfSelectionMethod::Median => median_ratio(observations),
         LdfSelectionMethod::ExHiLo => ex_hi_lo_ratio(observations),
@@ -140,9 +144,6 @@ fn select_factor(method: LdfSelectionMethod, observations: &[LinkRatioObservatio
         LdfSelectionMethod::LastNSimpleAverage { last_n } => {
             mean_ratio(recent_window(observations, last_n))
         }
-        // The enum currently carries no per-link selected values, so the
-        // closest auditable baseline is the objective volume-weighted factor.
-        LdfSelectionMethod::Selected => volume_weighted_ratio(observations),
     }
 }
 

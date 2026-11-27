@@ -75,7 +75,7 @@ fn simple_average_ldfs() {
     assert!(close(f[0], (1.5 + 1.5 + 1.4) / 3.0, 1e-12));
     assert!(close(
         f[1],
-        (1700.0 / 1500.0 + 2000.0 / 1800.0) / 2.0,
+        f64::midpoint(1700.0 / 1500.0, 2000.0 / 1800.0),
         1e-12
     ));
     assert!(close(f[2], 1800.0 / 1700.0, 1e-12));
@@ -91,7 +91,7 @@ fn ex_hi_lo_drops_max_and_min() {
     // Fewer than 3 ratios at links 1→2 and 2→3 → fallback to simple avg.
     assert!(close(
         f[1],
-        (1700.0 / 1500.0 + 2000.0 / 1800.0) / 2.0,
+        f64::midpoint(1700.0 / 1500.0, 2000.0 / 1800.0),
         1e-12
     ));
 }
@@ -423,11 +423,11 @@ fn regression_var_least_and_myers_read_exact_solver() {
     use reserving_kernels::reserve_distribution::var_least;
 
     // Least quantile F^-(0.5) on 1..=10 is 5.0 (F(5)=0.5 >= 0.5), not 6.0.
-    let xs: Vec<f64> = (1..=10).map(|v| v as f64).collect();
+    let xs: Vec<f64> = (1..=10).map(f64::from).collect();
     assert_eq!(var_least(&xs, 0.50).expect("var"), 5.0);
 
     // IEEE-754 boundary check: 0.28 * 100 and 0.29 * 100 must yield 28.0 and 29.0.
-    let xs100: Vec<f64> = (1..=100).map(|v| v as f64).collect();
+    let xs100: Vec<f64> = (1..=100).map(f64::from).collect();
     assert_eq!(var_least(&xs100, 0.28).expect("p28"), 28.0);
     assert_eq!(var_least(&xs100, 0.29).expect("p29"), 29.0);
 
@@ -437,7 +437,7 @@ fn regression_var_least_and_myers_read_exact_solver() {
             if i >= 14 {
                 500.0
             } else {
-                10.0 * (i as f64 + 1.0)
+                10.0 * (f64::from(i) + 1.0)
             }
         })
         .collect();
@@ -446,7 +446,7 @@ fn regression_var_least_and_myers_read_exact_solver() {
             if i >= 14 {
                 500.0
             } else {
-                5.0 * (i as f64 + 1.0)
+                5.0 * (f64::from(i) + 1.0)
             }
         })
         .collect();

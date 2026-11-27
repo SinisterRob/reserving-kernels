@@ -366,10 +366,10 @@ pub fn analyze_with_policy(
     total_mse = total_mse.max(0.0);
     let total_standard_error = total_mse.sqrt();
     let total_reserve: f64 = marginal_mack.iter().map(|m| m.total_reserve).sum();
-    let total_cv = if total_reserve != 0.0 {
-        total_standard_error / total_reserve
-    } else {
+    let total_cv = if total_reserve == 0.0 {
         0.0
+    } else {
+        total_standard_error / total_reserve
     };
     let undiversified_se: f64 = marginal_mack.iter().map(|m| m.total_standard_error).sum();
     let diversification_benefit = undiversified_se - total_standard_error;

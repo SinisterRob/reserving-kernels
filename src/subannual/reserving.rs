@@ -76,17 +76,16 @@ pub(crate) fn validate_asymmetric_cumulative(
             if v < 0.0 {
                 return Err(ValidationError::Negative);
             }
-            if policy == MonotonicityPolicy::Strict {
-                if let Some(p) = prev {
-                    if v < p {
-                        return Err(ValidationError::NonMonotoneCumulative {
-                            origin: i,
-                            dev: j,
-                            previous: p,
-                            value: v,
-                        });
-                    }
-                }
+            if policy == MonotonicityPolicy::Strict
+                && let Some(p) = prev
+                && v < p
+            {
+                return Err(ValidationError::NonMonotoneCumulative {
+                    origin: i,
+                    dev: j,
+                    previous: p,
+                    value: v,
+                });
             }
             prev = Some(v);
         }
@@ -118,7 +117,7 @@ fn median_observed_counts(cum: &[f64], n_o: usize, n_d: usize, counts: &[usize],
             out[j] = if buf.len() % 2 == 1 {
                 buf[mid]
             } else {
-                0.5 * (buf[mid - 1] + buf[mid])
+                f64::midpoint(buf[mid - 1], buf[mid])
             };
         }
     }

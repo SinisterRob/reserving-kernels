@@ -84,7 +84,7 @@ fn select_ldfs(t: &TriangleView<'_>, selector: &CandidateSelector) -> Vec<f64> {
                 } else if len % 2 == 1 {
                     ratios[len / 2]
                 } else {
-                    (ratios[len / 2 - 1] + ratios[len / 2]) / 2.0
+                    f64::midpoint(ratios[len / 2 - 1], ratios[len / 2])
                 }
             }
             CandidateSelector::ExHiLo => {

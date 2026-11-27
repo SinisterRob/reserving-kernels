@@ -353,7 +353,7 @@ pub struct TriangleView<'a> {
     pub data: &'a [f64],
 }
 
-impl<'a> TriangleView<'a> {
+impl TriangleView<'_> {
     /// Cumulative value at origin `i`, development `j`. `NaN` if unobserved.
     #[inline]
     pub fn get(&self, i: usize, j: usize) -> f64 {

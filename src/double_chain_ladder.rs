@@ -323,8 +323,8 @@ mod tests {
             paid_rows.push(p_row);
         }
 
-        let c_slices: Vec<&[f64]> = count_rows.iter().map(|r| r.as_slice()).collect();
-        let p_slices: Vec<&[f64]> = paid_rows.iter().map(|r| r.as_slice()).collect();
+        let c_slices: Vec<&[f64]> = count_rows.iter().map(std::vec::Vec::as_slice).collect();
+        let p_slices: Vec<&[f64]> = paid_rows.iter().map(std::vec::Vec::as_slice).collect();
         let counts = Triangle::try_from_incremental_rows(&c_slices).unwrap();
         let paid = Triangle::try_from_incremental_rows(&p_slices).unwrap();
 

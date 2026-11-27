@@ -572,42 +572,39 @@ fn prepare_inputs(
             "Clark MLE requires at least a 3x3 triangle",
         ));
     }
-    let ages = match &options.ages {
-        Some(custom) => {
-            if custom.len() != n {
-                return Err(ValidationError::ShapeMismatch);
-            }
-            for k in 0..n {
-                if !custom[k].is_finite() || custom[k] <= 0.0 {
-                    return Err(ValidationError::InvalidParameter(
-                        "Clark development ages must be strictly positive and finite",
-                    ));
-                }
-                if k > 0 && !(custom[k] > custom[k - 1]) {
-                    return Err(ValidationError::InvalidParameter(
-                        "Clark development ages must be strictly increasing",
-                    ));
-                }
-            }
-            custom.clone()
+    let ages = if let Some(custom) = &options.ages {
+        if custom.len() != n {
+            return Err(ValidationError::ShapeMismatch);
         }
-        None => {
-            if !options.origin_offset.is_finite() || options.origin_offset >= 1.0 {
+        for k in 0..n {
+            if !custom[k].is_finite() || custom[k] <= 0.0 {
                 return Err(ValidationError::InvalidParameter(
-                    "origin_offset must be finite and < 1.0",
+                    "Clark development ages must be strictly positive and finite",
                 ));
             }
-            (0..n)
-                .map(|j| (j as f64 + 1.0) - options.origin_offset)
-                .collect()
+            if k > 0 && !(custom[k] > custom[k - 1]) {
+                return Err(ValidationError::InvalidParameter(
+                    "Clark development ages must be strictly increasing",
+                ));
+            }
         }
-    };
-    if let Some(mx) = options.max_age {
-        if !mx.is_finite() || mx < *ages.last().expect("n >= 3") {
+        custom.clone()
+    } else {
+        if !options.origin_offset.is_finite() || options.origin_offset >= 1.0 {
             return Err(ValidationError::InvalidParameter(
-                "max_age must be finite and >= largest observed development age",
+                "origin_offset must be finite and < 1.0",
             ));
         }
+        (0..n)
+            .map(|j| (j as f64 + 1.0) - options.origin_offset)
+            .collect()
+    };
+    if let Some(mx) = options.max_age
+        && (!mx.is_finite() || mx < *ages.last().expect("n >= 3"))
+    {
+        return Err(ValidationError::InvalidParameter(
+            "max_age must be finite and >= largest observed development age",
+        ));
     }
 
     let inc = cumulative_to_incremental(triangle);
@@ -920,12 +917,12 @@ fn optimize_growth_params(
         let u = om.ln();
         for &tm in &theta_mults {
             let v = (mid_age * tm).ln();
-            if let Some(ll) = profile_ll_only(u, v, prep, premium, curve, &mut ws) {
-                if ll > best_ll {
-                    best_ll = ll;
-                    best_u = u;
-                    best_v = v;
-                }
+            if let Some(ll) = profile_ll_only(u, v, prep, premium, curve, &mut ws)
+                && ll > best_ll
+            {
+                best_ll = ll;
+                best_u = u;
+                best_v = v;
             }
         }
     }
@@ -962,7 +959,7 @@ fn optimize_growth_params(
 
         let step = if let (Some(gup), Some(gum), Some(gvp), Some(gvm)) = (g_up, g_um, g_vp, g_vm) {
             let h00 = (gup[0] - gum[0]) / (2.0 * h);
-            let h01 = 0.5 * ((gvp[0] - gvm[0]) / (2.0 * h) + (gup[1] - gum[1]) / (2.0 * h));
+            let h01 = f64::midpoint((gvp[0] - gvm[0]) / (2.0 * h), (gup[1] - gum[1]) / (2.0 * h));
             let h11 = (gvp[1] - gvm[1]) / (2.0 * h);
             let mut chosen = None;
             let mut damp = 0.0_f64;
@@ -986,11 +983,11 @@ fn optimize_growth_params(
                 };
             }
             chosen.unwrap_or_else(|| {
-                let norm = (grad[0] * grad[0] + grad[1] * grad[1]).sqrt().max(1.0);
+                let norm = grad[0].hypot(grad[1]).max(1.0);
                 [0.1 * grad[0] / norm, 0.1 * grad[1] / norm]
             })
         } else {
-            let norm = (grad[0] * grad[0] + grad[1] * grad[1]).sqrt().max(1.0);
+            let norm = grad[0].hypot(grad[1]).max(1.0);
             [0.05 * grad[0] / norm, 0.05 * grad[1] / norm]
         };
 
@@ -1001,14 +998,14 @@ fn optimize_growth_params(
         for _ in 0..30 {
             let nu = u + alpha * step[0];
             let nv = v + alpha * step[1];
-            if let Some(nll) = profile_ll_only(nu, nv, prep, premium, curve, &mut ws) {
-                if nll >= cur_ll - 1e-12 {
-                    u = nu;
-                    v = nv;
-                    cur_ll = nll;
-                    accepted = true;
-                    break;
-                }
+            if let Some(nll) = profile_ll_only(nu, nv, prep, premium, curve, &mut ws)
+                && nll >= cur_ll - 1e-12
+            {
+                u = nu;
+                v = nv;
+                cur_ll = nll;
+                accepted = true;
+                break;
             }
             alpha *= 0.5;
         }

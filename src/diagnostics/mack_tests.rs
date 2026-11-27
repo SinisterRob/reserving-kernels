@@ -210,7 +210,7 @@ pub fn calendar_year_effect_test(t: &TriangleView<'_>) -> MackCalendarYearTest {
         let median = if len % 2 == 1 {
             sorted_vals[len / 2]
         } else {
-            0.5 * (sorted_vals[len / 2 - 1] + sorted_vals[len / 2])
+            f64::midpoint(sorted_vals[len / 2 - 1], sorted_vals[len / 2])
         };
 
         for (i, r) in pairs {

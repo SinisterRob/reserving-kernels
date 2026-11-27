@@ -292,7 +292,7 @@ pub fn stub_average_age_weighted(
         let t_end = ((k + 1) as f64 * slice_months).min(valuation_age_months);
         let frac = (t_end - t_start) / slice_months;
         let eff_w = w * frac;
-        let mid_t = 0.5 * (t_start + t_end);
+        let mid_t = f64::midpoint(t_start, t_end);
         weighted_accident_time += eff_w * mid_t;
         total_weight += eff_w;
     }

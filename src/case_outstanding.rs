@@ -38,7 +38,7 @@ pub enum CaseRatioAverage {
 }
 
 /// Configuration for [`project_case_outstanding`].
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaseOutstandingOptions {
     /// Averaging method for paid-to-case and case-to-case ratios.
     pub average: CaseRatioAverage,
