@@ -53,6 +53,7 @@ pub mod schnieper;
 pub mod selection;
 pub mod separation;
 pub mod severity;
+pub mod subannual;
 pub mod tail;
 pub mod trend;
 pub mod triangle;
@@ -128,6 +129,19 @@ pub mod prelude {
     pub use crate::schnieper::SchnieperResult;
     pub use crate::separation::{InflationProjection, SeparationMethod, SeparationResult};
     pub use crate::severity::SeverityDistribution;
+    pub use crate::subannual::{
+        AsymmetricAgeGrid, AsymmetricChainLadderProjection, AsymmetricOdpBootstrapResult,
+        AsymmetricOdpFit, CalendarDiagonalMap, ClarkExactAgeOptions, ClarkExactAgeResult,
+        EquilibriumIbnrCheckResult, InterimBfProjection, InterimCapeCodProjection,
+        InterpolatedPattern, InversePowerInterpResult, StubExposureScaleResult,
+        StubExtrapolationResult, SubannualInterpMethod, SubannualProductParityResult,
+        asymmetric_age_grid, asymmetric_chain_ladder, asymmetric_odp_bootstrap,
+        calendar_diagonal_index, clark_mle_exact_age, equilibrium_ibnr_check, fit_asymmetric_odp,
+        interim_bf, interim_cape_cod, interp_exponential, interp_inverse_power, interp_ivf12,
+        interp_linear_cdf, interp_linear_pct_reported, interp_spliced_weibull, interp_swimon,
+        interpolate_pattern, stub_average_age, stub_exposure_scale, stub_natural_log, stub_plus12,
+        stub_power_ratio, subannual_product_parity,
+    };
     pub use crate::types::{Triangle, TriangleView};
     pub use crate::validate::{MonotonicityPolicy, ValidationError};
 }

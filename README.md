@@ -99,6 +99,7 @@ fn main() -> Result<(), ValidationError> {
 | `double_chain_ladder` | Paid + count deconvolution into reporting/payment delays, severity inflation, and RBNS/IBNR |
 | `datasets` | Zero-I/O benchmark triangles (RAA, GenIns, Quarg & Mack, Friedland Auto) |
 | `ragged`, `triangle_algebra` | Low-level ragged link selectors and allocation-free slice transforms |
+| `subannual` | Asymmetric grids (2:1/4:1/12:1), stub ages & calendar diagonals; 7 sub-annual CDF/LDF interpolators (Linear, % Reported, Exponential, Sherman, SWIMON, Spliced Weibull, IVF12); Bloom pre-12m stubs; asymmetric CL/BF/Cape Cod/Clark MLE/ODP bootstrap; equilibrium IBNR & parity checks |
 
 #### 2. Stochastic Reserving, 1-Year Solvency & GLMs
 
