@@ -1,10 +1,10 @@
 [package]
 name = "reserving-kernels"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.97"
 authors = ["Robert Jurgens, FCAS <robertdjurgens@gmail.com>"]
-description = "Pure Rust numeric kernels for P&C actuarial reserving, pricing, and capital modeling."
+description = "Pure Rust numeric kernels for P&C actuarial reserving and capital modeling."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/SinisterRob/reserving-kernels"
 homepage = "https://sinisterrob.github.io"
