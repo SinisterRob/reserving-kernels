@@ -29,9 +29,14 @@ on:
         required: false
         default: false
         type: boolean
+      refresh_assets:
+        description: "Commit refreshed baseline JSON, assets/benchmarks.svg, and README.md back to main"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: benchmarks-theliomira
@@ -68,11 +73,13 @@ jobs:
             cargo bench --bench kernels -- --noplot
           fi
 
-      - name: Compare against i9-14900K baseline
+      - name: Compare against i9-14900K baseline and render SVG
         shell: bash
         env:
           THRESHOLD_PCT: ${{ inputs.threshold_pct || '15' }}
           FAIL_ON_REGRESSION: ${{ inputs.fail_on_regression || false }}
+          REFRESH_ASSETS: ${{ inputs.refresh_assets || false }}
+          BENCH_FILTER: ${{ inputs.filter || '' }}
         run: |
           ARGS=(
             --criterion-dir "${CARGO_TARGET_DIR:-target}/criterion"
@@ -84,13 +91,39 @@ jobs:
           if [ "$FAIL_ON_REGRESSION" = "true" ]; then
             ARGS+=(--fail-on-regression)
           fi
+          if [ "$REFRESH_ASSETS" = "true" ] && [ -z "$BENCH_FILTER" ]; then
+            ARGS+=(
+              --update-baseline
+              --render-svg assets/benchmarks.svg
+              --update-readme README.md
+            )
+          else
+            ARGS+=(--render-svg bench-chart.svg)
+          fi
           python3 scripts/bench-report.py "${ARGS[@]}"
 
-      - name: Upload benchmark report artifact
+      - name: Commit refreshed benchmark assets
+        if: github.event_name == 'workflow_dispatch' && inputs.refresh_assets && inputs.filter == ''
+        shell: bash
+        run: |
+          if git diff --quiet benches/baseline-i9-14900k.json assets/benchmarks.svg README.md; then
+            echo "No benchmark asset changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add benches/baseline-i9-14900k.json assets/benchmarks.svg README.md
+          git commit -m "chore(bench): refresh i9-14900K baseline, SVG chart, and README [skip ci]"
+          git push origin HEAD:main
+
+      - name: Upload benchmark report and SVG artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: bench-report-theliomira-${{ github.run_id }}
-          path: bench-report.json
+          path: |
+            bench-report.json
+            bench-chart.svg
+            assets/benchmarks.svg
           retention-days: 30
           if-no-files-found: ignore

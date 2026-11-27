@@ -85,7 +85,7 @@ def fmt_time_svg(ns: float) -> str:
         return f"{ms:.1f} ms"
     if ms < 1_000.0:
         return f"{ms:.0f} ms"
-    return f"{ms:,.0f} ms"
+    return f"{ms / 1_000.0:.2f} s"
 
 
 def fmt_time_svg_rust(ns: float) -> str:
@@ -98,6 +98,24 @@ def fmt_time_svg_rust(ns: float) -> str:
     if ms < 10.0:
         return f"{ms:.2f} ms"
     return f"{ms:.1f} ms"
+
+
+def fmt_speedup_sig3(ratio: float) -> str:
+    if ratio >= 1_000.0:
+        mag = 10 ** (int(math.floor(math.log10(ratio))) - 2)
+        val = int(round(ratio / mag) * mag)
+        return f"{val:,}×"
+    return f"{int(round(ratio)):,}×"
+
+
+def fmt_speedup_range(rust_ns: float, r_ns: float | None, py_ns: float | None) -> str:
+    ratios = [x / rust_ns for x in (r_ns, py_ns) if x is not None and rust_ns > 0.0]
+    if not ratios:
+        return "—"
+    lo, hi = min(ratios), max(ratios)
+    if len(ratios) == 1:
+        return fmt_speedup_sig3(hi)
+    return f"{fmt_speedup_sig3(lo)}–{fmt_speedup_sig3(hi)}"
 
 
 def fmt_ratio(other_ns: float | None, rust_ns: float) -> str:
@@ -141,115 +159,116 @@ def render_svg(baseline: dict, out_path: Path) -> None:
     benches = baseline["benchmarks"]
     comp = baseline["comparison"]
 
-    x0 = 248.0
-    px_per_decade = 71.5
-    min_log_us = -1.0  # 0.1 µs
-
-    def bar_width(ns: float) -> float:
-        us = max(ns / 1_000.0, 0.1)
-        return max(4.0, (math.log10(us) - min_log_us) * px_per_decade)
-
+    width = 920
     row_step = 54
-    base_y = 88
-    height = 76 + len(comp) * row_step + 68
+    first_y = 96
+    height = first_y + len(comp) * row_step + 38
+
+    bar_x = 258.0
+    bar_max_w = 424.0
+    speedup_x = 892.0
+
+    c_rust = "#f97316"
+    c_r = "#38bdf8"
+    c_r_txt = "#7dd3fc"
+    c_py = "#a78bfa"
+    c_py_txt = "#c4b5fd"
+
+    hw_short = meta["hardware"].replace("Intel Core ", "")
+    rustc_short = ".".join(str(meta["rustc"]).split(".")[:2])
 
     lines: list[str] = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 {height}" width="900" height="{height}" role="img" aria-label="reserving-kernels benchmark latency comparison">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}" role="img" aria-label="reserving-kernels linear benchmark latency comparison">',
         "  <defs>",
         "    <style>",
-        "      .bg { fill: #0d1117; stroke: #30363d; stroke-width: 1; }",
-        '      .title { font: 600 17px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #f0f6fc; }',
-        '      .sub { font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #8b949e; }',
+        "      .bg { fill: #0d1117; stroke: #262c36; stroke-width: 1; }",
+        '      .title { font: 600 17px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #f0f6fc; letter-spacing: -0.2px; }',
+        '      .sub { font: 400 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #8b949e; }',
         '      .label { font: 500 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #e6edf3; }',
-        "      .val { font: 600 10.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }",
-        "      .tick { font: 400 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #8b949e; }",
-        "      .grid { stroke: #21262d; stroke-width: 1; }",
-        "      .axis { stroke: #30363d; stroke-width: 1; }",
+        "      .val { font: 500 10.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }",
+        "      .val-rust { font: 600 10.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #fdba74; }",
+        "      .speedup { font: 700 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #fb923c; }",
+        '      .hdr { font: 600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #6e7681; letter-spacing: 0.6px; }',
         '      .legend { font: 500 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #c9d1d9; }',
+        '      .foot { font: 400 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #6e7681; }',
         "    </style>",
         "  </defs>",
-        f'  <rect x="0.5" y="0.5" width="899" height="{height - 1}" rx="10" class="bg"/>',
-        '  <text x="24" y="34" class="title">Steady-State Kernel Latency (Log Scale — Lower is Faster)</text>',
-        f'  <text x="24" y="54" class="sub">Single-threaded in-process timings on {meta["hardware"]} · rustc {meta["rustc"]} · {meta["reference_r"]} (R) · {meta["reference_python"]}</text>',
-        "  <!-- Legend -->",
-        '  <rect x="545" y="21" width="11" height="11" rx="2" fill="#f97316"/>',
-        '  <text x="562" y="31" class="legend">reserving-kernels (Rust)</text>',
-        '  <rect x="708" y="21" width="11" height="11" rx="2" fill="#38bdf8"/>',
-        '  <text x="725" y="31" class="legend">R</text>',
-        '  <rect x="752" y="21" width="11" height="11" rx="2" fill="#a78bfa"/>',
-        '  <text x="769" y="31" class="legend">Python</text>',
-        "",
+        f'  <rect x="0.5" y="0.5" width="{width - 1}" height="{height - 1}" rx="12" class="bg"/>',
+        '  <text x="26" y="36" class="title">Steady-State Kernel Latency</text>',
+        '  <text x="26" y="55" class="sub">Linear scale per benchmark · lower is faster</text>',
+        "  <!-- Legend (right-anchored flush with SPEEDUP column) -->",
+        f'  <text x="{speedup_x:.1f}" y="35" text-anchor="end" class="legend">Python</text>',
+        f'  <rect x="{speedup_x - 53:.1f}" y="26" width="10" height="10" rx="2.5" fill="{c_py}"/>',
+        f'  <text x="{speedup_x - 71:.1f}" y="35" text-anchor="end" class="legend">R</text>',
+        f'  <rect x="{speedup_x - 95:.1f}" y="26" width="10" height="10" rx="2.5" fill="{c_r}"/>',
+        f'  <text x="{speedup_x - 113:.1f}" y="35" text-anchor="end" class="legend">reserving-kernels (Rust)</text>',
+        f'  <rect x="{speedup_x - 252:.1f}" y="26" width="10" height="10" rx="2.5" fill="{c_rust}"/>',
+        f'  <line x1="26" y1="72" x2="{width - 26}" y2="72" stroke="#21262d" stroke-width="1"/>',
+        f'  <text x="{bar_x:.1f}" y="88" class="hdr">RELATIVE TIME (LINEAR)</text>',
+        f'  <text x="{speedup_x:.1f}" y="88" text-anchor="end" class="hdr">SPEEDUP</text>',
+        f'  <line x1="{bar_x:.1f}" y1="{first_y + 4}" x2="{bar_x:.1f}" y2="{first_y + len(comp) * row_step - 4}" stroke="#30363d" stroke-width="1"/>',
     ]
-
-    grid_bottom = 76 + len(comp) * row_step + 6
-    ticks = [
-        "0.1 µs",
-        "1 µs",
-        "10 µs",
-        "100 µs",
-        "1 ms",
-        "10 ms",
-        "100 ms",
-        "1 s",
-        "10 s",
-    ]
-    for i, tick in enumerate(ticks):
-        tx = x0 + i * px_per_decade
-        lines.append(f'  <line x1="{tx:.1f}" y1="76" x2="{tx:.1f}" y2="{grid_bottom}" class="grid"/>')
-        lines.append(
-            f'  <text x="{tx:.1f}" y="{grid_bottom + 18}" text-anchor="middle" class="tick">{tick}</text>'
-        )
-    lines.append(f'  <line x1="{int(x0)}" y1="76" x2="{int(x0)}" y2="{grid_bottom}" class="axis"/>')
 
     for idx, entry in enumerate(comp):
-        y = base_y + idx * row_step
+        y0 = first_y + idx * row_step
+        yc = y0 + row_step / 2.0
+
         if idx % 2 == 1:
             lines.append(
-                f'  <rect x="14" y="{y - 6}" width="872" height="50" rx="5" fill="#161b22" opacity="0.55"/>'
+                f'  <rect x="18" y="{y0 + 2:.1f}" width="{width - 36}" height="{row_step - 4:.1f}" rx="6" fill="#161b22" opacity="0.55"/>'
             )
-        lines.append(
-            f'  <text x="236" y="{y + 23}" text-anchor="end" class="label">{entry["label"]}</text>'
-        )
 
-        rust_ns = benches[entry["id"]]["median_ns"]
-        rw = bar_width(rust_ns)
-        lines.append(
-            f'  <rect x="{int(x0)}" y="{y}" width="{rw:.1f}" height="10" rx="2.5" fill="#f97316"/>'
-        )
-        lines.append(
-            f'  <text x="{x0 + rw + 6:.1f}" y="{y + 9}" class="val" fill="#fdba74">{fmt_time_svg_rust(rust_ns)}</text>'
-        )
+        lines.append(f'  <text x="26" y="{yc + 4:.1f}" class="label">{entry["label"]}</text>')
 
+        rust_ns = float(benches[entry["id"]]["median_ns"])
         r_ns = entry.get("r_ns")
-        if r_ns is not None:
-            w = bar_width(r_ns)
-            lines.append(
-                f'  <rect x="{int(x0)}" y="{y + 13}" width="{w:.1f}" height="10" rx="2.5" fill="#38bdf8"/>'
-            )
-            lines.append(
-                f'  <text x="{x0 + w + 6:.1f}" y="{y + 22}" class="val" fill="#7dd3fc">{fmt_time_svg(r_ns)}</text>'
-            )
+        py_ns = entry.get("python_ns")
+        baselines = [float(v) for v in (r_ns, py_ns) if v is not None]
+        max_ns = max(baselines) if baselines else rust_ns
+
+        w_rust = max(2.5, (rust_ns / max_ns) * bar_max_w)
+        w_r = max(2.5, (float(r_ns) / max_ns) * bar_max_w) if r_ns is not None else None
+        w_py = max(2.5, (float(py_ns) / max_ns) * bar_max_w) if py_ns is not None else None
+
+        if r_ns is not None and py_ns is not None:
+            y_rust, y_r, y_py = yc - 16.0, yc - 4.0, yc + 8.0
+        elif r_ns is not None:
+            y_rust, y_r, y_py = yc - 10.0, yc + 2.0, None
+        elif py_ns is not None:
+            y_rust, y_r, y_py = yc - 10.0, None, yc + 2.0
         else:
+            y_rust, y_r, y_py = yc - 4.0, None, None
+
+        lines.append(
+            f'  <rect x="{bar_x:.1f}" y="{y_rust:.1f}" width="{w_rust:.1f}" height="8" rx="1.5" fill="{c_rust}"/>'
+        )
+        lines.append(
+            f'  <text x="{bar_x + w_rust + 7:.1f}" y="{y_rust + 7.5:.1f}" class="val-rust">{fmt_time_svg_rust(rust_ns)}</text>'
+        )
+
+        if y_r is not None and w_r is not None and r_ns is not None:
             lines.append(
-                f'  <text x="{int(x0) + 6}" y="{y + 22}" class="val" fill="#6e7681">n/a</text>'
+                f'  <rect x="{bar_x:.1f}" y="{y_r:.1f}" width="{w_r:.1f}" height="8" rx="2" fill="{c_r}" opacity="0.88"/>'
+            )
+            lines.append(
+                f'  <text x="{bar_x + w_r + 7:.1f}" y="{y_r + 7.5:.1f}" class="val" fill="{c_r_txt}">{fmt_time_svg(float(r_ns))}</text>'
             )
 
-        py_ns = entry.get("python_ns")
-        if py_ns is not None:
-            w = bar_width(py_ns)
+        if y_py is not None and w_py is not None and py_ns is not None:
             lines.append(
-                f'  <rect x="{int(x0)}" y="{y + 26}" width="{w:.1f}" height="10" rx="2.5" fill="#a78bfa"/>'
+                f'  <rect x="{bar_x:.1f}" y="{y_py:.1f}" width="{w_py:.1f}" height="8" rx="2" fill="{c_py}" opacity="0.88"/>'
             )
             lines.append(
-                f'  <text x="{x0 + w + 6:.1f}" y="{y + 35}" class="val" fill="#c4b5fd">{fmt_time_svg(py_ns)}</text>'
+                f'  <text x="{bar_x + w_py + 7:.1f}" y="{y_py + 7.5:.1f}" class="val" fill="{c_py_txt}">{fmt_time_svg(float(py_ns))}</text>'
             )
-        else:
-            lines.append(
-                f'  <text x="{int(x0) + 6}" y="{y + 35}" class="val" fill="#6e7681">n/a</text>'
-            )
+
+        sp = fmt_speedup_range(rust_ns, float(r_ns) if r_ns is not None else None, float(py_ns) if py_ns is not None else None)
+        lines.append(
+            f'  <text x="{speedup_x:.1f}" y="{yc + 4:.1f}" text-anchor="end" class="speedup">{sp}</text>'
+        )
 
     lines.append(
-        f'  <text x="24" y="{height - 12}" class="sub">Note: reserving-kernels operates on flat f64 slices; R ChainLadder and chainladder-python include S3/S4 or 4D DataFrame metadata overhead.</text>'
+        f'  <text x="26" y="{height - 14}" class="foot">{hw_short} · rustc {rustc_short} · {meta["reference_r"]} (R) · {meta["reference_python"]} · flat f64 slices vs. S3/S4 &amp; DataFrame overhead</text>'
     )
     lines.append("</svg>")
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
