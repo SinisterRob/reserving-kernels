@@ -127,11 +127,11 @@ pub fn monotonicity_flags(t: &TriangleView<'_>) -> Vec<RowFlag> {
             if !value.is_finite() {
                 continue;
             }
-            if let Some(prev) = previous
-                && value < prev
-            {
-                row_flagged = true;
-                break;
+            if let Some(prev) = previous {
+                if value < prev {
+                    row_flagged = true;
+                    break;
+                }
             }
             previous = Some(value);
         }
