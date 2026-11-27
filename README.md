@@ -4,9 +4,16 @@
 
 # reserving-kernels
 
-Pure Rust numeric kernels for P&C actuarial reserving and capital modeling.
+Pure Rust numeric kernels for P&C actuarial reserving and reserve-risk capital modeling.
 
-[![CI](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml/badge.svg)](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml) · `Rust 1.97+` · `MIT OR Apache-2.0` · `no unsafe` · `serde only` · `wasm32 ready`
+[![CI](https://img.shields.io/github/actions/workflow/status/SinisterRob/reserving-kernels/ci.yml?branch=main&label=CI&style=flat)](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml)
+![Rust 1.97+](https://img.shields.io/badge/Rust-1.97%2B-f97316?style=flat)
+![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-30363d?style=flat)
+![No Unsafe](https://img.shields.io/badge/unsafe-forbidden-30363d?style=flat)
+![Deps](https://img.shields.io/badge/deps-serde%20only-30363d?style=flat)
+![WASM](https://img.shields.io/badge/target-wasm32-30363d?style=flat)
+
+Covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation).
 
 Every method is implemented from peer-reviewed actuarial literature and verified against published benchmark triangles in [`tests/source_benchmarks.rs`](tests/source_benchmarks.rs). See [`docs/SOURCES.md`](docs/SOURCES.md) for full citations and equation mappings.
 
