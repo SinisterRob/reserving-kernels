@@ -1,6 +1,6 @@
 //! Severity kernels: empirical claim-count ratios and parametric severity
 //! distributions for Limited Expected Values (LEV), excess ratios, and
-//! Increased Limit Factors (ILFs).
+//! layer loss development.
 //!
 //! Parametric closed-form formulas follow:
 //!
@@ -582,22 +582,6 @@ impl SeverityDistribution {
         let lev = self.limited_expected_value(retention)?;
         Ok(((mean - lev) / mean).clamp(0.0, 1.0))
     }
-
-    /// Pure-loss Increased Limit Factor `ILF(L; B) = E[X ∧ L] / E[X ∧ B]`
-    /// (Miccolis 1977; Lee 1988).
-    pub fn ilf(&self, basic_limit: f64, increased_limit: f64) -> Result<f64, ValidationError> {
-        if basic_limit <= 0.0 || increased_limit < 0.0 {
-            return Err(ValidationError::InvalidParameter(
-                "basic_limit must be > 0 and increased_limit >= 0",
-            ));
-        }
-        let lev_b = self.limited_expected_value(basic_limit)?;
-        if !(lev_b > 0.0) {
-            return Err(ValidationError::DivideByZero("basic limit LEV"));
-        }
-        let lev_l = self.limited_expected_value(increased_limit)?;
-        Ok(lev_l / lev_b)
-    }
 }
 
 #[cfg(test)]
@@ -663,7 +647,6 @@ mod tests {
                 (exact - trap).abs() / exact < 5e-4,
                 "dist={dist:?} exact={exact} numerical={trap}"
             );
-            assert!(dist.ilf(100_000.0, 250_000.0).unwrap() >= 1.0);
         }
     }
 }
