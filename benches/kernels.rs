@@ -1,7 +1,8 @@
+use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{
-    BenchmarkId, Criterion, SamplingMode, Throughput, black_box, criterion_group, criterion_main,
+    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
 };
 use reserving_kernels::{
     aggregate_loss::{FrequencyDistribution, fft_aggregate_loss, panjer_recursion},
