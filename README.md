@@ -188,18 +188,24 @@ Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kerne
 | ODP Bootstrap (GenIns, 10k sims) | **1.90 ms** | 2,223 ms | 416.2 ms | 1,170× | 220× |
 
 <details>
-<summary><strong>Additional i9-14900K Rust kernel latencies (20 more kernels in <code>benches/kernels.rs</code>)</strong></summary>
+<summary><strong>Additional i9-14900K Rust kernel latencies (29 more kernels in <code>benches/kernels.rs</code>)</strong></summary>
 
 | Kernel | Median (`i9-14900K`) | Domain |
-| --- | :---: | --- |
+| --- | :---: | :---: |
 | Excess Layers Lookup (65k sims) | **34.6 ns** | `excess` |
+| Bornhuetter–Ferguson (Friedland 10×10) | **0.29 µs** | `deterministic` |
+| Cape Cod (Friedland 10×10) | **0.42 µs** | `deterministic` |
+| Munich Chain Ladder (Quarg & Mack 7×7) | **0.56 µs** | `deterministic` |
+| Mack (2008) BF MSEP (GenIns 10×10) | **0.58 µs** | `stochastic` |
 | ODP Fit (GenIns 10×10) | **0.73 µs** | `stochastic` |
+| SWIMON Sub-Annual Interpolation (120m) | **1.86 µs** | `subannual` |
 | General Multivariate CL (GMCL, 2-line 10×10) | **3.32 µs** | `stochastic` |
 | Merz–Wüthrich 1-Yr CDR (40×40) | **4.56 µs** | `stochastic` |
 | Paid–Incurred Chain (Friedland 10×10) | **6.94 µs** | `stochastic` |
 | Coherent TVaR (10k scenarios) | **9.83 µs** | `capital` |
 | Panjer Recursion (512 steps) | **13.9 µs** | `capital` |
 | Double Chain Ladder (40×40) | **15.4 µs** | `deterministic` |
+| Clark Cape Cod MLE (Friedland 10×10) | **15.5 µs** | `stochastic` |
 | PTF Log-Linear Regression (GenIns 10×10) | **16.9 µs** | `stochastic` |
 | Reserve Distribution Summary (10k scenarios) | **19.3 µs** | `capital` |
 | Multivariate Mack (2-line 40×40) | **22.3 µs** | `stochastic` |
@@ -212,6 +218,8 @@ Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kerne
 | Synchronized Multi-Line ODP Bootstrap (2-line, 500 sims) | **191 µs** | `capital` |
 | ODP 1-Yr CDR Bootstrap (GenIns, 1k sims) | **226 µs** | `stochastic` |
 | Iman–Conover Rank Correlation (2k × 3 lines) | **314 µs** | `capital` |
+| ODP 1-Yr Reserve Run-Off (GenIns, 1k sims) | **0.34 ms** | `stochastic` |
+| Mack 1-Yr Reserve Run-Off (GenIns, 1k sims) | **0.40 ms** | `stochastic` |
 | Individual-Claim Micro-Reserving (1k sims) | **1.57 ms** | `stochastic` |
 
 </details>
