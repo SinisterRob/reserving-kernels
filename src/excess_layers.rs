@@ -1,4 +1,4 @@
-//! Lognormal severity layering, Limited Expected Values (LEV), and Increased Limit Factors (ILFs).
+//! Lognormal severity layering and Limited Expected Values (LEV).
 //!
 //! Provides exact closed-form lognormal limited expected value $E[X \wedge L]$
 //! alongside a deterministic SplitMix64 + antithetic Marsaglia polar Monte Carlo

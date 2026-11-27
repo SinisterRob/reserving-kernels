@@ -475,11 +475,11 @@ fn quarg_mack_2004_and_sherman_1984_tail_benchmarks() {
 }
 
 // ===========================================================================
-// 6. Severity ILFs, Mildenhall (2006) Dependence & CAS Monograph 15 Risk Measures
+// 6. Severity Layering, Mildenhall (2006) Dependence & CAS Monograph 15 Risk Measures
 // ===========================================================================
 
 #[test]
-fn severity_ilf_dependence_and_cas_monograph_15_identities() {
+fn severity_layering_dependence_and_cas_monograph_15_identities() {
     // Mixed Exponential ISO-style curve: E[X] = sum(w_i * m_i), layer sum conservation.
     let mixed = SeverityDistribution::MixedExponential {
         weights: vec![0.5, 0.35, 0.15],

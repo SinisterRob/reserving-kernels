@@ -88,7 +88,7 @@ pub fn frequency_severity_ultimate(
 }
 
 // ===========================================================================
-// Parametric Severity Distributions, Limited Expected Values & ILFs
+// Parametric Severity Distributions, Limited Expected Values & Excess Ratios
 // ===========================================================================
 
 /// High-accuracy standard normal CDF `Φ(z)` via Cody (1969) rational `erfc`
@@ -183,7 +183,7 @@ fn erfc_approx(x: f64) -> f64 {
 }
 
 /// Parametric P&C claim severity distributions with exact closed-form Limited
-/// Expected Values `E[X ∧ L]`, survival functions, excess ratios, and ILFs.
+/// Expected Values `E[X ∧ L]`, survival functions, layer losses, and excess ratios.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SeverityDistribution {
     /// Lognormal `ln(X) ~ N(mu, sigma^2)` (`sigma > 0`).
