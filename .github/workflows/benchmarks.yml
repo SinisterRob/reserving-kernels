@@ -30,13 +30,14 @@ on:
         default: false
         type: boolean
       refresh_assets:
-        description: "Commit refreshed baseline JSON, assets/benchmarks.svg, and README.md back to main"
+        description: "Open a PR with refreshed baseline JSON, assets/benchmarks.svg, and README.md"
         required: false
         default: false
         type: boolean
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: benchmarks-theliomira
@@ -102,9 +103,12 @@ jobs:
           fi
           python3 scripts/bench-report.py "${ARGS[@]}"
 
-      - name: Commit refreshed benchmark assets
+      - name: Open PR with refreshed benchmark assets
         if: github.event_name == 'workflow_dispatch' && inputs.refresh_assets && inputs.filter == ''
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: chore/bench-refresh-${{ github.run_id }}
         run: |
           if git diff --quiet benches/baseline-i9-14900k.json assets/benchmarks.svg README.md; then
             echo "No benchmark asset changes to commit."
@@ -112,9 +116,15 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git add benches/baseline-i9-14900k.json assets/benchmarks.svg README.md
-          git commit -m "chore(bench): refresh i9-14900K baseline, SVG chart, and README [skip ci]"
-          git push origin HEAD:main
+          git commit -m "chore(bench): refresh i9-14900K baseline, SVG chart, and README"
+          git push origin "HEAD:${BRANCH}"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore(bench): refresh i9-14900K baseline, SVG chart, and README" \
+            --body "Automated benchmark asset refresh from workflow run \`${{ github.run_id }}\` on \`theliomira\` (Intel Core i9-14900K)."
 
       - name: Upload benchmark report and SVG artifacts
         if: always()
