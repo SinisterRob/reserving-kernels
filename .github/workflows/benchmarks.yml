@@ -1,0 +1,96 @@
+name: Benchmarks (theliomira)
+
+# Public-repo security invariant: NEVER trigger this self-hosted runner workflow
+# on `pull_request` or `pull_request_target` events. Only trusted pushes to `main`
+# and explicit maintainer `workflow_dispatch` runs execute on `theliomira`.
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - src/**
+      - benches/**
+      - scripts/bench-report.py
+      - .github/workflows/benchmarks.yml
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "Optional Criterion regex filter (blank runs full kernels suite)"
+        required: false
+        default: ""
+        type: string
+      threshold_pct:
+        description: "Median latency regression warning threshold (%)"
+        required: false
+        default: "15"
+        type: string
+      fail_on_regression:
+        description: "Fail the workflow if any benchmark exceeds the regression threshold"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmarks-theliomira
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: Criterion on theliomira (i9-14900K)
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, x64, theliomira]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record host and toolchain info
+        shell: bash
+        run: |
+          echo "Host: $(hostname)"
+          echo "CPU:  $(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/, "", $2); print $2; exit}')"
+          echo "Rust: $(rustc --version)"
+          echo "SHA:  $(git rev-parse --short HEAD)"
+
+      - name: Run Criterion benchmarks
+        shell: bash
+        env:
+          BENCH_FILTER: ${{ inputs.filter || '' }}
+        run: |
+          if [ -n "$BENCH_FILTER" ]; then
+            cargo bench --bench kernels -- --noplot "$BENCH_FILTER"
+          else
+            cargo bench --bench kernels -- --noplot
+          fi
+
+      - name: Compare against i9-14900K baseline
+        shell: bash
+        env:
+          THRESHOLD_PCT: ${{ inputs.threshold_pct || '15' }}
+          FAIL_ON_REGRESSION: ${{ inputs.fail_on_regression || false }}
+        run: |
+          ARGS=(
+            --criterion-dir "${CARGO_TARGET_DIR:-target}/criterion"
+            --baseline benches/baseline-i9-14900k.json
+            --threshold "$THRESHOLD_PCT"
+            --github-summary
+            --json-out bench-report.json
+          )
+          if [ "$FAIL_ON_REGRESSION" = "true" ]; then
+            ARGS+=(--fail-on-regression)
+          fi
+          python3 scripts/bench-report.py "${ARGS[@]}"
+
+      - name: Upload benchmark report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-report-theliomira-${{ github.run_id }}
+          path: bench-report.json
+          retention-days: 30
+          if-no-files-found: ignore

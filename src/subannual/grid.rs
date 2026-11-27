@@ -149,10 +149,7 @@ pub fn asymmetric_age_grid(
     if n_origins == 0 || n_devs == 0 {
         return Err(ValidationError::ShapeMismatch);
     }
-    if !origin_months.is_finite()
-        || !dev_months.is_finite()
-        || !first_dev_age_months.is_finite()
-    {
+    if !origin_months.is_finite() || !dev_months.is_finite() || !first_dev_age_months.is_finite() {
         return Err(ValidationError::NotFinite);
     }
     if origin_months <= 0.0 || dev_months <= 0.0 || first_dev_age_months <= 0.0 {
@@ -179,9 +176,8 @@ pub fn asymmetric_age_grid(
     let dev_ages_months: Vec<f64> = (0..n_devs)
         .map(|j| first_dev_age_months + (j as f64) * dev_months)
         .collect();
-    let origin_start_months: Vec<f64> = (0..n_origins)
-        .map(|i| (i as f64) * origin_months)
-        .collect();
+    let origin_start_months: Vec<f64> =
+        (0..n_origins).map(|i| (i as f64) * origin_months).collect();
     let valuation_month = ((n_origins - 1) as f64) * origin_months + latest_duration;
 
     let mut origin_durations_months = Vec::with_capacity(n_origins);

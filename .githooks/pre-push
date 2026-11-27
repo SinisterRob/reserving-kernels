@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Pre-push hook for reserving-kernels:
+#   - When the Rust working tree is clean: runs rustfmt, clippy (-D warnings),
+#     unit/integration/doc tests before pushing to remote.
+#   - When unstaged Rust edits exist (e.g. concurrent mesh/agent work): validates
+#     rustfmt on committed HEAD files touched since upstream so pushes stay safe
+#     without blocking on unrelated unstaged WIP.
+#
+# Bypass in an emergency with: SKIP_HOOKS=1 git push ...
+
+set -euo pipefail
+
+if [[ "${SKIP_HOOKS:-0}" == "1" ]]; then
+  exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "pre-push: cargo not found in PATH; skipping checks." >&2
+  exit 0
+fi
+
+if ! git diff --quiet -- '*.rs'; then
+  echo "pre-push: unstaged .rs edits detected; checking rustfmt on committed HEAD changes only."
+  BASE="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || echo 'HEAD~1')"
+  CHANGED_RS=()
+  while IFS= read -r -d '' file; do
+    CHANGED_RS+=("$file")
+  done < <(git diff --name-only --diff-filter=ACMR -z "$BASE...HEAD" -- '*.rs' 2>/dev/null || true)
+
+  FAILED=0
+  for file in "${CHANGED_RS[@]}"; do
+    if ! diff -u \
+      --label "HEAD/$file" <(git show "HEAD:$file") \
+      --label "rustfmt/$file" <(git show "HEAD:$file" | rustfmt --edition 2024); then
+      FAILED=1
+    fi
+  done
+  if [[ "$FAILED" -ne 0 ]]; then
+    echo "pre-push: committed Rust changes fail rustfmt; format before pushing." >&2
+    exit 1
+  fi
+  echo "pre-push: committed HEAD rustfmt check passed (skipped full clippy/test due to unstaged .rs edits)."
+  exit 0
+fi
+
+echo "pre-push: running cargo fmt, clippy, and tests..."
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --lib --tests --doc

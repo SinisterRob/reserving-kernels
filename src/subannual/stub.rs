@@ -256,7 +256,10 @@ pub fn decompose_combined_stub_cdf(
     stub_duration_months: f64,
     full_period_months: f64,
 ) -> Result<StubExposureScaleResult, ValidationError> {
-    if !combined_stub_cdf.is_finite() || !stub_duration_months.is_finite() || !full_period_months.is_finite() {
+    if !combined_stub_cdf.is_finite()
+        || !stub_duration_months.is_finite()
+        || !full_period_months.is_finite()
+    {
         return Err(ValidationError::NotFinite);
     }
     if combined_stub_cdf <= 0.0 || full_period_months <= 0.0 || stub_duration_months <= 0.0 {

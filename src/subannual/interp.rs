@@ -504,8 +504,8 @@ pub fn interp_swimon(
     }
 
     let last = n_seg - 1;
-    m[n_knots - 1] = ((2.0 * h[last] + h[last - 1]) * s[last] - h[last] * s[last - 1])
-        / (h[last] + h[last - 1]);
+    m[n_knots - 1] =
+        ((2.0 * h[last] + h[last - 1]) * s[last] - h[last] * s[last - 1]) / (h[last] + h[last - 1]);
     if m[n_knots - 1] * s[last] <= 0.0 {
         m[n_knots - 1] = 0.0;
     } else if s[last] > 0.0 && m[n_knots - 1] > 2.0 * s[last] {
@@ -534,7 +534,11 @@ pub fn interp_swimon(
                 // Enforce m[k] + 2 m[k+1] <= 3 s_k (reduce m[k+1] if needed, or raise m[k]).
                 if m[k] + 2.0 * m[k + 1] > 3.0 * sk {
                     let target_m_next = 0.5 * (3.0 * sk - m[k]);
-                    let lo_next = if k + 1 < n_seg { s[k + 1].max(0.0) } else { 0.0 };
+                    let lo_next = if k + 1 < n_seg {
+                        s[k + 1].max(0.0)
+                    } else {
+                        0.0
+                    };
                     m[k + 1] = target_m_next.clamp(lo_next, sk);
                 }
                 // Enforce 2 m[k] + m[k+1] >= 3 s_k (raise m[k] within [s_k, s_{k-1}]).
@@ -810,7 +814,10 @@ mod tests {
         let lin_cdf = interp_linear_cdf(&ages, &cdfs, &targets).unwrap();
         let lin_pct = interp_linear_pct_reported(&ages, &cdfs, &targets).unwrap();
         for (a, b) in lin_cdf.cdfs.iter().zip(lin_pct.cdfs.iter()) {
-            assert!(a > b, "expected linear CDF ({a}) > linear pct reported ({b})");
+            assert!(
+                a > b,
+                "expected linear CDF ({a}) > linear pct reported ({b})"
+            );
         }
     }
 
