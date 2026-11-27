@@ -196,6 +196,7 @@ pub fn project_unchecked(t: &TriangleView<'_>, ldfs: &[f64], tail: f64) -> Chain
 // ===========================================================================
 
 /// Section 3 chain-ladder projection service.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ChainLadderEngine;
 
 impl ChainLadderEngine {

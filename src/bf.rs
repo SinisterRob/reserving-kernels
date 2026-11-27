@@ -167,6 +167,26 @@ pub fn project_unchecked(
 // ===========================================================================
 
 /// Section 4 Bornhuetter-Ferguson service.
+///
+/// # Example
+/// ```rust
+/// use reserving_kernels::prelude::*;
+///
+/// let tri = Triangle::try_from_upper_rows(&[
+///     &[100.0, 160.0, 195.0],
+///     &[120.0, 190.0],
+///     &[135.0],
+/// ])?;
+/// let factors = DevelopmentFactorEngine::volume_weighted(&tri.view(), 1.0)?;
+/// let bf = BornhuetterFergusonEngine::project_from_expected_ultimate(
+///     &tri.view(),
+///     &factors,
+///     &[200.0, 235.0, 260.0],
+/// )?;
+/// assert!(bf.total_reserve > 0.0);
+/// # Ok::<(), ValidationError>(())
+/// ```
+#[derive(Debug, Clone, Copy, Default)]
 pub struct BornhuetterFergusonEngine;
 
 impl BornhuetterFergusonEngine {

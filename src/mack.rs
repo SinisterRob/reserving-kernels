@@ -533,6 +533,22 @@ pub fn analyze_observed_counts(
 /// to incorporate Mack (1999) tail variance, or [`analyze_with_policy`] when
 /// analyzing triangles with negative incremental development (e.g., incurred
 /// case-reserve releases or Mack's 1993 RAA dataset).
+///
+/// # Example
+/// ```rust
+/// use reserving_kernels::{Triangle, mack};
+///
+/// let tri = Triangle::try_from_upper_rows(&[
+///     &[100.0, 160.0, 195.0, 205.0],
+///     &[120.0, 190.0, 232.0],
+///     &[135.0, 218.0],
+///     &[150.0],
+/// ])?;
+/// let res = mack::analyze(&tri.view(), 1.0)?;
+/// assert!(res.total_reserve > 0.0);
+/// assert!(res.total_standard_error > 0.0);
+/// # Ok::<(), reserving_kernels::validate::ValidationError>(())
+/// ```
 pub fn analyze(t: &TriangleView<'_>, tail: f64) -> Result<Mack, ValidationError> {
     analyze_with_policy(t, tail, MonotonicityPolicy::Strict)
 }

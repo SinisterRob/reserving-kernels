@@ -2027,6 +2027,23 @@ pub(crate) fn run_odp_iteration_with_scratch<'a>(
 }
 
 /// Run the full England & Verrall (1999, 2002) / Shapland (2016) ODP bootstrap.
+///
+/// # Example
+/// ```rust
+/// use reserving_kernels::datasets::genins;
+/// use reserving_kernels::prelude::*;
+///
+/// let tri = genins();
+/// let opts = OdpBootstrapOptions {
+///     iterations: 200,
+///     seed: 42,
+///     ..OdpBootstrapOptions::default()
+/// };
+/// let boot = bootstrap_odp(&tri.view(), 1.0, opts)?;
+/// assert_eq!(boot.simulated_totals.len(), 200);
+/// assert!(boot.base_total_reserve > 0.0);
+/// # Ok::<(), ValidationError>(())
+/// ```
 pub fn bootstrap_odp(
     triangle: &TriangleView<'_>,
     tail: f64,

@@ -2,26 +2,37 @@
   <img src="assets/banner.png" alt="reserving-kernels — Actuarial computing in Rust" width="100%" />
 </p>
 
-# reserving-kernels
+<p align="center">
+  <strong>Pure Rust numeric kernels for P&amp;C actuarial reserving and reserve-risk capital modeling.</strong>
+</p>
 
-Pure Rust numeric kernels for P&C actuarial reserving and reserve-risk capital modeling.
+<p align="center">
+  <a href="https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/SinisterRob/reserving-kernels/ci.yml?branch=main&label=CI&style=flat" alt="CI" /></a>
+  <a href="Cargo.toml"><img src="https://img.shields.io/badge/Rust-1.97%2B-f97316?style=flat" alt="Rust 1.97+" /></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-30363d?style=flat" alt="License: MIT or Apache-2.0" /></a>
+  <a href="src/lib.rs"><img src="https://img.shields.io/badge/unsafe-forbidden-30363d?style=flat" alt="No unsafe code" /></a>
+  <a href="Cargo.toml"><img src="https://img.shields.io/badge/deps-serde%20only-30363d?style=flat" alt="Dependencies: serde only" /></a>
+  <a href="#building-and-testing"><img src="https://img.shields.io/badge/target-wasm32-30363d?style=flat" alt="WebAssembly target" /></a>
+</p>
 
-[![CI](https://img.shields.io/github/actions/workflow/status/SinisterRob/reserving-kernels/ci.yml?branch=main&label=CI&style=flat)](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml)
-![Rust 1.97+](https://img.shields.io/badge/Rust-1.97%2B-f97316?style=flat)
-![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-30363d?style=flat)
-![No Unsafe](https://img.shields.io/badge/unsafe-forbidden-30363d?style=flat)
-![Deps](https://img.shields.io/badge/deps-serde%20only-30363d?style=flat)
-![WASM](https://img.shields.io/badge/target-wasm32-30363d?style=flat)
+<p align="center">
+  <a href="#quick-start">Quick Start</a> &nbsp;·&nbsp;
+  <a href="#implemented-modules">Modules</a> &nbsp;·&nbsp;
+  <a href="#performance">Performance</a> &nbsp;·&nbsp;
+  <a href="#verification">Verification</a> &nbsp;·&nbsp;
+  <a href="#building-and-testing">Build &amp; Test</a> &nbsp;·&nbsp;
+  <a href="docs/SOURCES.md">Literature</a>
+</p>
 
-Covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation).
+---
 
-Every method is implemented from peer-reviewed actuarial literature and verified against published benchmark triangles in [`tests/source_benchmarks.rs`](tests/source_benchmarks.rs). See [`docs/SOURCES.md`](docs/SOURCES.md) for full citations and equation mappings.
+`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](tests/source_benchmarks.rs)).
 
 ## Why `reserving-kernels`?
 
 - **Zero heavy dependencies:** Pure Rust with no BLAS, LAPACK, FFTW, or `ndarray`. Linear algebra, IRLS, and FFT routines are built in and compile cleanly to `wasm32` (`--features wasm`).
-- **Simple, validated triangles:** Flat, row-major `f64` grids using `NaN` for unobserved cells. Built-in validation enforces explicit monotonicity rules, with support for negative development in incurred or reinsurance triangles.
-- **Deterministic by design:** Fixed-seed PRNG streams and custom samplers ensure ODP bootstraps, multi-line correlations, and Monte Carlo runs are reproducible across native and browser targets.
+- **Validated flat triangles:** Row-major `f64` grids using `NaN` for unobserved cells, with explicit monotonicity validation and support for negative development in incurred or reinsurance triangles.
+- **Deterministic by design:** Fixed-seed PRNG streams and custom samplers keep ODP bootstraps, multi-line correlations, and Monte Carlo runs reproducible across native and browser targets.
 
 ## Quick Start
 
@@ -73,22 +84,23 @@ fn main() -> Result<(), ValidationError> {
 
 ## Implemented Modules
 
-`reserving-kernels` is organized into four main areas. See [`docs/SOURCES.md`](docs/SOURCES.md) for the full bibliography and equation traceability.
+`reserving-kernels` is organized into four areas covering 54 public modules (plus optional `wasm_exports` behind `--features wasm`).
 
 | Area | Highlights |
 | --- | --- |
-| **1. Point Estimators & Adjustments** | Chain Ladder, Bornhuetter–Ferguson, Benktander, Cape Cod (standard & generalized), Berquist–Sherman, Munich & Double Chain Ladder, Separation |
-| **2. Stochastic, 1-Year Risk & GLMs** | Mack (uni/multivariate & BF), Merz–Wüthrich 1-year CDR, ODP/Gamma/Tweedie GLMs, ODP Bootstrap, Paid–Incurred Chain, Kalman & individual-claim reserving |
-| **3. Dependence & Capital Allocation** | Iman–Conover rank correlation, synchronized multi-line bootstrap, Panjer & FFT aggregate loss convolution, VaR/TVaR/RVaR, Euler & Myers–Read allocation |
-| **4. Excess Layering & Diagnostics** | Parametric severity & LEV/excess ratios, excess-layer development, Mack diagnostic tests, backtesting, roll-forwards, and preprocessing utilities |
+| **1. Loss Development & Point Estimators** | Chain Ladder, Bornhuetter–Ferguson, Benktander, Cape Cod (standard & generalized), Berquist–Sherman, Munich & Double Chain Ladder, Separation, sub-annual grids |
+| **2. Stochastic Reserving, 1-Year Risk & GLMs** | Mack (uni/multivariate & BF), Merz–Wüthrich 1-year CDR, ODP/Gamma/Tweedie GLMs, ODP Bootstrap, Paid–Incurred Chain, Kalman & individual-claim reserving |
+| **3. Dependence, Aggregate Loss & Capital Allocation** | Iman–Conover rank correlation, synchronized multi-line bootstrap, Panjer & FFT aggregate loss convolution, VaR/TVaR/RVaR, Euler & Myers–Read allocation |
+| **4. Excess Layering, Severity & Diagnostics** | Parametric severity & LEV/excess ratios, excess-layer development, Mack diagnostic tests, backtesting, roll-forwards, and preprocessing utilities |
 
 <details>
-<summary><strong>Full module directory (50 modules)</strong></summary>
+<summary><strong>Full module directory (54 public modules)</strong></summary>
 
-#### 1. Loss Development, Point Estimators & Operational Adjustments
+### 1. Loss Development & Point Estimators
 
 | Module | Capabilities |
 | --- | --- |
+| `types`, `triangle`, `validate` | Flat row-major `Triangle` / `TriangleView`, monotonicity policies, and validation errors |
 | `ldf` | Volume-weighted, simple, geometric, median, trimmed, last-N, and masked LDFs/CDFs |
 | `tail` | Bondy, Generalized Bondy, Exponential, Inverse Power, Weibull, Clark growth-curve, and Mack tail variance |
 | `chain_ladder` | Unchecked hot-path kernels and checked `ChainLadderEngine` |
@@ -104,11 +116,11 @@ fn main() -> Result<(), ValidationError> {
 | `munich_chain_ladder` | Bivariate paid/incurred CL closing the paid-vs-incurred gap |
 | `schnieper` | Two-triangle True IBNR vs. IBNER separation with Mack-style MSEP |
 | `double_chain_ladder` | Paid + count deconvolution into reporting/payment delays, severity inflation, and RBNS/IBNR |
+| `subannual` | Asymmetric grids (2:1/4:1/12:1), 7 CDF/LDF interpolators, Bloom stubs, asymmetric CL/BF/Cape Cod/Clark/ODP, and parity checks |
 | `datasets` | Zero-I/O benchmark triangles (RAA, GenIns, Quarg & Mack, Friedland Auto) |
 | `ragged`, `triangle_algebra` | Low-level ragged link selectors and allocation-free slice transforms |
-| `subannual` | Asymmetric grids (2:1/4:1/12:1), stub ages & calendar diagonals; 7 sub-annual CDF/LDF interpolators (Linear, % Reported, Exponential, Sherman, SWIMON, Spliced Weibull, IVF12); Bloom pre-12m stubs; asymmetric CL/BF/Cape Cod/Clark MLE/ODP bootstrap; equilibrium IBNR & parity checks |
 
-#### 2. Stochastic Reserving, 1-Year Solvency & GLMs
+### 2. Stochastic Reserving, 1-Year Risk & GLMs
 
 | Module | Capabilities |
 | --- | --- |
@@ -125,7 +137,7 @@ fn main() -> Result<(), ValidationError> {
 | `glm_reserving` | Built-in QR IRLS engine for ODP, Gamma, Tweedie, and Log-normal GLMs |
 | `bootstrap_odp` | ODP GLM bootstrap with hat-matrix leverages, process variance, and 1-year CDR re-reserving |
 
-#### 3. Dependence, Aggregate Loss Convolution & Capital Allocation
+### 3. Dependence, Aggregate Loss & Capital Allocation
 
 | Module | Capabilities |
 | --- | --- |
@@ -134,16 +146,17 @@ fn main() -> Result<(), ValidationError> {
 | `aggregate_loss` | Panjer (a, b, 0) recursion, exponentially tilted FFT, and severity discretization |
 | `capital_allocation` | Euler allocation (TVaR, RVaR, SD) and Myers–Read marginal default-put allocation |
 
-#### 4. Excess Layering, Severity & Diagnostics
+### 4. Excess Layering, Severity & Diagnostics
 
 | Module | Capabilities |
 | --- | --- |
 | `severity` | Closed-form LEV, survival/PDF, layer losses, and excess ratios (Lognormal, Pareto, Exponential, Mixed Exp, GPD) |
 | `excess_layers` | Parametric layering, exceedance probabilities, and antithetic Monte Carlo simulation |
 | `excess_development` | Excess-of-L, limited-to-L, and bounded-layer CDFs/LDFs with exact conservation |
-| `diagnostics` | Mack Spearman & calendar-year tests, A-vs-E, leave-one-out fragility, and paid/incurred reconciliation |
+| `diagnostics` | Mack Spearman & calendar-year tests, actual vs. expected, leave-one-out fragility, and paid/incurred reconciliation |
 | `selection`, `reserve_rollforward`, `exhibit` | Holdout LDF backtesting, valuation roll-forwards, and JSON exhibit DTOs |
-| `large_loss`, `trend`, `onlevel`, `count_development`, `apriori`, `aggregate` | Preprocessing utilities (capping, trending, parallelogram on-leveling, count dev, a priori builders) |
+| `large_loss`, `trend`, `onlevel` | Large-loss capping, loss trending, and parallelogram rate on-leveling |
+| `count_development`, `apriori`, `aggregate` | Claim-count development, a priori loss-ratio builders, and triangle aggregation |
 
 </details>
 
@@ -157,14 +170,14 @@ Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kerne
 
 | Benchmark | `reserving-kernels` | R `ChainLadder` | `chainladder-python` | vs. R | vs. Python |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Volume-Weighted LDFs (40×40) | **0.28 µs** | 840 µs | 5,710 µs | 3,040× | 20,680× |
-| Mack Chain Ladder (RAA 10×10) | **0.27 µs** | 5,840 µs | 25,446 µs | 21,820× | 95,060× |
-| Mack Chain Ladder (40×40) | **3.08 µs** | 24,650 µs | 30,077 µs | 7,990× | 9,750× |
-| Merz–Wüthrich 1-Yr CDR (RAA) | **0.39 µs** | 9,420 µs | — | 23,900× | — |
-| Clark Loglogistic MLE (GenIns) | **11.5 µs** | 8,300 µs | 12,026 µs | 720× | 1,043× |
-| ODP GLM Reserve (GenIns) | **42.6 µs** | 5,300 µs | 219,562 µs | 124× | 5,155× |
-| ODP Bootstrap (GenIns, 1k sims) | **0.19 ms** | 216.5 ms | 76.8 ms | 1,160× | 412× |
-| ODP Bootstrap (GenIns, 10k sims) | **1.91 ms** | 2,223 ms | 416.2 ms | 1,166× | 218× |
+| Volume-Weighted LDFs (40×40) | **0.28 µs** | 840 µs | 5,710 µs | 3,030× | 20,610× |
+| Mack Chain Ladder (RAA 10×10) | **0.26 µs** | 5,840 µs | 25,446 µs | 22,090× | 96,270× |
+| Mack Chain Ladder (40×40) | **3.07 µs** | 24,650 µs | 30,077 µs | 8,020× | 9,790× |
+| Merz–Wüthrich 1-Yr CDR (RAA) | **0.39 µs** | 9,420 µs | — | 23,890× | — |
+| Clark Loglogistic MLE (GenIns) | **11.5 µs** | 8,300 µs | 12,026 µs | 720× | 1,040× |
+| ODP GLM Reserve (GenIns) | **42.9 µs** | 5,300 µs | 219.6 ms | 124× | 5,120× |
+| ODP Bootstrap (GenIns, 1k sims) | **0.19 ms** | 216.5 ms | 76.8 ms | 1,150× | 409× |
+| ODP Bootstrap (GenIns, 10k sims) | **1.91 ms** | 2,223 ms | 416.2 ms | 1,160× | 218× |
 
 *Note: `reserving-kernels` operates directly on validated `f64` slices with reusable scratch space, whereas the R and Python libraries carry DataFrame and S3/S4 object overhead. All point estimates and Mack / Merz–Wüthrich standard errors were verified for numerical parity before timing.*
 
@@ -175,14 +188,14 @@ Kernels are tested against published actuarial datasets and closed-form mathemat
 - **Benchmark triangles:** Mack (1993) RAA, Taylor & Ashe / England & Verrall GenIns, Friedland US Industry Auto, and Quarg & Mack (2004).
 - **Exact identities:** Merz–Wüthrich multi-year run-off summing to Mack ultimate MSEP; ODP GLM matching exact analytical leverages and dispersion; Panjer vs. FFT aggregate loss agreement; and full-allocation conservation for Euler TVaR and Myers–Read.
 
-See [`docs/SOURCES.md`](docs/SOURCES.md) for full citations and [`tests/source_benchmarks.rs`](tests/source_benchmarks.rs) for the test suite.
+Full citations and equation mappings live in [`docs/SOURCES.md`](docs/SOURCES.md); parity tests live in [`tests/source_benchmarks.rs`](tests/source_benchmarks.rs).
 
-## Building & Testing
+## Building and Testing
 
 ```bash
 # Run unit, integration, doctest, and benchmark-parity tests
 cargo test --all-targets --all-features
-cargo test --doc
+cargo test --doc --all-features
 
 # Run the JSON exhibit example
 cargo run --example export_exhibit
@@ -191,7 +204,7 @@ cargo run --example export_exhibit
 cargo bench --bench kernels -- --save-baseline main
 cargo bench --bench kernels -- --baseline main
 
-# Profile a specific kernel under release optimization
+# Profile a specific kernel under release optimization (requires samply)
 samply record cargo bench --bench kernels -- glm_odp_genins --profile-time 5
 
 # Build for WebAssembly

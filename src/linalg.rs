@@ -47,7 +47,6 @@ pub(crate) fn cholesky_lower(a: &[f64], dim: usize) -> Result<Vec<f64>, Validati
 }
 
 /// Solve lower-triangular `L y = b` by forward substitution into `y` (zero allocation).
-#[allow(dead_code)]
 pub(crate) fn solve_lower_into(l: &[f64], dim: usize, b: &[f64], y: &mut [f64]) {
     for i in 0..dim {
         let mut sum = b[i];
@@ -57,28 +56,6 @@ pub(crate) fn solve_lower_into(l: &[f64], dim: usize, b: &[f64], y: &mut [f64]) 
         }
         y[i] = sum / l[i * dim + i];
     }
-}
-
-/// Solve lower-triangular `L y = b` by forward substitution.
-#[allow(dead_code)]
-pub(crate) fn solve_lower(l: &[f64], dim: usize, b: &[f64]) -> Vec<f64> {
-    let mut y = vec![0.0; dim];
-    solve_lower_into(l, dim, b, &mut y);
-    y
-}
-
-/// Solve upper-triangular `L^T x = y` by backward substitution given lower-triangular `L`.
-#[allow(dead_code)]
-pub(crate) fn solve_lower_transpose(l: &[f64], dim: usize, y: &[f64]) -> Vec<f64> {
-    let mut x = vec![0.0; dim];
-    for i in (0..dim).rev() {
-        let mut sum = y[i];
-        for k in (i + 1)..dim {
-            sum -= l[k * dim + i] * x[k];
-        }
-        x[i] = sum / l[i * dim + i];
-    }
-    x
 }
 
 /// Invert a symmetric positive-definite `dim × dim` matrix `A` via Cholesky factorization.
@@ -123,7 +100,6 @@ pub(crate) fn invert_spd(a: &[f64], dim: usize) -> Result<Vec<f64>, ValidationEr
 
 /// Solve a general `dim × dim` linear system `A x = b` via Gaussian elimination
 /// with partial pivoting.
-#[allow(dead_code)]
 pub(crate) fn solve_general(a: &[f64], dim: usize, b: &[f64]) -> Result<Vec<f64>, ValidationError> {
     if a.len() != dim * dim || b.len() != dim || dim == 0 {
         return Err(ValidationError::ShapeMismatch);
@@ -667,7 +643,6 @@ pub(crate) fn weighted_least_squares_qr_beta_into(
 
 /// Fast Householder QR weighted least squares returning only `beta` (skipping
 /// `R^{-1}`, `(X^T W X)^{-1}`, and hat leverages). Ideal for inner IRLS loops.
-#[allow(dead_code)]
 pub(crate) fn weighted_least_squares_qr_beta_only(
     x: &[f64],
     y: &[f64],

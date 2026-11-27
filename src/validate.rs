@@ -24,7 +24,8 @@ pub enum MonotonicityPolicy {
 }
 
 /// Validation failure modes for triangle inputs.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[non_exhaustive]
 pub enum ValidationError {
     /// `data.len() != n_origins * n_devs`.
     ShapeMismatch,

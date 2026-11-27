@@ -119,6 +119,7 @@ pub fn project_unchecked(
 }
 
 /// Checked Generalized Cape Cod service (Gluck 1997).
+#[derive(Debug, Clone, Copy, Default)]
 pub struct GeneralizedCapeCodEngine;
 
 impl GeneralizedCapeCodEngine {

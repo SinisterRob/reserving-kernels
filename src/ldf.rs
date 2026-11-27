@@ -600,6 +600,7 @@ pub fn weighted_volume_ldfs(
 // ===========================================================================
 
 /// Section 2 development-factor service.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct DevelopmentFactorEngine;
 
 impl DevelopmentFactorEngine {
