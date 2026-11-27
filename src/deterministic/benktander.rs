@@ -67,12 +67,24 @@ pub struct BenktanderProjection {
     pub total_ultimate: f64,
 }
 
-/// Mack (2000, Theorem 1) MSE-optimal credibility weight `Z_i^* = p_i / (p_i + t_i)`
-/// for combining Chain Ladder and a priori ultimates, where `p_i` is maturity
-/// (`1 / CDF`) and `t_i = Var(process) / Var(prior)` is the variance ratio.
+/// Mack (2000, Theorem 3) MSE-optimal credibility weight `c_i^* = p_i / (p_i + t_i)`
+/// for blending **Chain Ladder and Bornhuetter–Ferguson reserves**:
 ///
-/// Notice `t_i = 0` yields Chain Ladder (`Z = 1`), `t_i = 1 - p_i` yields BF
-/// (`Z = p_i`), and `t_i = (1 - p_i)^2 / (2 - p_i)` yields Benktander.
+/// ```text
+/// R_i(c) = c · R_i^{CL} + (1 - c) · R_i^{BF}
+/// ```
+///
+/// where `p_i = 1 / CDF` is maturity and `t_i = Var(process) / Var(prior)` is
+/// Mack's variance ratio.
+///
+/// Special cases:
+/// * `t_i = 0`: Chain Ladder (`c^* = 1`).
+/// * `t_i = 1 - p_i`: classical Benktander `m = 2` (`c^* = p_i`).
+/// * `t_i → ∞`: Bornhuetter–Ferguson `m = 1` (`c^* → 0`).
+///
+/// For the equivalent weight `Z_i^*` on `U_i^{CL}` in a **Chain Ladder / a priori
+/// ultimate blend** `U_i(Z) = Z · U_i^{CL} + (1 - Z) · E_i`, use
+/// [`mack_optimal_ultimate_credibility`], which computes `Z_i^* = p_i + (1 - p_i) c_i^*`.
 #[inline]
 pub fn mack_optimal_credibility(
     maturity: f64,
@@ -96,6 +108,29 @@ pub fn mack_optimal_credibility(
     } else {
         Ok(maturity / denom)
     }
+}
+
+/// Equivalent Chain Ladder credibility weight `Z_i^* = p_i + (1 - p_i) c_i^*`
+/// in a **Chain Ladder / a priori ultimate blend**:
+///
+/// ```text
+/// U_i(Z) = Z · U_i^{CL} + (1 - Z) · E_i
+/// ```
+///
+/// derived from Mack (2000, Theorem 3)'s CL/BF reserve weight
+/// `c_i^* = p_i / (p_i + t_i)` ([`mack_optimal_credibility`]).
+///
+/// Special cases:
+/// * `t_i = 0`: Chain Ladder (`Z^* = 1`).
+/// * `t_i = 1 - p_i`: classical Benktander `m = 2` (`Z^* = p_i (2 - p_i) = 1 - (1 - p_i)^2`).
+/// * `t_i → ∞`: Bornhuetter–Ferguson `m = 1` (`Z^* → p_i`).
+#[inline]
+pub fn mack_optimal_ultimate_credibility(
+    maturity: f64,
+    variance_ratio_t: f64,
+) -> Result<f64, ValidationError> {
+    let c_star = mack_optimal_credibility(maturity, variance_ratio_t)?;
+    Ok(maturity + (1.0 - maturity) * c_star)
 }
 
 /// Checked Benktander–Hovinen reserving service.
@@ -302,9 +337,44 @@ mod tests {
     #[test]
     fn mack_optimal_credibility_matches_special_cases() {
         let p = 0.4;
+        // Mack (2000, Theorem 3) CL/BF reserve weight c* = p / (p + t):
+        // t = 0 -> CL (c* = 1), t = 1 - p -> Benktander (c* = p), large t -> BF (c* -> 0).
         assert!((mack_optimal_credibility(p, 0.0).unwrap() - 1.0).abs() < 1e-12);
         assert!((mack_optimal_credibility(p, 1.0 - p).unwrap() - p).abs() < 1e-12);
-        let t_bk = (1.0 - p).powi(2) / (2.0 - p);
-        assert!((mack_optimal_credibility(p, t_bk).unwrap() - p * (2.0 - p)).abs() < 1e-12);
+        assert!(mack_optimal_credibility(p, 1e12).unwrap() < 1e-11);
+
+        // Equivalent CL / a priori ultimate weight Z* = p + (1 - p) c*:
+        // t = 0 -> CL (Z* = 1), t = 1 - p -> Benktander (Z* = p(2 - p)), large t -> BF (Z* -> p).
+        assert!((mack_optimal_ultimate_credibility(p, 0.0).unwrap() - 1.0).abs() < 1e-12);
+        assert!(
+            (mack_optimal_ultimate_credibility(p, 1.0 - p).unwrap() - p * (2.0 - p)).abs() < 1e-12
+        );
+        assert!((mack_optimal_ultimate_credibility(p, 1e12).unwrap() - p).abs() < 1e-11);
+
+        // Cross-check CL/BF reserve blend identity:
+        // C + c* R_CL + (1 - c*) R_BF == Z* U_CL + (1 - Z*) E.
+        let tri = sample_triangle();
+        let factors = DevelopmentFactorEngine::volume_weighted(&tri.view(), 1.0).expect("factors");
+        let expected = [2000.0, 2200.0, 2600.0, 3200.0];
+        let bf = BornhuetterFergusonEngine::project_from_expected_ultimate(
+            &tri.view(),
+            &factors,
+            &expected,
+        )
+        .expect("bf");
+        let cl = ChainLadderEngine::project(&tri.view(), &factors).expect("cl");
+        let bk2 =
+            BenktanderEngine::project_from_expected_ultimate(&tri.view(), &factors, &expected, 2)
+                .expect("bk2");
+
+        for i in 0..4 {
+            let pi = bk2.maturity[i];
+            let c_bk = mack_optimal_credibility(pi, 1.0 - pi).unwrap();
+            let z_bk = mack_optimal_ultimate_credibility(pi, 1.0 - pi).unwrap();
+            let res_from_c = c_bk * cl.reserves[i] + (1.0 - c_bk) * bf.reserves[i];
+            let ult_from_z = z_bk * cl.ultimates[i] + (1.0 - z_bk) * expected[i];
+            assert!((res_from_c - bk2.reserves[i]).abs() < 1e-10);
+            assert!((ult_from_z - bk2.ultimates[i]).abs() < 1e-10);
+        }
     }
 }

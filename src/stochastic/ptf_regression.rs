@@ -5,6 +5,12 @@
 //!
 //! * G. Barnett & B. Zehnwirth, *"Best Estimates for Reserves"*, *PCAS*,
 //!   Vol. LXXXVII (2000), pp. 245–321.
+//! * D. Kuang, B. Nielsen & J. P. Nielsen, *"Identification of the
+//!   Age-Period-Cohort Model and the Extended Chain-Ladder Model"*,
+//!   *Biometrika*, Vol. 95, No. 4 (2008), pp. 979–984; and *"Forecasting with
+//!   the Age-Period-Cohort Model and the Extended Chain-Ladder Model"*,
+//!   *Biometrika*, Vol. 95, No. 4 (2008), pp. 985–991 (drift transformation
+//!   invariance `(a_i, b_j, c_t) -> (a_i + d·i, b_j + d·j, c_t - d·t)`).
 //!
 //! ## Model Specification
 //!
@@ -760,5 +766,129 @@ mod tests {
             res.total_reserve,
             true_reserve
         );
+    }
+
+    #[test]
+    fn ptf_apc_reparameterization_invariance_on_future_cell_means() {
+        // Kuang, Nielsen & Nielsen (2008, Biometrika 95(4)):
+        // In a saturated predictor a_i + b_j + c_{i+j}, shifting
+        //   (a_i, b_j, c_t) -> (a_i + d*i, b_j + d*j, c_t - d*t)
+        // leaves every observed upper-triangle cell identically unchanged.
+        // Under an explicit extrapolation policy:
+        // 1. Reparameterized DGP triangles produce identical fitted values,
+        //    identifiable calendar acceleration (ChangePointsOnly), and future
+        //    cell means.
+        // 2. Two equivalent design parameterizations of a linear drift
+        //    (Constant accident + ConstantRate calendar vs. Linear accident +
+        //    no calendar slope, extrapolated with the same declared future
+        //    calendar rate) produce identical fitted upper-triangle values and
+        //    identical future cell means.
+        let n = 7usize;
+        let alpha = [9.5, 9.65, 9.72, 9.90, 9.85, 10.05, 10.12];
+        let beta = [0.0, 0.40, 0.15, -0.30, -0.80, -1.35, -1.90];
+        let iota0 = 0.05_f64;
+        let knot = 3usize;
+        let shift = 0.09_f64;
+
+        let build_triangle = |drift_d: f64| -> Triangle {
+            let mut cum = vec![NAN; n * n];
+            for i in 0..n {
+                let mut running = 0.0;
+                for j in 0..(n - i) {
+                    let t = i + j;
+                    let a_i = alpha[i] + drift_d * i as f64;
+                    let b_j = beta[j] + drift_d * j as f64;
+                    let c_t = (iota0 - drift_d) * t as f64 + shift * t.saturating_sub(knot) as f64;
+                    running += (a_i + b_j + c_t).exp();
+                    cum[i * n + j] = running;
+                }
+            }
+            Triangle::new(n, n, cum)
+        };
+
+        let tri_base = build_triangle(0.0);
+        let tri_shifted = build_triangle(0.17);
+
+        let opts_cp = PtfOptions {
+            accident: AccidentSpec::PerOrigin,
+            development: DevelopmentSpec::PerPeriod,
+            calendar: CalendarSpec::ChangePointsOnly { knots: vec![knot] },
+            future_calendar_rate: Some(0.06),
+            ..PtfOptions::default()
+        };
+        let fit_base = fit_ptf(&tri_base.view(), &opts_cp).expect("fit_base");
+        let fit_shifted = fit_ptf(&tri_shifted.view(), &opts_cp).expect("fit_shifted");
+
+        // Identifiable calendar change-point rate is recovered identically.
+        assert!((fit_base.calendar_inflation_rates[knot] - shift).abs() < 1e-10);
+        assert!((fit_shifted.calendar_inflation_rates[knot] - shift).abs() < 1e-10);
+        assert!(
+            (fit_base.total_reserve - fit_shifted.total_reserve).abs()
+                <= 1e-9 * fit_base.total_reserve
+        );
+        for (a, b) in fit_base
+            .fitted_incremental
+            .iter()
+            .zip(&fit_shifted.fitted_incremental)
+        {
+            assert!((a - b).abs() <= 1e-9 * (1.0 + a.abs()));
+        }
+
+        // Equivalent linear-drift parameterizations on a pure-drift triangle:
+        // Model A puts the linear drift in CalendarSpec::ConstantRate (d_cal = d).
+        // Model B puts the same drift in AccidentSpec::PiecewiseLinear { knots: [] }
+        // (linear accident slope d) with CalendarSpec::None, and projects future
+        // calendar diagonals at future_calendar_rate = Some(0.0) vs Model A's
+        // future_calendar_rate = Some(0.0) (note: in Model B the accident level
+        // a_i = a_0 + d*i already carries d*i into future cells, while Model A
+        // freezes calendar at last_obs_t and adds rate*(t - last_obs_t)).
+        // When both declare the same total future cell log-drift (Model A uses
+        // natural ConstantRate continuation, Model B adds no extra calendar slope
+        // but carries d*i + d*j = d*t because PerPeriod absorbs +d*j!), every
+        // upper-triangle fit AND every future cell mean matches identically.
+        let mut pure_drift = vec![NAN; n * n];
+        let d = 0.06_f64;
+        for i in 0..n {
+            let mut running = 0.0;
+            for j in 0..(n - i) {
+                let t = i + j;
+                running += (9.5 + beta[j] + d * t as f64).exp();
+                pure_drift[i * n + j] = running;
+            }
+        }
+        let tri_drift = Triangle::new(n, n, pure_drift);
+
+        let opts_cal_drift = PtfOptions {
+            accident: AccidentSpec::Constant,
+            development: DevelopmentSpec::PerPeriod,
+            calendar: CalendarSpec::ConstantRate,
+            future_calendar_rate: None, // extrapolates estimated rate d into future t
+            ..PtfOptions::default()
+        };
+        let opts_acc_drift = PtfOptions {
+            accident: AccidentSpec::PiecewiseLinear { knots: vec![] },
+            development: DevelopmentSpec::PerPeriod,
+            calendar: CalendarSpec::None,
+            future_calendar_rate: None, // linear accident d*i + shifted dev b_j + d*j = d*t
+            ..PtfOptions::default()
+        };
+
+        let fit_cal = fit_ptf(&tri_drift.view(), &opts_cal_drift).expect("fit_cal");
+        let fit_acc = fit_ptf(&tri_drift.view(), &opts_acc_drift).expect("fit_acc");
+
+        assert!(fit_cal.sigma < 1e-10 && fit_acc.sigma < 1e-10);
+        assert!(
+            (fit_cal.total_reserve - fit_acc.total_reserve).abs() <= 1e-9 * fit_cal.total_reserve,
+            "cal={} acc={}",
+            fit_cal.total_reserve,
+            fit_acc.total_reserve
+        );
+        for (a, b) in fit_cal
+            .fitted_incremental
+            .iter()
+            .zip(&fit_acc.fitted_incremental)
+        {
+            assert!((a - b).abs() <= 1e-9 * (1.0 + a.abs()));
+        }
     }
 }

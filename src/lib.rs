@@ -63,7 +63,9 @@ pub mod prelude {
         myers_read_from_default_ratio,
     };
     pub use crate::capital::dependence::{CorrelationType, ImanConoverResult, iman_conover};
-    pub use crate::capital::reserve_distribution::{rvar, tvar_coherent, var_least};
+    pub use crate::capital::reserve_distribution::{
+        crps_empirical, interval_score, pit_empirical, rvar, tvar_coherent, var_least,
+    };
     pub use crate::datasets::{FriedlandAutoDataset, PaidIncurredDataset};
     pub use crate::deterministic::benktander::{BenktanderEngine, BenktanderProjection};
     pub use crate::deterministic::bf::{BornhuetterFergusonEngine, BornhuetterFergusonProjection};

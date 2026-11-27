@@ -452,6 +452,18 @@ fn friedland_2010_us_industry_auto_cross_method_consistency() {
 
 #[test]
 fn quarg_mack_2004_and_sherman_1984_tail_benchmarks() {
+    // Published Quarg & Mack (2004) 7×7 regression slopes and gap reduction.
+    let qm = reserving_kernels::datasets::quarg_mack_2004();
+    let qm_mcl =
+        munich_chain_ladder::project(&qm.paid.view(), &qm.incurred.view(), 1.0, 1.0).expect("qm");
+    assert!((qm_mcl.lambda_paid - 0.636_021).abs() < 1e-4);
+    assert!((qm_mcl.lambda_incurred - 0.436_187).abs() < 1e-4);
+    let trad_gap =
+        (qm_mcl.traditional_paid_ultimates[6] - qm_mcl.traditional_incurred_ultimates[6]).abs();
+    let mcl_gap = (qm_mcl.paid_ultimates[6] - qm_mcl.incurred_ultimates[6]).abs();
+    assert!(mcl_gap < 0.1 * trad_gap);
+
+    // Smoke check on Friedland US Industry Auto 10×10.
     let (paid, reported, _) = friedland_us_industry_auto();
     let mcl = munich_chain_ladder::project(&paid.view(), &reported.view(), 1.0, 1.0).expect("mcl");
     assert!(mcl.total_paid_reserve > 0.0);
@@ -1532,6 +1544,13 @@ fn england_verrall_wuthrich_2019_one_year_re_reserving_genins_table_2_benchmark(
     .expect("mack normal runoff");
     assert_eq!(mack_normal.failed_iterations, 0);
     assert!((mack_normal.opening_total_reserve - 18_680_855.61).abs() < 1.0);
+    // Verify negligible mean bias alongside SD so simulated SD ≈ simulated RMSE.
+    assert!(
+        mack_normal.adverse_development_summary.mean.abs() / mack_normal.opening_total_reserve
+            < 0.005,
+        "Normal Mack 1yr mean bias={}",
+        mack_normal.adverse_development_summary.mean
+    );
     assert!(
         close_rel(
             mack_normal.adverse_development_summary.std_dev,
@@ -1554,6 +1573,11 @@ fn england_verrall_wuthrich_2019_one_year_re_reserving_genins_table_2_benchmark(
     // Non-parametric Mack bootstrap residuals (default).
     let mack_boot = mack_one_year_runoff(&tri.view(), 20_000, 20_190_111).expect("mack boot");
     assert_eq!(mack_boot.failed_iterations, 0);
+    assert!(
+        mack_boot.adverse_development_summary.mean.abs() / mack_boot.opening_total_reserve < 0.005,
+        "Bootstrap Mack 1yr mean bias={}",
+        mack_boot.adverse_development_summary.mean
+    );
     assert!(
         close_rel(
             mack_boot.adverse_development_summary.std_dev,

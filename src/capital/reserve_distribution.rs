@@ -1,16 +1,22 @@
-//! Shared summary math and coherent risk measures for reserve-simulation output.
+//! Shared summary math, risk measures, and proper predictive-scoring rules for
+//! reserve-simulation output.
 //!
 //! Includes both the legacy upper-rank empirical quantile / TCE helpers
-//! ([`quantile`], [`tvar`]) and the exact subadditive discrete risk-measure
-//! algorithms from CAS Monograph No. 15 (Mildenhall & Major, *Introduction to
-//! Capital Modeling and Portfolio Management*, §3.2–§3.4):
+//! ([`quantile`], [`tvar`]), the exact discrete risk-measure algorithms from
+//! CAS Monograph No. 15 (Mildenhall & Major, *Introduction to Capital Modeling
+//! and Portfolio Management*, §3.2–§3.4), and stateless proper scoring rules
+//! (Gneiting & Raftery 2007) for out-of-sample predictive validation:
 //!
 //! * [`var_least`] — Algorithm 3.4.2 (least quantile `F^-(p)`).
 //! * [`tvar_coherent`] — Algorithm 3.4.3 (exact integral Tail Value at Risk
 //!   `TVaR_p(X) = (1 / (1 - p)) ∫_p^1 F^-(s) ds`, guaranteed subadditive even
 //!   on discrete / tied empirical distributions).
 //! * [`rvar`] — Range Value at Risk `RVaR_{p_low, p_high}(X)` (Cont et al.
-//!   2010; CAS Monograph No. 15, §3.3).
+//!   2010; CAS Monograph No. 15, §3.3; note general RVaR is not subadditive).
+//! * [`crps_empirical`], [`pit_empirical`], [`interval_score`] — exact
+//!   empirical Continuous Ranked Probability Score, Probability Integral
+//!   Transform, and Winkler interval score for evaluating forecast draws
+//!   against realized outcomes.
 
 use crate::validate::{ValidationError, validate_finite_slice};
 
@@ -357,6 +363,69 @@ pub(crate) fn summarize_with_scratch(
     })
 }
 
+/// Exact empirical Continuous Ranked Probability Score (Gneiting & Raftery 2007)
+/// for a predictive sample `draws` evaluated at realized outcome `observed`:
+///
+/// ```text
+/// CRPS(F_hat, y) = (1 / N) sum_i |x_i - y| - (1 / (2 N^2)) sum_{i,j} |x_i - x_j|
+/// ```
+///
+/// Computed in `O(N log N)` via the sorted order-statistic identity
+/// `sum_{i,j} |x_i - x_j| = 2 sum_{k=0}^{N-1} (2k - N + 1) x_{(k)}`.
+/// Lower is better; reduces to `|x - y|` for a degenerate point forecast.
+pub fn crps_empirical(draws: &[f64], observed: f64) -> Result<f64, ValidationError> {
+    if !observed.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
+    let xs = sorted(draws)?;
+    let n = xs.len() as f64;
+    let term1 = xs.iter().map(|&x| (x - observed).abs()).sum::<f64>() / n;
+    let spread = xs
+        .iter()
+        .enumerate()
+        .map(|(k, &x)| (2.0 * k as f64 - n + 1.0) * x)
+        .sum::<f64>()
+        / (n * n);
+    Ok((term1 - spread).max(0.0))
+}
+
+/// Empirical Probability Integral Transform `F_hat(observed) = (1 / N) #{x_i <= observed}`
+/// in `[0, 1]` for evaluating predictive calibration of `draws` against `observed`.
+pub fn pit_empirical(draws: &[f64], observed: f64) -> Result<f64, ValidationError> {
+    if !observed.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
+    if draws.is_empty() {
+        return Err(ValidationError::ShapeMismatch);
+    }
+    validate_finite_slice(draws)?;
+    let count = draws.iter().filter(|&&x| x <= observed).count();
+    Ok(count as f64 / draws.len() as f64)
+}
+
+/// Proper central `(1 - alpha)` Winkler / Gneiting–Raftery interval score
+/// evaluated at `observed` using empirical quantiles `[q_{alpha/2}, q_{1 - alpha/2}]`:
+///
+/// ```text
+/// S_alpha(l, u; y) = (u - l) + (2 / alpha) * max(l - y, 0) + (2 / alpha) * max(y - u, 0)
+/// ```
+///
+/// Requires `0 < alpha < 1`. Lower is better.
+pub fn interval_score(draws: &[f64], observed: f64, alpha: f64) -> Result<f64, ValidationError> {
+    if !observed.is_finite() || !alpha.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
+    if alpha <= 0.0 || alpha >= 1.0 {
+        return Err(ValidationError::InvalidProbability { value: alpha });
+    }
+    let xs = sorted(draws)?;
+    let lower = xs[quantile_rank_index(xs.len(), 0.5 * alpha)];
+    let upper = xs[quantile_rank_index(xs.len(), 1.0 - 0.5 * alpha)];
+    let width = upper - lower;
+    let penalty = (2.0 / alpha) * ((lower - observed).max(0.0) + (observed - upper).max(0.0));
+    Ok(width + penalty)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,6 +490,44 @@ mod tests {
         assert_eq!(
             quantile(&values, 1.1),
             Err(ValidationError::InvalidProbability { value: 1.1 })
+        );
+    }
+
+    #[test]
+    fn empirical_scoring_rules_satisfy_exact_identities() {
+        // Point forecast: CRPS reduces to |x - y|.
+        let point = [100.0; 10];
+        assert!(close(crps_empirical(&point, 115.0).unwrap(), 15.0));
+        assert!(close(crps_empirical(&point, 100.0).unwrap(), 0.0));
+
+        // Direct O(N^2) verification on an unsorted sample.
+        let draws: [f64; 5] = [14.0, 2.0, 9.0, 20.0, 5.0];
+        let y = 11.0_f64;
+        let n = draws.len() as f64;
+        let term1: f64 = draws.iter().map(|&x| (x - y).abs()).sum::<f64>() / n;
+        let mut pair_sum = 0.0;
+        for &a in &draws {
+            for &b in &draws {
+                pair_sum += (a - b).abs();
+            }
+        }
+        let expected_crps = term1 - pair_sum / (2.0 * n * n);
+        assert!(close(crps_empirical(&draws, y).unwrap(), expected_crps));
+
+        // PIT: 3 of 5 draws (2, 5, 9) are <= 11.0.
+        assert!(close(pit_empirical(&draws, y).unwrap(), 0.6));
+        assert!(close(pit_empirical(&draws, 1.0).unwrap(), 0.0));
+        assert!(close(pit_empirical(&draws, 25.0).unwrap(), 1.0));
+
+        // Winkler interval score: sorted draws [2, 5, 9, 14, 20], alpha = 0.2 -> [q_0.1=2, q_0.9=20].
+        assert!(close(interval_score(&draws, 11.0, 0.2).unwrap(), 18.0));
+        assert!(close(
+            interval_score(&draws, 25.0, 0.2).unwrap(),
+            18.0 + (2.0 / 0.2) * 5.0
+        ));
+        assert_eq!(
+            interval_score(&draws, 11.0, 0.0),
+            Err(ValidationError::InvalidProbability { value: 0.0 })
         );
     }
 }
