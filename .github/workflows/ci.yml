@@ -20,6 +20,7 @@ jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -30,6 +31,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -45,6 +47,7 @@ jobs:
 
   test:
     name: Test (${{ matrix.os }})
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -67,6 +70,7 @@ jobs:
   msrv:
     name: MSRV (1.97)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
@@ -85,6 +89,7 @@ jobs:
   docs:
     name: Rustdoc
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -97,6 +102,7 @@ jobs:
   wasm:
     name: WebAssembly
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -111,9 +117,30 @@ jobs:
       - name: Smoke-test WASM C-ABI exports
         run: node scripts/wasm-smoke.mjs target/wasm32-unknown-unknown/release/reserving_kernels.wasm
 
+  security:
+    name: Security & Scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          arguments: --all-features
+      - name: Lint hooks and shell scripts
+        run: shellcheck .githooks/* scripts/*.sh
+      - name: Syntax-check Python and Node scripts
+        run: |
+          for py in scripts/*.py; do
+            [[ -f "$py" ]] && python3 -m py_compile "$py"
+          done
+          for js in scripts/*.mjs scripts/*.js; do
+            [[ -f "$js" ]] && node --check "$js"
+          done
+
   package:
     name: Package & Bench Compile
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -126,8 +153,9 @@ jobs:
   ci-pass:
     name: CI Pass
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: always()
-    needs: [fmt, clippy, test, msrv, docs, wasm, package]
+    needs: [fmt, clippy, test, msrv, docs, wasm, security, package]
     steps:
       - name: Verify all required CI jobs succeeded
         shell: bash
@@ -139,6 +167,7 @@ jobs:
             msrv=${{ needs.msrv.result }}
             docs=${{ needs.docs.result }}
             wasm=${{ needs.wasm.result }}
+            security=${{ needs.security.result }}
             package=${{ needs.package.result }}
         run: |
           failed=0

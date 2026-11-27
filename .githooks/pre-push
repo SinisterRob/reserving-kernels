@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Pre-push hook for reserving-kernels:
-#   - When the Rust working tree is clean: runs rustfmt, clippy (-D warnings),
-#     unit/integration/doc tests before pushing to remote.
-#   - When unstaged Rust edits exist (e.g. concurrent mesh/agent work): validates
-#     rustfmt on committed HEAD files touched since upstream so pushes stay safe
-#     without blocking on unrelated unstaged WIP.
+#   - Full CI parity: fmt, clippy (default + all-features + lib panic/unwrap-free),
+#     rustdoc (-D warnings), unit/integration/doc tests, release benches, MSRV 1.97.0,
+#     wasm32 release build + Node C-ABI smoke test, cargo-deny, cargo-audit,
+#     cargo-machete, and script linting (shellcheck, py_compile, node --check).
+#   - Safe with concurrent unstaged edits: if the working tree has unstaged Rust
+#     or Cargo changes, verifies HEAD in an isolated ephemeral git worktree
+#     reusing CARGO_TARGET_DIR so pushes never skip CI checks and never touch WIP.
 #
 # Bypass in an emergency with: SKIP_HOOKS=1 git push ...
 
@@ -19,50 +21,88 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 0
 fi
 
-if ! git diff --quiet -- '*.rs'; then
-  echo "pre-push: unstaged .rs edits detected; checking rustfmt on committed HEAD changes only."
-  BASE="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || echo 'HEAD~1')"
-  CHANGED_RS=()
-  while IFS= read -r -d '' file; do
-    CHANGED_RS+=("$file")
-  done < <(git diff --name-only --diff-filter=ACMR -z "$BASE...HEAD" -- '*.rs' 2>/dev/null || true)
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+WORK_DIR="$REPO_ROOT"
+EPHEMERAL_WT=""
 
-  FAILED=0
-  for file in "${CHANGED_RS[@]}"; do
-    if ! diff -u \
-      --label "HEAD/$file" <(git show "HEAD:$file") \
-      --label "rustfmt/$file" <(git show "HEAD:$file" | rustfmt --edition 2024); then
-      FAILED=1
-    fi
-  done
-  if [[ "$FAILED" -ne 0 ]]; then
-    echo "pre-push: committed Rust changes fail rustfmt; format before pushing." >&2
-    exit 1
+cleanup() {
+  if [[ -n "$EPHEMERAL_WT" && -d "$EPHEMERAL_WT" ]]; then
+    git -C "$REPO_ROOT" worktree remove --force "$EPHEMERAL_WT" >/dev/null 2>&1 || rm -rf "$EPHEMERAL_WT"
   fi
-  echo "pre-push: committed HEAD rustfmt check passed (skipped full clippy/test due to unstaged .rs edits)."
-  exit 0
+}
+trap cleanup EXIT
+
+if ! git -C "$REPO_ROOT" diff --quiet -- '*.rs' 'Cargo.toml' 'Cargo.lock' 'deny.toml'; then
+  echo "pre-push: unstaged Rust/Cargo edits detected; validating committed HEAD in an isolated worktree..."
+  EPHEMERAL_WT="$(mktemp -d "${TMPDIR:-/tmp}/reserving-kernels-prepush.XXXXXX")"
+  git -C "$REPO_ROOT" worktree add --detach --quiet "$EPHEMERAL_WT" HEAD
+  WORK_DIR="$EPHEMERAL_WT"
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 fi
 
-echo "pre-push: running CI checks (fmt, clippy, rustdoc, tests, wasm, benches)..."
+cd "$WORK_DIR"
+
+echo "pre-push: [1/6] Formatting & Clippy gates..."
 cargo fmt --all -- --check
 cargo clippy --all-targets --no-default-features -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
 cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::panic
+
+echo "pre-push: [2/6] Rustdoc (-D warnings)..."
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
-cargo test --lib --tests --all-features
+
+echo "pre-push: [3/6] Tests & release bench compile..."
+if command -v cargo-nextest >/dev/null 2>&1; then
+  cargo nextest run --no-default-features --status-level fail
+  cargo nextest run --all-features --status-level fail
+else
+  cargo test --lib --tests --no-default-features
+  cargo test --lib --tests --all-features
+fi
 cargo test --doc --all-features
 cargo check --benches --release
 
+echo "pre-push: [4/6] Supply-chain & hygiene checks..."
+if [[ -f deny.toml ]] && command -v cargo-deny >/dev/null 2>&1; then
+  cargo deny check
+fi
+if command -v cargo-audit >/dev/null 2>&1; then
+  cargo audit --quiet
+fi
+if command -v cargo-machete >/dev/null 2>&1; then
+  cargo machete
+fi
+
+echo "pre-push: [5/6] Script & hook linting..."
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck .githooks/* scripts/*.sh
+fi
+if command -v python3 >/dev/null 2>&1; then
+  for py in scripts/*.py; do
+    [[ -f "$py" ]] && python3 -m py_compile "$py"
+  done
+fi
+if command -v node >/dev/null 2>&1; then
+  for js in scripts/*.mjs scripts/*.js; do
+    [[ -f "$js" ]] && node --check "$js"
+  done
+fi
+
+echo "pre-push: [6/6] MSRV & WebAssembly checks..."
 if command -v rustup >/dev/null 2>&1; then
   if rustup toolchain list 2>/dev/null | grep -q '^1\.97\.0'; then
     echo "pre-push: checking MSRV 1.97.0..."
     cargo +1.97.0 check --lib --tests --examples --no-default-features
+    cargo +1.97.0 check --lib --tests --examples --all-features
   fi
   if rustup target list --installed 2>/dev/null | grep -qx 'wasm32-unknown-unknown'; then
     echo "pre-push: building wasm32 release binary..."
     cargo build --release --target wasm32-unknown-unknown --features wasm
+    WASM_BIN="${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/reserving_kernels.wasm"
     if command -v node >/dev/null 2>&1 && [[ -f scripts/wasm-smoke.mjs ]]; then
-      node scripts/wasm-smoke.mjs target/wasm32-unknown-unknown/release/reserving_kernels.wasm
+      node scripts/wasm-smoke.mjs "$WASM_BIN"
     fi
   fi
 fi
+
+echo "pre-push: all checks passed."

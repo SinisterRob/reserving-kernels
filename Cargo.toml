@@ -18,6 +18,7 @@ exclude = [
     ".gitattributes",
     ".env",
     ".env.*",
+    "deny.toml",
     "scripts/",
     "benches/baseline-*.json",
 ]

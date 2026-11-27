@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Pre-commit hook for reserving-kernels:
 #   - Rejects conflict markers and whitespace errors in staged changes
+#   - Blocks accidental commits of .env files, private keys, or credentials
 #   - Verifies rustfmt on staged .rs blobs only (safe alongside unstaged WIP edits)
+#   - Lints staged shell, Python, and JS/MJS scripts
 #
 # Bypass in an emergency with: SKIP_HOOKS=1 git commit ...
 
@@ -14,34 +16,109 @@ fi
 # 1. Catch merge conflict markers and trailing whitespace in staged diff.
 git diff --cached --check
 
-# 2. Check formatting of staged .rs files using index contents (leaves working tree untouched).
-STAGED_RS=()
+# 2. Block accidental commits of secrets, .env files, or private keys.
+STAGED_ALL=()
 while IFS= read -r -d '' file; do
-  STAGED_RS+=("$file")
-done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.rs')
+  STAGED_ALL+=("$file")
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
 
-if [[ ${#STAGED_RS[@]} -eq 0 ]]; then
+if [[ ${#STAGED_ALL[@]} -eq 0 ]]; then
   exit 0
 fi
 
-if ! command -v rustfmt >/dev/null 2>&1; then
-  echo "pre-commit: rustfmt not found in PATH; skipping format check." >&2
-  exit 0
-fi
-
-FAILED=0
-for file in "${STAGED_RS[@]}"; do
-  if ! diff -u \
-    --label "staged/$file" <(git show ":$file") \
-    --label "rustfmt/$file" <(git show ":$file" | rustfmt --edition 2024); then
-    FAILED=1
+SECRET_FAILED=0
+for file in "${STAGED_ALL[@]}"; do
+  base="$(basename "$file")"
+  case "$base" in
+    .env|.env.*|*.pem|*.key|id_rsa|id_ed25519)
+      if [[ "$base" != ".env.example" && "$base" != ".env.sample" ]]; then
+        echo "pre-commit: refusing to commit sensitive file: $file" >&2
+        SECRET_FAILED=1
+      fi
+      ;;
+  esac
+  if git show ":$file" | grep -qE 'BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{20,}|cio[A-Za-z0-9]{30,}'; then
+    echo "pre-commit: potential secret or private key detected in staged file: $file" >&2
+    SECRET_FAILED=1
   fi
 done
-
-if [[ "$FAILED" -ne 0 ]]; then
-  echo "" >&2
-  echo "pre-commit: staged Rust files are not rustfmt-clean." >&2
-  echo "Run: rustfmt --edition 2024 ${STAGED_RS[*]}" >&2
-  echo "Then re-stage and commit (or set SKIP_HOOKS=1 to bypass)." >&2
+if [[ "$SECRET_FAILED" -ne 0 ]]; then
+  echo "pre-commit: remove secrets before committing (or set SKIP_HOOKS=1 to bypass)." >&2
   exit 1
+fi
+
+# 3. Check formatting of staged .rs files using index contents (leaves working tree untouched).
+STAGED_RS=()
+STAGED_SH=()
+STAGED_PY=()
+STAGED_JS=()
+for file in "${STAGED_ALL[@]}"; do
+  case "$file" in
+    *.rs) STAGED_RS+=("$file") ;;
+    *.sh|.githooks/*) STAGED_SH+=("$file") ;;
+    *.py) STAGED_PY+=("$file") ;;
+    *.js|*.mjs) STAGED_JS+=("$file") ;;
+  esac
+done
+
+if [[ ${#STAGED_RS[@]} -gt 0 ]]; then
+  if command -v rustfmt >/dev/null 2>&1; then
+    FAILED=0
+    for file in "${STAGED_RS[@]}"; do
+      if ! diff -u \
+        --label "staged/$file" <(git show ":$file") \
+        --label "rustfmt/$file" <(git show ":$file" | rustfmt --edition 2024); then
+        FAILED=1
+      fi
+    done
+    if [[ "$FAILED" -ne 0 ]]; then
+      echo "" >&2
+      echo "pre-commit: staged Rust files are not rustfmt-clean." >&2
+      echo "Run: rustfmt --edition 2024 ${STAGED_RS[*]}" >&2
+      echo "Then re-stage and commit (or set SKIP_HOOKS=1 to bypass)." >&2
+      exit 1
+    fi
+  else
+    echo "pre-commit: rustfmt not found in PATH; skipping format check." >&2
+  fi
+fi
+
+# 4. Lint staged shell scripts and hooks with shellcheck (if installed).
+if [[ ${#STAGED_SH[@]} -gt 0 ]] && command -v shellcheck >/dev/null 2>&1; then
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  SH_FAILED=0
+  for file in "${STAGED_SH[@]}"; do
+    out="$TMP_DIR/$(basename "$file")"
+    git show ":$file" > "$out"
+    if ! shellcheck "$out"; then
+      echo "pre-commit: shellcheck failed for $file" >&2
+      SH_FAILED=1
+    fi
+  done
+  if [[ "$SH_FAILED" -ne 0 ]]; then
+    exit 1
+  fi
+fi
+
+# 5. Syntax-check staged Python scripts.
+if [[ ${#STAGED_PY[@]} -gt 0 ]] && command -v python3 >/dev/null 2>&1; then
+  TMP_PY_DIR="$(mktemp -d)"
+  trap 'rm -rf "${TMP_DIR:-}" "$TMP_PY_DIR"' EXIT
+  for file in "${STAGED_PY[@]}"; do
+    out="$TMP_PY_DIR/$(basename "$file")"
+    git show ":$file" > "$out"
+    python3 -m py_compile "$out"
+  done
+fi
+
+# 6. Syntax-check staged JS/MJS scripts.
+if [[ ${#STAGED_JS[@]} -gt 0 ]] && command -v node >/dev/null 2>&1; then
+  TMP_JS_DIR="$(mktemp -d)"
+  trap 'rm -rf "${TMP_DIR:-}" "${TMP_PY_DIR:-}" "$TMP_JS_DIR"' EXIT
+  for file in "${STAGED_JS[@]}"; do
+    out="$TMP_JS_DIR/$(basename "$file")"
+    git show ":$file" > "$out"
+    node --check "$out"
+  done
 fi
