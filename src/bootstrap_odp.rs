@@ -570,12 +570,12 @@ impl DeterministicRng {
     pub(crate) fn next_index(&mut self, upper: usize) -> usize {
         debug_assert!(upper > 0);
         let bound = upper as u64;
-        let mut prod = (self.next_u64() as u128) * (bound as u128);
+        let mut prod = u128::from(self.next_u64()) * u128::from(bound);
         let mut low = prod as u64;
         if low < bound {
             let threshold = bound.wrapping_neg() % bound;
             while low < threshold {
-                prod = (self.next_u64() as u128) * (bound as u128);
+                prod = u128::from(self.next_u64()) * u128::from(bound);
                 low = prod as u64;
             }
         }
@@ -719,7 +719,7 @@ impl FastIndexSampler {
         debug_assert!(bound > 0);
         let threshold = if bound <= 1024 {
             65_536u32 % (bound as u32)
-        } else if bound <= u32::MAX as usize {
+        } else if u32::try_from(bound).is_ok() {
             let b = bound as u32;
             b.wrapping_neg() % b
         } else {
@@ -762,7 +762,7 @@ impl FastIndexSampler {
         if self.bound <= 1 {
             return 0;
         }
-        if self.bound <= u32::MAX as usize {
+        if u32::try_from(self.bound).is_ok() {
             let bound = self.bound as u64;
             let threshold = self.threshold;
             let prod = (rng.next_u64() >> 32) * bound;
@@ -796,9 +796,9 @@ impl FastIndexSampler {
         if self.bound <= 1024 {
             let bound = self.bound as u32;
             let threshold = self.threshold;
-            let mut out_chunks = out.chunks_exact_mut(4);
-            let mut sm_chunks = sqrt_mu.chunks_exact(4);
-            for (oc, sc) in (&mut out_chunks).zip(&mut sm_chunks) {
+            let (out_chunks, out_rem) = out.as_chunks_mut::<4>();
+            let (sm_chunks, sm_rem) = sqrt_mu.as_chunks::<4>();
+            for (oc, sc) in out_chunks.iter_mut().zip(sm_chunks.iter()) {
                 let w = rng.next_u64();
                 let p0 = ((w & 0xFFFF) as u32) * bound;
                 let p1 = (((w >> 16) & 0xFFFF) as u32) * bound;
@@ -840,8 +840,6 @@ impl FastIndexSampler {
                     oc[3] = pool[i3] * sc[3];
                 }
             }
-            let out_rem = out_chunks.into_remainder();
-            let sm_rem = sm_chunks.remainder();
             if !out_rem.is_empty() {
                 let mut w = rng.next_u64();
                 for (dst, &sm) in out_rem.iter_mut().zip(sm_rem.iter()) {
@@ -857,12 +855,12 @@ impl FastIndexSampler {
             }
             return;
         }
-        if self.bound <= u32::MAX as usize {
+        if u32::try_from(self.bound).is_ok() {
             let bound = self.bound as u64;
             let threshold = self.threshold;
-            let mut out_chunks = out.chunks_exact_mut(2);
-            let mut sm_chunks = sqrt_mu.chunks_exact(2);
-            for (oc, sc) in (&mut out_chunks).zip(&mut sm_chunks) {
+            let (out_chunks, out_rem) = out.as_chunks_mut::<2>();
+            let (sm_chunks, sm_rem) = sqrt_mu.as_chunks::<2>();
+            for (oc, sc) in out_chunks.iter_mut().zip(sm_chunks.iter()) {
                 let w = rng.next_u64();
                 let p0 = (w & 0xFFFF_FFFF) * bound;
                 let p1 = (w >> 32) * bound;
@@ -886,8 +884,6 @@ impl FastIndexSampler {
                     oc[1] = pool[i1] * sc[1];
                 }
             }
-            let out_rem = out_chunks.into_remainder();
-            let sm_rem = sm_chunks.remainder();
             if let (Some(dst), Some(&sm)) = (out_rem.first_mut(), sm_rem.first()) {
                 let p = (rng.next_u64() >> 32) * bound;
                 let idx = if (p as u32) >= threshold {
@@ -1239,22 +1235,22 @@ fn solve_odp_general(
     let mut first_origin_skipped = false;
     for origin in 0..n {
         if active_origins[origin] {
-            if !first_origin_skipped {
-                first_origin_skipped = true;
-            } else {
+            if first_origin_skipped {
                 origin_col[origin] = Some(param_count);
                 param_count += 1;
+            } else {
+                first_origin_skipped = true;
             }
         }
     }
     let mut first_dev_skipped = false;
     for dev in 0..n {
         if active_devs[dev] {
-            if !first_dev_skipped {
-                first_dev_skipped = true;
-            } else {
+            if first_dev_skipped {
                 dev_col[dev] = Some(param_count);
                 param_count += 1;
+            } else {
+                first_dev_skipped = true;
             }
         }
     }
@@ -1720,7 +1716,7 @@ fn accumulate_cell_deltas_and_refit(scratch: &mut OdpBootstrapScratch) -> RefitO
 
     if origin < m {
         let last_dev = m - origin;
-        let row = &deltas[row_start..row_start + last_dev + 1];
+        let row = &deltas[row_start..=(row_start + last_dev)];
         row_start += last_dev + 1;
         let mut running = 0.0;
         for (den_slot, &d) in delta_den[..last_dev].iter_mut().zip(&row[..last_dev]) {

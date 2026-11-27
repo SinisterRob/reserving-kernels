@@ -384,7 +384,7 @@ pub fn analyze_multivariate_cl(
     // Symmetrize numerically.
     for a in 0..k_lines {
         for b in (a + 1)..k_lines {
-            let avg = 0.5 * (total_msep[a * k_lines + b] + total_msep[b * k_lines + a]);
+            let avg = f64::midpoint(total_msep[a * k_lines + b], total_msep[b * k_lines + a]);
             total_msep[a * k_lines + b] = avg;
             total_msep[b * k_lines + a] = avg;
         }

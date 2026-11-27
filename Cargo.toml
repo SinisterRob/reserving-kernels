@@ -2,7 +2,7 @@
 name = "reserving-kernels"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.98"
 authors = ["Robert Jurgens, FCAS <robertdjurgens@gmail.com>"]
 description = "Pure Rust numeric kernels for P&C actuarial reserving, pricing, and capital modeling."
 license = "MIT OR Apache-2.0"
@@ -36,3 +36,40 @@ harness = false
 [[bench]]
 name = "kernels"
 harness = false
+
+[lints.clippy]
+# Enable the full pedantic group as warnings (denied in CI/CD via `-D warnings`).
+pedantic = { level = "warn", priority = -1 }
+
+# High-signal numeric precision, safety, and code-hygiene lints from nursery/restriction.
+imprecise_flops = "warn"
+lossy_float_literal = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+undocumented_unsafe_blocks = "warn"
+clone_on_ref_ptr = "warn"
+derive_partial_eq_without_eq = "warn"
+
+# Explicitly allow lints that are harmful or noisy in numeric/actuarial kernels:
+# - `suboptimal_flops` recommends `f64::mul_add`, which calls slow software `libm::fma`
+#   on default x86-64 targets without `+fma`.
+suboptimal_flops = "allow"
+unreadable_literal = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+many_single_char_names = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+float_cmp = "allow"
+module_name_repetitions = "allow"
+needless_range_loop = "allow"
+neg_cmp_op_on_partial_ord = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+too_long_first_doc_paragraph = "allow"

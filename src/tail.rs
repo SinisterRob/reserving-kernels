@@ -162,7 +162,7 @@ pub fn generalized_bondy(
             f2 = eval_sse(x2).0;
         }
     }
-    let b = 0.5 * (lo + hi);
+    let b = f64::midpoint(lo, hi);
     if b >= 1.0 - 1e-5 {
         return Err(ValidationError::InvalidParameter(
             "generalized Bondy requires decaying LDFs (b < 1.0)",

@@ -268,8 +268,7 @@ pub(crate) fn summarize_with_scratch(
     let mut s1 = 0.0;
     let mut s2 = 0.0;
     let mut s3 = 0.0;
-    let chunks = values.chunks_exact(4);
-    let rem = chunks.remainder();
+    let (chunks, rem) = values.as_chunks::<4>();
     for chunk in chunks {
         s0 += chunk[0];
         s1 += chunk[1];
@@ -293,8 +292,7 @@ pub(crate) fn summarize_with_scratch(
         let mut v1 = 0.0;
         let mut v2 = 0.0;
         let mut v3 = 0.0;
-        let chunks = values.chunks_exact(4);
-        let rem = chunks.remainder();
+        let (chunks, rem) = values.as_chunks::<4>();
         for chunk in chunks {
             let d0 = chunk[0] - avg;
             let d1 = chunk[1] - avg;

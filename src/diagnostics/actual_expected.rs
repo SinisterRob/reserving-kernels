@@ -99,7 +99,7 @@ pub fn residual_scale_by_dev(t: &TriangleView<'_>, ldfs: &[f64]) -> Vec<f64> {
             }
         }
         if count > 0 {
-            sigma[link] = (acc / count as f64).sqrt();
+            sigma[link] = (acc / f64::from(count)).sqrt();
         }
     }
     sigma

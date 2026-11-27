@@ -150,7 +150,7 @@ pub fn adjust_case_reserves(
                     "annual compound trend must be > -1.0",
                 ));
             }
-            (1.0 + g).ln()
+            g.ln_1p()
         }
         CaseReserveTrend::FitFromAverageCase => fit_pooled_log_linear_trend(&raw_avg, n)?,
     };
@@ -191,7 +191,7 @@ pub fn adjust_case_reserves(
 
     Ok(CaseReserveAdjustmentResult {
         exponential_trend_rate: rate,
-        annual_compound_rate: rate.exp() - 1.0,
+        annual_compound_rate: rate.exp_m1(),
         raw_case_reserves: Triangle::new(n, n, raw_case),
         raw_average_case: Triangle::new(n, n, raw_avg),
         adjusted_average_case: Triangle::new(n, n, adj_avg),

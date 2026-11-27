@@ -159,6 +159,17 @@ impl std::fmt::Display for MurphyResult {
     }
 }
 
+struct RawLink {
+    n_obs: usize,
+    alpha: f64,
+    beta: f64,
+    sigma_sq: Option<f64>,
+    // Unscaled (X^T W X)^{-1} entries: [[u_aa, u_ab], [u_ab, u_bb]]
+    u_aa: f64,
+    u_ab: f64,
+    u_bb: f64,
+}
+
 /// Fit Murphy (1994) weighted-regression LDFs and compute analytical reserve MSE.
 pub fn analyze(
     t: &TriangleView<'_>,
@@ -180,17 +191,6 @@ pub fn analyze(
     let delta = options.variance_power;
 
     // Step 1: Fit per-link weighted OLS parameters and raw sigma^2.
-    struct RawLink {
-        n_obs: usize,
-        alpha: f64,
-        beta: f64,
-        sigma_sq: Option<f64>,
-        // Unscaled (X^T W X)^{-1} entries: [[u_aa, u_ab], [u_ab, u_bb]]
-        u_aa: f64,
-        u_ab: f64,
-        u_bb: f64,
-    }
-
     let mut raw_links = Vec::with_capacity(n_links);
     for j in 0..n_links {
         let nk = n - j - 1;
@@ -206,7 +206,7 @@ pub fn analyze(
                 ys.push(y);
                 ws.push(if delta == 0.0 { 1.0 } else { x.powf(-delta) });
             } else if x == 0.0 && y == 0.0 {
-                continue;
+                // Zero-to-zero pairs contribute no ratio information.
             } else if delta == 0.0 {
                 xs.push(x);
                 ys.push(y);
@@ -412,10 +412,10 @@ pub fn analyze(
     total_mse = total_mse.max(0.0);
     let total_standard_error = total_mse.sqrt();
     let total_reserve: f64 = reserve.iter().sum();
-    let total_cv = if total_reserve != 0.0 {
-        total_standard_error / total_reserve
-    } else {
+    let total_cv = if total_reserve == 0.0 {
         0.0
+    } else {
+        total_standard_error / total_reserve
     };
 
     Ok(MurphyResult {
@@ -500,7 +500,7 @@ mod tests {
                 .unwrap();
 
         let mu = analyze(&tri.view(), MurphyOptions::simple_average()).unwrap();
-        let expected_f0 = 0.5 * (150.0 / 100.0 + 340.0 / 200.0);
+        let expected_f0 = f64::midpoint(150.0 / 100.0, 340.0 / 200.0);
         assert!((mu.links[0].slope - expected_f0).abs() < 1e-12);
     }
 }

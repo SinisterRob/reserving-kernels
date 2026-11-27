@@ -129,7 +129,6 @@ fn sigma_sq_vec(t: &TriangleView<'_>, f: &[f64]) -> Vec<f64> {
             } else if c_k == 0.0 && c_kp1 == 0.0 {
                 // Zero prior and zero next contributes 0 to variance and does not
                 // provide an independent ratio observation.
-                continue;
             } else {
                 invalid_zero = true;
                 break;
@@ -193,7 +192,7 @@ fn sigma_sq_vec_observed_counts(
                 acc += c_k * (ratio - f[k]).powi(2);
                 valid += 1;
             } else if c_k == 0.0 && c_kp1 == 0.0 {
-                continue;
+                // Zero prior and zero next contributes 0 to variance.
             } else {
                 invalid_zero = true;
                 break;

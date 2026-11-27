@@ -76,7 +76,7 @@ pub fn case_decay_pattern(
             }
         }
         if count > 0 {
-            out[dev] = sum / count as f64;
+            out[dev] = sum / f64::from(count);
         }
     }
     Ok(out)

@@ -48,6 +48,8 @@ fn clamp_n(n: u32) -> usize {
 unsafe fn read_buf(ptr: *const f64, len: usize) -> Vec<f64> {
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
+        // SAFETY: Caller guarantees `ptr` points to at least `len` initialized `f64` elements
+        // in a static WASM exchange buffer with exclusive single-threaded access.
         out.push(unsafe { *ptr.add(i) });
     }
     out
@@ -56,9 +58,12 @@ unsafe fn read_buf(ptr: *const f64, len: usize) -> Vec<f64> {
 unsafe fn write_buf(dst: *mut f64, src: &[f64]) {
     let take = src.len().min(N_MAX);
     for i in 0..take {
+        // SAFETY: Caller guarantees `dst` points to a static `N_MAX`-element `f64` buffer
+        // with exclusive single-threaded access, and `i < take <= N_MAX`.
         unsafe { *dst.add(i) = src[i] };
     }
     for i in take..N_MAX {
+        // SAFETY: Same preconditions as above; `i < N_MAX` stays within the static buffer.
         unsafe { *dst.add(i) = f64::NAN };
     }
 }
@@ -72,6 +77,8 @@ fn tri_packed(n: usize) -> Vec<f64> {
     // any cell at a stable stride. Pack into a fresh n × n Vec per call —
     // simple, allocation is cheap and eliminates aliasing concerns.
     let mut out = vec![0.0; n * n];
+    // SAFETY: WASM execution is single-threaded with no concurrent mutable alias to `TRI`;
+    // callers pass `n <= N_MAX` (via `clamp_n`), so `i * N_MAX + j < TRI_CAP`.
     unsafe {
         for i in 0..n {
             for j in 0..n {
@@ -82,7 +89,7 @@ fn tri_packed(n: usize) -> Vec<f64> {
     out
 }
 
-fn view_of<'a>(data: &'a [f64], n: usize) -> TriangleView<'a> {
+fn view_of(data: &[f64], n: usize) -> TriangleView<'_> {
     TriangleView {
         n_origins: n,
         n_devs: n,
@@ -149,6 +156,8 @@ pub extern "C" fn rk_slp_ptr() -> *mut f64 {
 // ---- Helpers to write into static output buffers --------------------------
 
 unsafe fn write_ldf(src: &[f64]) {
+    // SAFETY: Single-threaded WASM C-ABI boundary with exclusive access to static `LDF`;
+    // all indices are strictly bounded by `N_MAX`.
     unsafe {
         for (i, v) in src.iter().enumerate().take(N_MAX) {
             LDF[i] = *v;
@@ -159,6 +168,8 @@ unsafe fn write_ldf(src: &[f64]) {
     }
 }
 unsafe fn write_cdf(src: &[f64]) {
+    // SAFETY: Single-threaded WASM C-ABI boundary with exclusive access to static `CDF`;
+    // all indices are strictly bounded by `N_MAX`.
     unsafe {
         for (i, v) in src.iter().enumerate().take(N_MAX) {
             CDF[i] = *v;
@@ -169,6 +180,8 @@ unsafe fn write_cdf(src: &[f64]) {
     }
 }
 unsafe fn write_ult(src: &[f64]) {
+    // SAFETY: Single-threaded WASM C-ABI boundary with exclusive access to static `ULT`;
+    // all indices are strictly bounded by `N_MAX`.
     unsafe {
         for (i, v) in src.iter().enumerate().take(N_MAX) {
             ULT[i] = *v;
@@ -179,6 +192,8 @@ unsafe fn write_ult(src: &[f64]) {
     }
 }
 unsafe fn write_res(src: &[f64]) {
+    // SAFETY: Single-threaded WASM C-ABI boundary with exclusive access to static `RES`;
+    // all indices are strictly bounded by `N_MAX`.
     unsafe {
         for (i, v) in src.iter().enumerate().take(N_MAX) {
             RES[i] = *v;
@@ -196,6 +211,7 @@ pub extern "C" fn rk_ldf_volume_weighted(n: u32) -> u32 {
     let n = clamp_n(n);
     let packed = tri_packed(n);
     let v = ldf::volume_weighted(&view_of(&packed, n));
+    // SAFETY: Single-threaded WASM export writing exclusively to static output buffer `LDF`.
     unsafe { write_ldf(&v) }
     v.len() as u32
 }
@@ -205,6 +221,7 @@ pub extern "C" fn rk_ldf_simple_average(n: u32) -> u32 {
     let n = clamp_n(n);
     let packed = tri_packed(n);
     let v = ldf::simple_average(&view_of(&packed, n));
+    // SAFETY: Single-threaded WASM export writing exclusively to static output buffer `LDF`.
     unsafe { write_ldf(&v) }
     v.len() as u32
 }
@@ -214,6 +231,7 @@ pub extern "C" fn rk_ldf_ex_hi_lo(n: u32) -> u32 {
     let n = clamp_n(n);
     let packed = tri_packed(n);
     let v = ldf::ex_hi_lo(&view_of(&packed, n));
+    // SAFETY: Single-threaded WASM export writing exclusively to static output buffer `LDF`.
     unsafe { write_ldf(&v) }
     v.len() as u32
 }
@@ -223,6 +241,7 @@ pub extern "C" fn rk_ldf_volume_weighted_last_n(n: u32, last_n: u32) -> u32 {
     let n = clamp_n(n);
     let packed = tri_packed(n);
     let v = ldf::volume_weighted_last_n(&view_of(&packed, n), last_n as usize);
+    // SAFETY: Single-threaded WASM export writing exclusively to static output buffer `LDF`.
     unsafe { write_ldf(&v) }
     v.len() as u32
 }
@@ -232,6 +251,7 @@ pub extern "C" fn rk_ldf_simple_average_last_n(n: u32, last_n: u32) -> u32 {
     let n = clamp_n(n);
     let packed = tri_packed(n);
     let v = ldf::simple_average_last_n(&view_of(&packed, n), last_n as usize);
+    // SAFETY: Single-threaded WASM export writing exclusively to static output buffer `LDF`.
     unsafe { write_ldf(&v) }
     v.len() as u32
 }
@@ -245,11 +265,14 @@ pub extern "C" fn rk_cdf_compute(n: u32, tail: f64) -> u32 {
         return 0;
     }
     if n < 2 {
+        // SAFETY: Single-threaded WASM export writing exclusively to static output buffer `CDF`.
         unsafe { write_cdf(&[tail]) };
         return 1;
     }
+    // SAFETY: `LDF` has length `N_MAX` and `n - 1 < N_MAX`; single-threaded WASM read.
     let ldf_slice = unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) };
     let cdf = ldf::cdf_from_ldf(&ldf_slice, tail);
+    // SAFETY: Single-threaded WASM export writing exclusively to static output buffer `CDF`.
     unsafe { write_cdf(&cdf) }
     cdf.len() as u32
 }
@@ -263,6 +286,7 @@ pub extern "C" fn rk_chain_ladder(n: u32, tail: f64) -> u32 {
         return 0;
     }
     let ldf_slice: Vec<f64> = if n >= 2 {
+        // SAFETY: `LDF` has length `N_MAX` and `n - 1 < N_MAX`; single-threaded WASM read.
         unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
     } else {
         Vec::new()
@@ -270,6 +294,7 @@ pub extern "C" fn rk_chain_ladder(n: u32, tail: f64) -> u32 {
     let packed = tri_packed(n);
     let cl = chain_ladder::project_unchecked(&view_of(&packed, n), &ldf_slice, tail);
     let cdf = ldf::cdf_from_ldf(&ldf_slice, tail);
+    // SAFETY: Single-threaded WASM export writing exclusively to static output buffers.
     unsafe {
         write_ult(&cl.ultimates);
         write_res(&cl.reserves);
@@ -287,14 +312,17 @@ pub extern "C" fn rk_bf(n: u32, tail: f64) -> u32 {
         return 0;
     }
     let ldf_slice: Vec<f64> = if n >= 2 {
+        // SAFETY: `LDF` has length `N_MAX` and `n - 1 < N_MAX`; single-threaded WASM read.
         unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
     } else {
         Vec::new()
     };
+    // SAFETY: `EXP` has length `N_MAX` and `n <= N_MAX`; single-threaded WASM read.
     let exp_slice = unsafe { read_buf(core::ptr::addr_of!(EXP).cast(), n) };
     let packed = tri_packed(n);
     let r = bf::project_unchecked(&view_of(&packed, n), &ldf_slice, tail, &exp_slice);
     let cdf = ldf::cdf_from_ldf(&ldf_slice, tail);
+    // SAFETY: Single-threaded WASM export writing exclusively to static output buffers.
     unsafe {
         write_ult(&r.ultimates);
         write_res(&r.reserves);
@@ -307,8 +335,10 @@ pub extern "C" fn rk_bf(n: u32, tail: f64) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn rk_bf_expected_from_premium(n: u32, elr: f64) -> u32 {
     let n = clamp_n(n);
+    // SAFETY: `PREM` has length `N_MAX` and `n <= N_MAX`; single-threaded WASM read.
     let prem = unsafe { read_buf(core::ptr::addr_of!(PREM).cast(), n) };
     let exp: Vec<f64> = prem.into_iter().map(|p| p * elr).collect();
+    // SAFETY: `EXP` is a static `N_MAX`-element buffer with exclusive single-threaded access.
     unsafe { write_buf(core::ptr::addr_of_mut!(EXP).cast(), &exp) };
     n as u32
 }
@@ -322,10 +352,12 @@ pub extern "C" fn rk_cape_cod_elr(n: u32, tail: f64) -> f64 {
         return f64::NAN;
     }
     let ldf_slice: Vec<f64> = if n >= 2 {
+        // SAFETY: `LDF` has length `N_MAX` and `n - 1 < N_MAX`; single-threaded WASM read.
         unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
     } else {
         Vec::new()
     };
+    // SAFETY: `PREM` has length `N_MAX` and `n <= N_MAX`; single-threaded WASM read.
     let prem_slice = unsafe { read_buf(core::ptr::addr_of!(PREM).cast(), n) };
     let packed = tri_packed(n);
     cape_cod::elr(&view_of(&packed, n), &ldf_slice, tail, &prem_slice)
@@ -338,14 +370,18 @@ pub extern "C" fn rk_cape_cod(n: u32, tail: f64) -> f64 {
         return f64::NAN;
     }
     let ldf_slice: Vec<f64> = if n >= 2 {
+        // SAFETY: `LDF` has length `N_MAX` and `n - 1 < N_MAX`; single-threaded WASM read.
         unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
     } else {
         Vec::new()
     };
+    // SAFETY: `PREM` has length `N_MAX` and `n <= N_MAX`; single-threaded WASM read.
     let prem_slice = unsafe { read_buf(core::ptr::addr_of!(PREM).cast(), n) };
     let packed = tri_packed(n);
     let (elr, r) = cape_cod::project_unchecked(&view_of(&packed, n), &ldf_slice, tail, &prem_slice);
     let cdf = ldf::cdf_from_ldf(&ldf_slice, tail);
+    // SAFETY: Single-threaded WASM export writing exclusively to static output buffers
+    // (`ULT`, `RES`, `CDF`, and `N_MAX`-element `EXP`).
     unsafe {
         write_ult(&r.ultimates);
         write_res(&r.reserves);
@@ -365,6 +401,8 @@ pub extern "C" fn rk_brosius(n: u32, tail: f64) -> u32 {
     }
     let packed = tri_packed(n);
     let r = brosius::project_unchecked(&view_of(&packed, n), tail);
+    // SAFETY: Single-threaded WASM export writing exclusively to static `N_MAX`-element
+    // output buffers (`INT`, `SLP`, `ULT`, `RES`).
     unsafe {
         write_buf(core::ptr::addr_of_mut!(INT).cast(), &r.intercept);
         write_buf(core::ptr::addr_of_mut!(SLP).cast(), &r.slope);
@@ -386,6 +424,8 @@ pub extern "C" fn rk_mack(n: u32, tail: f64) -> f64 {
     }
     let packed = tri_packed(n);
     let r = mack::analyze_unchecked(&view_of(&packed, n), tail);
+    // SAFETY: Single-threaded WASM export writing exclusively to static `N_MAX`-element
+    // output buffers and scalar `MACK_TOTAL_RESERVE`.
     unsafe {
         write_ldf(&r.ldf);
         write_ult(&r.ultimate);
@@ -402,5 +442,6 @@ pub extern "C" fn rk_mack(n: u32, tail: f64) -> f64 {
 /// Returns the total reserve after the last Mack call.
 #[unsafe(no_mangle)]
 pub extern "C" fn rk_mack_total_reserve(_n: u32) -> f64 {
+    // SAFETY: Single-threaded WASM export reading initialized static scalar `MACK_TOTAL_RESERVE`.
     unsafe { *core::ptr::addr_of!(MACK_TOTAL_RESERVE) }
 }

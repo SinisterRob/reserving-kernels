@@ -295,7 +295,7 @@ impl SeverityDistribution {
                 "lognormal mean and CV must be strictly positive",
             ));
         }
-        let sigma = (1.0 + cv * cv).ln().sqrt();
+        let sigma = (cv * cv).ln_1p().sqrt();
         let mu = mean.ln() - 0.5 * sigma * sigma;
         Ok(Self::Lognormal { mu, sigma })
     }

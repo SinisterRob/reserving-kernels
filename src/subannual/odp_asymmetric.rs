@@ -187,22 +187,22 @@ pub fn fit_asymmetric_odp(
     let mut first_o = false;
     for i in 0..n_o {
         if active_origins[i] {
-            if !first_o {
-                first_o = true;
-            } else {
+            if first_o {
                 origin_col[i] = Some(param_count);
                 param_count += 1;
+            } else {
+                first_o = true;
             }
         }
     }
     let mut first_d = false;
     for j in 0..n_d {
         if active_devs[j] {
-            if !first_d {
-                first_d = true;
-            } else {
+            if first_d {
                 dev_col[j] = Some(param_count);
                 param_count += 1;
+            } else {
+                first_d = true;
             }
         }
     }

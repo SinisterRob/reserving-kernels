@@ -8,7 +8,7 @@ use crate::triangle;
 use crate::types::TriangleView;
 
 /// Flag emitted for a cell-level diagnostic condition.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellFlag {
     /// Origin row index.
     pub origin: usize,
@@ -17,7 +17,7 @@ pub struct CellFlag {
 }
 
 /// Flag emitted for a row-level diagnostic condition.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RowFlag {
     /// Origin row index.
     pub origin: usize,
@@ -127,11 +127,11 @@ pub fn monotonicity_flags(t: &TriangleView<'_>) -> Vec<RowFlag> {
             if !value.is_finite() {
                 continue;
             }
-            if let Some(prev) = previous {
-                if value < prev {
-                    row_flagged = true;
-                    break;
-                }
+            if let Some(prev) = previous
+                && value < prev
+            {
+                row_flagged = true;
+                break;
             }
             previous = Some(value);
         }

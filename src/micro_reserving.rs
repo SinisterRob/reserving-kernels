@@ -296,12 +296,12 @@ pub fn fit_from_claims(
             if p.time > valuation_time || p.amount <= 0.0 {
                 continue;
             }
-            if let Some(ts) = settled_at {
-                if (p.time - ts).abs() <= 1e-6 {
-                    close_logs.push(p.amount.ln());
-                    had_close_pay = true;
-                    continue;
-                }
+            if let Some(ts) = settled_at
+                && (p.time - ts).abs() <= 1e-6
+            {
+                close_logs.push(p.amount.ln());
+                had_close_pay = true;
+                continue;
             }
             interim_logs.push(p.amount.ln());
         }

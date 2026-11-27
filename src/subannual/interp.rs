@@ -308,7 +308,7 @@ fn integrate_sherman_log_rate(lo: f64, hi: f64, a: f64, b: f64) -> f64 {
     if hi <= lo {
         return 0.0;
     }
-    let mid = 0.5 * (lo + hi);
+    let mid = f64::midpoint(lo, hi);
     let half = 0.5 * (hi - lo);
     let mut acc = 0.0;
     for (&node, &weight) in GL8_NODES.iter().zip(GL8_WEIGHTS.iter()) {
@@ -824,7 +824,7 @@ mod tests {
     #[test]
     fn swimon_produces_non_increasing_monthly_emergence() {
         let (ages, cdfs) = sample_annual();
-        let targets: Vec<f64> = (1..=60).map(|m| m as f64).collect();
+        let targets: Vec<f64> = (1..=60).map(f64::from).collect();
         let pat = interp_swimon(&ages, &cdfs, &targets).unwrap();
         let mut prev_inc = pat.pct_reported[0];
         for k in 1..pat.pct_reported.len() {

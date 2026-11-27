@@ -92,10 +92,10 @@ fn build_reconciliation(
         let paid_latest = paid_projection.latest[origin];
         let incurred_latest = incurred_projection.latest[origin];
         let case_latest = incurred_latest - paid_latest;
-        let ratio = if incurred_latest != 0.0 {
-            paid_latest / incurred_latest
-        } else {
+        let ratio = if incurred_latest == 0.0 {
             f64::NAN
+        } else {
+            paid_latest / incurred_latest
         };
         let gap = paid_projection.ultimates[origin] - incurred_projection.ultimates[origin];
 

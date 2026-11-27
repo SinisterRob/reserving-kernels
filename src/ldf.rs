@@ -173,7 +173,7 @@ pub fn volume_weighted_ldfs(cum: &[f64], n_origin: usize, n_dev: usize, out: &mu
     let max_rows = n_origin.min(m);
     for i in 0..max_rows {
         let upper = m - i;
-        let row = &cum[i * n_dev..i * n_dev + upper + 1];
+        let row = &cum[(i * n_dev)..=(i * n_dev + upper)];
         for dev in 0..upper {
             den[dev] += row[dev];
             out[dev] += row[dev + 1];
@@ -320,7 +320,7 @@ pub fn volume_weighted(t: &TriangleView<'_>) -> Vec<f64> {
     };
     for i in 0..m {
         let upper = m - i;
-        let row = &t.data[i * t.n_devs..i * t.n_devs + upper + 1];
+        let row = &t.data[(i * t.n_devs)..=(i * t.n_devs + upper)];
         for j in 0..upper {
             den[j] += row[j];
             out[j] += row[j + 1];
@@ -356,7 +356,7 @@ pub fn simple_average(t: &TriangleView<'_>) -> Vec<f64> {
             }
         }
         out[j] = if count > 0 {
-            sum / (count as f64)
+            sum / f64::from(count)
         } else {
             f64::NAN
         };
@@ -387,7 +387,7 @@ pub fn median(t: &TriangleView<'_>) -> Vec<f64> {
         } else if k % 2 == 1 {
             scratch[k / 2]
         } else {
-            (scratch[k / 2 - 1] + scratch[k / 2]) / 2.0
+            f64::midpoint(scratch[k / 2 - 1], scratch[k / 2])
         };
     }
     out
@@ -499,7 +499,7 @@ pub fn simple_average_last_n(t: &TriangleView<'_>, last_n: usize) -> Vec<f64> {
             }
         }
         out[j] = if count > 0 {
-            sum / (count as f64)
+            sum / f64::from(count)
         } else {
             f64::NAN
         };

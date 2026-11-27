@@ -250,7 +250,7 @@ mod tests {
             let dx = 1_000.0;
             let mut area = 0.0;
             for i in 0..2_000 {
-                let x = (i as f64 + 0.5) * dx;
+                let x = (f64::from(i) + 0.5) * dx;
                 area += severity_pdf(tail, x) * dx;
             }
             assert!(area > 0.90 && area <= 1.001, "tail {tail} area={area}");

@@ -710,7 +710,7 @@ fn clark_2003_genins_and_mack_2008_bf_msep_benchmarks() {
 
     // Scale invariance: multiplying ages by 12 (years -> months) leaves reserves & SEs invariant.
     let mut month_opts = ClarkOptions::new(GrowthCurve::Weibull);
-    month_opts.ages = Some((0..10).map(|j| 6.0 + 12.0 * j as f64).collect());
+    month_opts.ages = Some((0..10).map(|j| 6.0 + 12.0 * f64::from(j)).collect());
     let clark_wb_months = fit_clark_ldf(&genins.view(), &month_opts).expect("Clark months");
     assert!(close_rel(
         clark_wb.total_reserve,
@@ -1028,7 +1028,11 @@ fn panjer_1981_robertson_1992_and_tasche_2008_myers_read_2001_benchmarks() {
         42069,
     )
     .expect("ic 3-line");
-    let lines: Vec<&[f64]> = ic.reordered_columns.iter().map(|v| v.as_slice()).collect();
+    let lines: Vec<&[f64]> = ic
+        .reordered_columns
+        .iter()
+        .map(std::vec::Vec::as_slice)
+        .collect();
 
     // Exact Euler TVaR full-allocation conservation & subadditivity.
     let euler_tvar = euler_tvar_allocation(&lines, 0.90).expect("euler tvar");
@@ -1297,7 +1301,7 @@ fn pure_reserving_extension_kernels_benchmarks() {
         }
         sep_rows.push(r);
     }
-    let sep_slices: Vec<&[f64]> = sep_rows.iter().map(|r| r.as_slice()).collect();
+    let sep_slices: Vec<&[f64]> = sep_rows.iter().map(std::vec::Vec::as_slice).collect();
     let sep_tri = Triangle::try_from_incremental_rows(&sep_slices).unwrap();
     for method in [
         separation::SeparationMethod::Arithmetic,
@@ -1408,8 +1412,8 @@ fn pure_reserving_extension_kernels_benchmarks() {
         c_rows.push(cr);
         p_rows.push(pr);
     }
-    let c_sl: Vec<&[f64]> = c_rows.iter().map(|r| r.as_slice()).collect();
-    let p_sl: Vec<&[f64]> = p_rows.iter().map(|r| r.as_slice()).collect();
+    let c_sl: Vec<&[f64]> = c_rows.iter().map(std::vec::Vec::as_slice).collect();
+    let p_sl: Vec<&[f64]> = p_rows.iter().map(std::vec::Vec::as_slice).collect();
     let dcl = double_chain_ladder::analyze(
         &Triangle::try_from_incremental_rows(&p_sl).unwrap().view(),
         &Triangle::try_from_incremental_rows(&c_sl).unwrap().view(),
@@ -1441,8 +1445,8 @@ fn pure_reserving_extension_kernels_benchmarks() {
     let gu_cdfs = genins.ldfs(1.0).unwrap().cdfs;
     let dists: Vec<SeverityDistribution> = (0..10)
         .map(|j| SeverityDistribution::Lognormal {
-            mu: 9.5 + 0.08 * j as f64,
-            sigma: 1.15 + 0.02 * j as f64,
+            mu: 9.5 + 0.08 * f64::from(j),
+            sigma: 1.15 + 0.02 * f64::from(j),
         })
         .collect();
     let xs_dev = excess_development::from_severity_schedule(

@@ -160,7 +160,7 @@ pub(crate) fn average_ranks(values: &[f64]) -> Vec<f64> {
             j += 1;
         }
         // 1-based midrank for indices i..j is (i + 1 + j) / 2.
-        let avg_rank = 0.5 * ((i + 1) as f64 + j as f64);
+        let avg_rank = f64::midpoint((i + 1) as f64, j as f64);
         for &idx in &order[i..j] {
             ranks[idx] = avg_rank;
         }
@@ -583,26 +583,23 @@ pub fn synchronized_odp_bootstrap(
             for (dst, &pool_idx) in line_residuals.iter_mut().zip(shared_indices.iter()) {
                 *dst = pools[line][pool_idx];
             }
-            match run_odp_iteration_with_scratch(
+            if let Some(origin_res) = run_odp_iteration_with_scratch(
                 &line_fits[line],
                 &line_residuals,
                 options.process_distribution,
                 &mut rng,
                 &mut scratches[line],
             ) {
-                Some(origin_res) => {
-                    let tot: f64 = origin_res.iter().sum();
-                    if tot.is_finite() {
-                        draw_totals[line] = tot;
-                    } else {
-                        all_ok = false;
-                        break;
-                    }
-                }
-                None => {
+                let tot: f64 = origin_res.iter().sum();
+                if tot.is_finite() {
+                    draw_totals[line] = tot;
+                } else {
                     all_ok = false;
                     break;
                 }
+            } else {
+                all_ok = false;
+                break;
             }
         }
         if all_ok {
