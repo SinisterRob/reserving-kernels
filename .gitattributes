@@ -1,2 +1,2 @@
-scripts/** linguist-vendored
-.githooks/** linguist-vendored
+scripts/* linguist-vendored
+.githooks/* linguist-vendored
