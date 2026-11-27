@@ -6,7 +6,7 @@
 
 Pure Rust numeric kernels for P&C actuarial reserving, pricing, and capital modeling.
 
-`Rust 1.85+` · `MIT OR Apache-2.0` · `no unsafe` · `serde only` · `wasm32 ready`
+[![CI](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml/badge.svg)](https://github.com/SinisterRob/reserving-kernels/actions/workflows/ci.yml) · `Rust 1.85+` · `MIT OR Apache-2.0` · `no unsafe` · `serde only` · `wasm32 ready`
 
 Every method is implemented from peer-reviewed actuarial literature and verified against published benchmark triangles in [`tests/source_benchmarks.rs`](tests/source_benchmarks.rs). See [`docs/SOURCES.md`](docs/SOURCES.md) for full citations and equation mappings.
 
@@ -41,9 +41,16 @@ fn main() -> Result<(), ValidationError> {
 
     // Mack ultimate reserve & standard error
     let mack = triangle.mack(1.0)?;
+    println!(
+        "Mack reserve: {:.2} (SE: {:.2}, CV: {:.1}%)",
+        mack.total_reserve,
+        mack.total_standard_error,
+        mack.total_cv * 100.0,
+    );
 
     // Merz–Wüthrich 1-year Claims Development Result (Solvency II)
     let cdr = triangle.merz_wuthrich()?;
+    println!("1-yr CDR SE:  {:.2}", cdr.total_cdr_standard_error);
     assert!(cdr.total_cdr_standard_error <= mack.total_standard_error);
 
     // Aggregate loss: Panjer recursion vs. FFT
@@ -168,6 +175,9 @@ See [`docs/SOURCES.md`](docs/SOURCES.md) for full citations and [`tests/source_b
 # Run unit, integration, doctest, and benchmark-parity tests
 cargo test --all-targets --all-features
 cargo test --doc
+
+# Run the JSON exhibit example
+cargo run --example export_exhibit
 
 # Run Criterion benchmarks (benches/kernels.rs & benches/triangle_algebra.rs)
 cargo bench --bench kernels -- --save-baseline main
