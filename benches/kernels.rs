@@ -9,15 +9,19 @@ use reserving_kernels::{
     capital::capital_allocation::{euler_tvar_allocation, myers_read_from_default_ratio},
     capital::dependence::{CorrelationType, iman_conover, synchronized_odp_bootstrap},
     capital::reserve_distribution,
-    datasets::{friedland_us_industry_auto, genins as genins_triangle, raa as raa_triangle},
+    datasets::{
+        friedland_us_industry_auto, genins as genins_triangle, quarg_mack_2004, raa as raa_triangle,
+    },
     deterministic::double_chain_ladder,
     deterministic::ldf,
+    deterministic::munich_chain_ladder,
     excess::excess_layers,
     stochastic::bootstrap_odp::{OdpBootstrapOptions, bootstrap_odp, bootstrap_odp_cdr, fit_odp},
-    stochastic::clark_mle::{ClarkOptions, fit_clark_ldf},
+    stochastic::clark_mle::{ClarkOptions, fit_clark_cape_cod, fit_clark_ldf},
     stochastic::glm_reserving::{GlmOptions, fit_glm},
     stochastic::kalman_reserving::{self, KalmanReservingOptions},
     stochastic::mack,
+    stochastic::mack_bf::{self, MackBfOptions},
     stochastic::merz_wuthrich,
     stochastic::micro_reserving::{ClaimRecord, MicroReservingModel, simulate_reserves},
     stochastic::multivariate_cl::{
@@ -26,6 +30,8 @@ use reserving_kernels::{
     stochastic::multivariate_mack,
     stochastic::paid_incurred_chain::{self, PicOptions},
     stochastic::ptf_regression::{self, PtfOptions},
+    stochastic::reserve_runoff::{mack_one_year_runoff, odp_one_year_runoff},
+    subannual::interp::interp_swimon,
     types::Triangle,
     validate::MonotonicityPolicy,
 };
@@ -350,6 +356,87 @@ fn bench_advanced_kernels(c: &mut Criterion) {
                 42069,
             )
             .expect("micro")
+        });
+    });
+
+    // High-value reserving, 1-year run-off, and sub-annual kernels
+    let qm = quarg_mack_2004();
+    let qm_paid = qm.paid.view();
+    let qm_inc = qm.incurred.view();
+    group.bench_function("munich_cl_quarg_mack_7x7", |b| {
+        b.iter(|| {
+            munich_chain_ladder::project(black_box(&qm_paid), black_box(&qm_inc), 1.0, 1.0)
+                .expect("munich cl")
+        });
+    });
+
+    let friedland = friedland_us_industry_auto();
+    let friedland_rep = friedland.reported.view();
+    let expected_ult: Vec<f64> = friedland.earned_premium.iter().map(|&p| p * 0.72).collect();
+    group.bench_function("bf_friedland_10x10", |b| {
+        b.iter(|| friedland_rep.bf(black_box(&expected_ult), 1.0).expect("bf"));
+    });
+    group.bench_function("cape_cod_friedland_10x10", |b| {
+        b.iter(|| {
+            friedland_rep
+                .cape_cod(black_box(&friedland.earned_premium), 1.0)
+                .expect("cape cod")
+        });
+    });
+    let clark_opts = ClarkOptions::default();
+    group.bench_function("clark_cape_cod_friedland_10x10", |b| {
+        b.iter(|| {
+            fit_clark_cape_cod(
+                black_box(&friedland_rep),
+                black_box(&friedland.earned_premium),
+                black_box(&clark_opts),
+            )
+            .expect("clark cape cod")
+        });
+    });
+
+    let genins_prior = vec![5_000_000.0; 10];
+    let genins_prior_se = vec![500_000.0; 10];
+    group.bench_function("mack_bf_genins_10x10", |b| {
+        b.iter(|| {
+            mack_bf::analyze_from_triangle(
+                black_box(&genins_view),
+                black_box(&genins_prior),
+                black_box(&genins_prior_se),
+                MackBfOptions::default(),
+            )
+            .expect("mack bf")
+        });
+    });
+
+    group.bench_function("mack_one_year_runoff_genins_1000", |b| {
+        b.iter(|| {
+            mack_one_year_runoff(black_box(&genins_view), 1_000, 42069).expect("mack runoff")
+        });
+    });
+
+    let odp_runoff_opts = OdpBootstrapOptions {
+        iterations: 1_000,
+        seed: 42069,
+        ..OdpBootstrapOptions::default()
+    };
+    group.bench_function("odp_one_year_runoff_genins_1000", |b| {
+        b.iter(|| {
+            odp_one_year_runoff(black_box(&genins_view), 1.0, odp_runoff_opts).expect("odp runoff")
+        });
+    });
+
+    let anchor_ages = [12.0, 24.0, 36.0, 48.0, 60.0, 72.0, 84.0, 96.0, 108.0, 120.0];
+    let anchor_cdfs = [3.49, 1.75, 1.35, 1.18, 1.09, 1.04, 1.02, 1.01, 1.003, 1.0];
+    let target_ages: Vec<f64> = (1..=120).map(f64::from).collect();
+    group.bench_function("subannual_swimon_120m", |b| {
+        b.iter(|| {
+            interp_swimon(
+                black_box(&anchor_ages),
+                black_box(&anchor_cdfs),
+                black_box(&target_ages),
+            )
+            .expect("swimon")
         });
     });
 

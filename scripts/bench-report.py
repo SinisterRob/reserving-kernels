@@ -279,7 +279,7 @@ def update_readme_table(baseline: dict, readme_path: Path) -> None:
     comp = baseline["comparison"]
     rows = [
         "| Benchmark | `reserving-kernels` | R `ChainLadder` | `chainladder-python` | vs. R | vs. Python |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "| --- | :---: | :---: | :---: | :---: | :---: |",
     ]
     for entry in comp:
         rust_ns = benches[entry["id"]]["median_ns"]
@@ -297,7 +297,7 @@ def update_readme_table(baseline: dict, readme_path: Path) -> None:
     text = readme_path.read_text(encoding="utf-8")
     pattern = re.compile(
         r"\| Benchmark \| `reserving-kernels` \| R `ChainLadder` \| `chainladder-python` \| vs\. R \| vs\. Python \|\n"
-        r"\| --- \| ---: \| ---: \| ---: \| ---: \| ---: \|\n"
+        r"\| --- \| (?:---:| :---: |:---:) \| (?:---:| :---: |:---:) \| (?:---:| :---: |:---:) \| (?:---:| :---: |:---:) \| (?:---:| :---: |:---:) \|\n"
         r"(?:\|.*\n)+",
         re.MULTILINE,
     )

@@ -29,7 +29,7 @@
 
 ---
 
-`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs)).
+`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). For prospective ratemaking, reinsurance layering, and underwriting risk, see its sibling crate [`pricing-kernels`](https://github.com/SinisterRob/pricing-kernels). Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs)).
 
 ## Why `reserving-kernels`?
 
@@ -49,16 +49,16 @@ reserving-kernels = "0.3"
 Basic triangle reserving and aggregate loss convolution:
 
 ```rust
-use reserving_kernels::prelude::*;
+use reserving_kernels::{prelude::*, triangle};
 
 fn main() -> Result<(), ValidationError> {
     // Build from upper-triangle rows (no manual NaN padding needed)
-    let triangle = Triangle::try_from_upper_rows(&[
-        &[100.0, 160.0, 195.0, 205.0],
-        &[120.0, 190.0, 232.0],
-        &[135.0, 218.0],
-        &[150.0],
-    ])?;
+    let triangle = triangle![
+        [100, 160, 195, 205],
+        [120, 190, 232],
+        [135, 218],
+        [150],
+    ]?;
 
     // Mack ultimate reserve & standard error
     let mack = triangle.mack(1.0)?;
@@ -177,7 +177,7 @@ Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kerne
 </p>
 
 | Benchmark | `reserving-kernels` | R `ChainLadder` | `chainladder-python` | vs. R | vs. Python |
-| --- | ---: | ---: | ---: | ---: | ---: |
+| --- | :---: | :---: | :---: | :---: | :---: |
 | Volume-Weighted LDFs (40×40) | **0.30 µs** | 840 µs | 5,710 µs | 2,830× | 19,250× |
 | Mack Chain Ladder (RAA 10×10) | **0.27 µs** | 5,840 µs | 25,446 µs | 21,620× | 94,200× |
 | Mack Chain Ladder (40×40) | **2.62 µs** | 24,650 µs | 30,077 µs | 9,410× | 11,480× |
@@ -187,6 +187,35 @@ Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kerne
 | ODP Bootstrap (GenIns, 1k sims) | **0.19 ms** | 216.5 ms | 76.8 ms | 1,160× | 410× |
 | ODP Bootstrap (GenIns, 10k sims) | **1.90 ms** | 2,223 ms | 416.2 ms | 1,170× | 220× |
 
+<details>
+<summary><strong>Additional i9-14900K Rust kernel latencies (20 more kernels in <code>benches/kernels.rs</code>)</strong></summary>
+
+| Kernel | Median (`i9-14900K`) | Domain |
+| --- | :---: | --- |
+| Excess Layers Lookup (65k sims) | **34.6 ns** | `excess` |
+| ODP Fit (GenIns 10×10) | **0.73 µs** | `stochastic` |
+| General Multivariate CL (GMCL, 2-line 10×10) | **3.32 µs** | `stochastic` |
+| Merz–Wüthrich 1-Yr CDR (40×40) | **4.56 µs** | `stochastic` |
+| Paid–Incurred Chain (Friedland 10×10) | **6.94 µs** | `stochastic` |
+| Coherent TVaR (10k scenarios) | **9.83 µs** | `capital` |
+| Panjer Recursion (512 steps) | **13.9 µs** | `capital` |
+| Double Chain Ladder (40×40) | **15.4 µs** | `deterministic` |
+| PTF Log-Linear Regression (GenIns 10×10) | **16.9 µs** | `stochastic` |
+| Reserve Distribution Summary (10k scenarios) | **19.3 µs** | `capital` |
+| Multivariate Mack (2-line 40×40) | **22.3 µs** | `stochastic` |
+| Clark Weibull MLE (GenIns 10×10) | **25.9 µs** | `stochastic` |
+| Kalman State-Space Filter (GenIns 10×10) | **26.7 µs** | `stochastic` |
+| Gamma GLM Reserve (GenIns 10×10) | **87.3 µs** | `stochastic` |
+| Tilted Radix-2 FFT Aggregate Loss (4,096 pts) | **122 µs** | `capital` |
+| Euler TVaR Capital Allocation (10k × 5 lines) | **129 µs** | `capital` |
+| Myers–Read Allocation (10k × 5 lines) | **168 µs** | `capital` |
+| Synchronized Multi-Line ODP Bootstrap (2-line, 500 sims) | **191 µs** | `capital` |
+| ODP 1-Yr CDR Bootstrap (GenIns, 1k sims) | **226 µs** | `stochastic` |
+| Iman–Conover Rank Correlation (2k × 3 lines) | **314 µs** | `capital` |
+| Individual-Claim Micro-Reserving (1k sims) | **1.57 ms** | `stochastic` |
+
+</details>
+
 *Note: `reserving-kernels` operates directly on validated `f64` slices with reusable scratch space, whereas the R and Python libraries carry DataFrame and S3/S4 object overhead. All point estimates and Mack / Merz–Wüthrich standard errors were verified for numerical parity before timing.*
 
 ## Verification
@@ -195,6 +224,7 @@ Kernels are tested against published actuarial datasets and closed-form mathemat
 
 - **Worked example:** [Mack Chain-Ladder in Rust: A Worked Example](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/examples/mack-chain-ladder-raa.md) reproduces Mack (1993) Table 2 on the RAA 10×10 triangle cell-for-cell (`cargo run --example mack_raa`).
 - **Benchmark triangles:** Mack (1993) RAA, Taylor & Ashe / England & Verrall GenIns, Friedland US Industry Auto, and Quarg & Mack (2004).
+- **1-Year Solvency & Sub-Annual Parity:** England, Verrall & Wüthrich (2019) Table 2 fixed-history 1-year re-reserving (`stochastic::reserve_runoff`) and Robbin (2018) SWIMON equilibrium IBNR monotonicity (`subannual`).
 - **Exact identities:** Merz–Wüthrich multi-year run-off summing to Mack ultimate MSEP; ODP GLM matching exact analytical leverages and dispersion; Panjer vs. FFT aggregate loss agreement; and full-allocation conservation for Euler TVaR and Myers–Read.
 
 Full citations and equation mappings live in [`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md); parity tests live in [`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs).
