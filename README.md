@@ -43,7 +43,7 @@ Add `reserving-kernels` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-reserving-kernels = "0.3"
+reserving-kernels = "0.4"
 ```
 
 Basic triangle reserving and aggregate loss convolution:
