@@ -106,17 +106,11 @@ pub fn validate_triangle(t: &TriangleView<'_>) -> Result<(), ValidationError> {
     }
     let n = t.n_origins;
     for i in 0..n {
-        for j in 0..n {
-            if !t.is_scheduled_observed(i, j) {
-                continue;
-            }
-            let v = t.get(i, j);
-            if v.is_nan() {
-                // NaN is our "unobserved" sentinel — but within the observed
-                // region, that's an error.
-                return Err(ValidationError::NotFinite);
-            }
+        let row = &t.data[i * n..i * n + (n - i)];
+        for &v in row {
             if !v.is_finite() {
+                // NaN is our "unobserved" sentinel — within the observed
+                // upper triangle, NaN or infinity is an error.
                 return Err(ValidationError::NotFinite);
             }
             if v < 0.0 {
@@ -145,13 +139,15 @@ pub fn validate_premium(premium: &[f64], n_origins: usize) -> Result<(), Validat
 
 /// Validate that observed cumulative rows are non-decreasing.
 pub(crate) fn validate_monotone_cumulative(t: &TriangleView<'_>) -> Result<(), ValidationError> {
-    for i in 0..t.n_origins {
-        let mut prev = None;
-        for j in 0..t.n_devs {
-            if !t.is_observed(i, j) {
+    let n = t.n_origins.min(t.n_devs);
+    for i in 0..n {
+        let row_len = n - i;
+        let row = &t.data[i * t.n_devs..i * t.n_devs + row_len];
+        let mut prev: Option<f64> = None;
+        for (j, &value) in row.iter().enumerate() {
+            if !value.is_finite() {
                 continue;
             }
-            let value = t.get(i, j);
             if let Some(prev_value) = prev {
                 if value < prev_value {
                     return Err(ValidationError::NonMonotoneCumulative {

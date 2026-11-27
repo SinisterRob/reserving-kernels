@@ -11,12 +11,12 @@
 //! ODP GLM maximum likelihood expectations (`log μ_{i,j} = c + α_i + β_j`).
 
 use crate::bootstrap_odp::{
-    DeterministicRng, OdpBootstrapOptions, OdpCellResidual, ProcessDistribution,
+    DeterministicRng, FastIndexSampler, OdpBootstrapOptions, OdpCellResidual, ProcessDistribution,
     ResidualAdjustment,
 };
 use crate::ldf::{cdfs_from_ldfs, volume_weighted_ldfs_observed_counts};
-use crate::linalg::{cholesky_lower, solve_lower_into};
-use crate::reserve_distribution::{ReserveDistributionSummary, summarize as summarize_distribution};
+use crate::linalg::invert_spd;
+use crate::reserve_distribution::{ReserveDistributionSummary, summarize_with_scratch};
 use crate::subannual::grid::{AsymmetricAgeGrid, CalendarDiagonalMap, calendar_diagonal_index};
 use crate::subannual::reserving::validate_asymmetric_cumulative;
 use crate::validate::{MonotonicityPolicy, ValidationError, validate_tail};
@@ -236,13 +236,13 @@ pub fn fit_asymmetric_odp(
         }
     }
 
-    let chol = cholesky_lower(&info, param_count)?;
+    // Exact inverse M^{-1} in O(p^3), then O(1) 3-sparse leverage evaluation per cell
+    // (O(p^3 + N) total instead of O(N p^2)).
+    let info_inv = invert_spd(&info, param_count)?;
 
     let mut residuals = Vec::with_capacity(n_observed);
     let mut pearson_sq_sum = 0.0;
     let mut leverage_sum = 0.0;
-    let mut x_vec = vec![0.0; param_count];
-    let mut y_buf = vec![0.0; param_count];
 
     for &(i, j) in &active_cells {
         let obs = obs_inc[i * n_d + j];
@@ -250,16 +250,25 @@ pub fn fit_asymmetric_odp(
         let raw_residual = (obs - mu) / mu.sqrt();
         pearson_sq_sum += raw_residual * raw_residual;
 
-        x_vec.fill(0.0);
-        x_vec[0] = 1.0;
+        let mut cols = [0usize; 3];
+        let mut ncols = 1usize;
         if let Some(c) = origin_col[i] {
-            x_vec[c] = 1.0;
+            cols[ncols] = c;
+            ncols += 1;
         }
         if let Some(c) = dev_col[j] {
-            x_vec[c] = 1.0;
+            cols[ncols] = c;
+            ncols += 1;
         }
-        solve_lower_into(&chol, param_count, &x_vec, &mut y_buf);
-        let leverage = (mu * y_buf.iter().map(|v| v * v).sum::<f64>()).clamp(0.0, 1.0);
+        let mut qf = 0.0;
+        for a in 0..ncols {
+            let ca = cols[a];
+            qf += info_inv[ca * param_count + ca];
+            for b in (a + 1)..ncols {
+                qf += 2.0 * info_inv[ca * param_count + cols[b]];
+            }
+        }
+        let leverage = (mu * qf).clamp(0.0, 1.0);
         leverage_sum += leverage;
         let saturated = (1.0 - leverage) <= 1e-10;
 
@@ -356,64 +365,152 @@ pub fn asymmetric_odp_bootstrap(
     let max_obs = counts[0];
     let n_links = n_d - 1;
     let phi = fit.phi;
+    let inv_phi = if phi > 0.0 && phi.is_finite() {
+        1.0 / phi
+    } else {
+        0.0
+    };
+
+    // Precompute packed observed sqrt(mu), baseline column sums, and latest diagonal once.
+    let total_obs_cells: usize = counts.iter().sum();
+    let mut packed_sqrt_mu = Vec::with_capacity(total_obs_cells);
+    let mut base_col_den = vec![0.0; n_links];
+    let mut base_col_num = vec![0.0; n_links];
+    let mut base_latest = vec![0.0; n_o];
+    for i in 0..n_o {
+        let cnt = counts[i];
+        let row_off = i * n_d;
+        let mut acc = 0.0;
+        for j in 0..cnt {
+            let mu = fit.fitted_incremental[row_off + j];
+            packed_sqrt_mu.push(if mu > 0.0 { mu.sqrt() } else { 0.0 });
+            acc += mu;
+            if j + 1 < cnt {
+                base_col_den[j] += acc;
+            }
+            if j > 0 {
+                base_col_num[j - 1] += acc;
+            }
+        }
+        base_latest[i] = acc;
+    }
 
     let mut rng = DeterministicRng::from_seed(options.seed);
+    let sampler = FastIndexSampler::new(pool.len());
     let mut simulated_totals = Vec::with_capacity(options.iterations);
-    let mut simulated_by_origin = vec![Vec::with_capacity(options.iterations); n_o];
+    let mut simulated_by_origin: Vec<Vec<f64>> = (0..n_o)
+        .map(|_| Vec::with_capacity(options.iterations))
+        .collect();
     let mut failed_iterations = 0usize;
 
-    let mut pseudo_cum = vec![f64::NAN; n_o * n_d];
+    let mut cell_deltas = vec![0.0; total_obs_cells];
+    let mut delta_den = vec![0.0; n_links];
+    let mut delta_num = vec![0.0; n_links];
+    let mut latest_pseudo = vec![0.0; n_o];
     let mut pseudo_ldfs = vec![1.0; n_links];
+    let mut pos_factors = vec![0.0; n_d];
+    let mut neg_factors = vec![0.0; n_d];
+    let mut iter_origins = vec![0.0; n_o];
+    let active_links = max_obs.saturating_sub(1);
+    let tail_inc = tail - 1.0;
 
     for _ in 0..options.iterations {
-        // 1. Resample pseudo-observed cumulative triangle on the asymmetric observed region.
+        // 1. Batched 4-wide delta resampling + asymmetric volume-weighted LDF sums.
+        sampler.fill_weighted_deltas(&pool, &packed_sqrt_mu, &mut rng, &mut cell_deltas);
+        delta_den[..active_links].fill(0.0);
+        delta_num[..active_links].fill(0.0);
+        let mut cell = 0usize;
         for i in 0..n_o {
-            let mut acc = 0.0;
-            for j in 0..counts[i] {
-                let mu = fit.fitted_incremental[i * n_d + j];
-                let r = pool[rng.next_index(pool.len())];
-                let q_star = mu + r * mu.sqrt();
-                acc += q_star;
-                pseudo_cum[i * n_d + j] = acc;
+            let cnt = counts[i];
+            let mut delta = 0.0;
+            for j in 0..cnt {
+                delta += cell_deltas[cell];
+                cell += 1;
+                if j + 1 < cnt {
+                    delta_den[j] += delta;
+                }
+                if j > 0 {
+                    delta_num[j - 1] += delta;
+                }
             }
+            latest_pseudo[i] = base_latest[i] + delta;
         }
 
-        // 2. Refit asymmetric volume-weighted LDFs on the pseudo-triangle.
-        volume_weighted_ldfs_observed_counts(&pseudo_cum, n_o, n_d, counts, &mut pseudo_ldfs);
-        for j in (max_obs - 1)..n_links {
-            if !pseudo_ldfs[j].is_finite() {
-                pseudo_ldfs[j] = 1.0;
+        // 2. Compute pseudo-LDFs on active links; unobserved tail links stay 1.0.
+        let mut valid_ldfs = true;
+        let mut all_ge_one = true;
+        for j in 0..active_links {
+            let den = base_col_den[j] + delta_den[j];
+            let num = base_col_num[j] + delta_num[j];
+            if !(den > 0.0) || !den.is_finite() {
+                valid_ldfs = false;
+                break;
             }
+            let f = num / den;
+            if !f.is_finite() || f <= 0.0 {
+                valid_ldfs = false;
+                break;
+            }
+            if f < 1.0 {
+                all_ge_one = false;
+            }
+            pseudo_ldfs[j] = f;
         }
-        if pseudo_ldfs.iter().any(|&f| !f.is_finite() || f <= 0.0) {
+        if !valid_ldfs {
             failed_iterations += 1;
             continue;
         }
+        for slot in &mut pseudo_ldfs[active_links..n_links] {
+            *slot = 1.0;
+        }
 
-        // 3. Project future cells (unobserved region j >= counts[i]) + optional tail
-        //    and apply process variance.
+        // 3. Compound suffix reserve factors right-to-left in O(n_d) and draw
+        //    exact origin-level process variance in O(n_o) via Gamma/Poisson additivity.
+        pos_factors[n_d - 1] = tail_inc;
+        neg_factors[n_d - 1] = 0.0;
+        if all_ge_one {
+            let mut cdf = tail;
+            for j in (0..n_links).rev() {
+                cdf *= pseudo_ldfs[j];
+                pos_factors[j] = cdf - 1.0;
+                neg_factors[j] = 0.0;
+            }
+        } else {
+            for j in (0..n_links).rev() {
+                let f = pseudo_ldfs[j];
+                let step = f - 1.0;
+                if step >= 0.0 {
+                    pos_factors[j] = step + f * pos_factors[j + 1];
+                    neg_factors[j] = f * neg_factors[j + 1];
+                } else {
+                    pos_factors[j] = f * pos_factors[j + 1];
+                    neg_factors[j] = (-step) + f * neg_factors[j + 1];
+                }
+            }
+        }
+
         let mut iter_total = 0.0;
-        let mut iter_origins = vec![0.0; n_o];
         let mut valid_iter = true;
-
         for i in 0..n_o {
             let d = counts[i] - 1;
-            let mut prev_cum = pseudo_cum[i * n_d + d];
+            let prev_cum = latest_pseudo[i];
             if !prev_cum.is_finite() {
                 valid_iter = false;
                 break;
             }
-            let mut res_i = 0.0;
-            for j in (d + 1)..n_d {
-                let next_cum = prev_cum * pseudo_ldfs[j - 1];
-                let mu_fut = next_cum - prev_cum;
-                prev_cum = next_cum;
-                res_i += sample_process(mu_fut, phi, options.process_distribution, &mut rng);
-            }
-            if tail > 1.0 {
-                let tail_mu = prev_cum * (tail - 1.0);
-                res_i += sample_process(tail_mu, phi, options.process_distribution, &mut rng);
-            }
+            let (pos_mu, neg_mu) = if prev_cum >= 0.0 {
+                (prev_cum * pos_factors[d], prev_cum * neg_factors[d])
+            } else {
+                (-prev_cum * neg_factors[d], -prev_cum * pos_factors[d])
+            };
+            let pos_draw = if pos_mu > 0.0 {
+                sample_process_fast(pos_mu, phi, inv_phi, options.process_distribution, &mut rng)
+            } else {
+                0.0
+            };
+            // Negative future_mu preserves the asymmetric non-reflected convention
+            // (`mu <= 0.0` returns `mu` deterministically).
+            let res_i = pos_draw - neg_mu;
             if !res_i.is_finite() {
                 valid_iter = false;
                 break;
@@ -428,8 +525,8 @@ pub fn asymmetric_odp_bootstrap(
         }
 
         simulated_totals.push(iter_total);
-        for i in 0..n_o {
-            simulated_by_origin[i].push(iter_origins[i]);
+        for (origin_vec, &r) in simulated_by_origin.iter_mut().zip(iter_origins.iter()) {
+            origin_vec.push(r);
         }
     }
 
@@ -439,11 +536,12 @@ pub fn asymmetric_odp_bootstrap(
         ));
     }
 
-    let summary = summarize_distribution(&simulated_totals)?;
-    let origin_summaries: Vec<ReserveDistributionSummary> = simulated_by_origin
-        .iter()
-        .map(|vals| summarize_distribution(vals))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut summary_buf = Vec::with_capacity(simulated_totals.len());
+    let summary = summarize_with_scratch(&simulated_totals, &mut summary_buf, true)?;
+    let mut origin_summaries = Vec::with_capacity(n_o);
+    for vals in &simulated_by_origin {
+        origin_summaries.push(summarize_with_scratch(vals, &mut summary_buf, true)?);
+    }
 
     Ok(AsymmetricOdpBootstrapResult {
         base_total_reserve: fit.total_reserve,
@@ -459,9 +557,10 @@ pub fn asymmetric_odp_bootstrap(
 }
 
 #[inline]
-fn sample_process(
+fn sample_process_fast(
     mu: f64,
     phi: f64,
+    inv_phi: f64,
     dist: ProcessDistribution,
     rng: &mut DeterministicRng,
 ) -> f64 {
@@ -470,8 +569,8 @@ fn sample_process(
     }
     match dist {
         ProcessDistribution::None => mu,
-        ProcessDistribution::Gamma => rng.sample_gamma(mu / phi, phi),
-        ProcessDistribution::OverDispersedPoisson => phi * rng.sample_poisson(mu / phi),
+        ProcessDistribution::Gamma => rng.sample_gamma(mu * inv_phi, phi),
+        ProcessDistribution::OverDispersedPoisson => phi * rng.sample_poisson(mu * inv_phi),
     }
 }
 

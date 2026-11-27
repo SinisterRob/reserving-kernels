@@ -24,7 +24,7 @@ use crate::bootstrap_odp::{
     DeterministicRng, OdpBootstrapOptions, OdpBootstrapScratch, OdpFit, ResidualAdjustment,
     build_adjusted_residual_pool, cholesky_lower, fit_odp, run_odp_iteration_with_scratch,
 };
-use crate::reserve_distribution::{ReserveDistributionSummary, summarize};
+use crate::reserve_distribution::{ReserveDistributionSummary, summarize_with_scratch};
 use crate::types::TriangleView;
 use crate::validate::ValidationError;
 
@@ -563,7 +563,9 @@ pub fn synchronized_odp_bootstrap(
     let n_obs = line_fits[0].n_observed;
     let mut rng = DeterministicRng::from_seed(options.seed);
 
-    let mut line_totals = vec![Vec::with_capacity(options.iterations); k];
+    let mut line_totals: Vec<Vec<f64>> = (0..k)
+        .map(|_| Vec::with_capacity(options.iterations))
+        .collect();
     let mut aggregate_totals = Vec::with_capacity(options.iterations);
     let mut shared_indices = vec![0usize; n_obs];
     let mut line_residuals = vec![0.0; n_obs];
@@ -618,11 +620,12 @@ pub fn synchronized_odp_bootstrap(
         return Err(ValidationError::NotFinite);
     }
 
+    let mut summary_buf = Vec::with_capacity(aggregate_totals.len());
     let mut line_summaries = Vec::with_capacity(k);
     for series in &line_totals {
-        line_summaries.push(summarize(series)?);
+        line_summaries.push(summarize_with_scratch(series, &mut summary_buf, true)?);
     }
-    let aggregate_summary = summarize(&aggregate_totals)?;
+    let aggregate_summary = summarize_with_scratch(&aggregate_totals, &mut summary_buf, true)?;
     let sum_standalone_sd: f64 = line_summaries.iter().map(|s| s.std_dev).sum();
     let std_dev_diversification_benefit = sum_standalone_sd - aggregate_summary.std_dev;
     let achieved_spearman = correlation_matrix(&line_totals, true);

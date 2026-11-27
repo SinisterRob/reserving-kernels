@@ -151,13 +151,13 @@ Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kerne
 | Benchmark | `reserving-kernels` | R `ChainLadder` | `chainladder-python` | vs. R | vs. Python |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Volume-Weighted LDFs (40×40) | **0.28 µs** | 840 µs | 5,710 µs | 3,040× | 20,680× |
-| Mack Chain Ladder (RAA 10×10) | **0.29 µs** | 5,840 µs | 25,446 µs | 20,280× | 88,350× |
-| Mack Chain Ladder (40×40) | **4.09 µs** | 24,650 µs | 30,077 µs | 6,025× | 7,350× |
-| Merz–Wüthrich 1-Yr CDR (RAA) | **0.41 µs** | 9,420 µs | — | 23,050× | — |
-| Clark Loglogistic MLE (GenIns) | **11.9 µs** | 8,300 µs | 12,026 µs | 695× | 1,007× |
+| Mack Chain Ladder (RAA 10×10) | **0.27 µs** | 5,840 µs | 25,446 µs | 21,820× | 95,060× |
+| Mack Chain Ladder (40×40) | **3.08 µs** | 24,650 µs | 30,077 µs | 7,990× | 9,750× |
+| Merz–Wüthrich 1-Yr CDR (RAA) | **0.39 µs** | 9,420 µs | — | 23,900× | — |
+| Clark Loglogistic MLE (GenIns) | **11.5 µs** | 8,300 µs | 12,026 µs | 720× | 1,043× |
 | ODP GLM Reserve (GenIns) | **42.6 µs** | 5,300 µs | 219,562 µs | 124× | 5,155× |
-| ODP Bootstrap (GenIns, 1k sims) | **0.80 ms** | 216.5 ms | 76.8 ms | 270× | 96× |
-| ODP Bootstrap (GenIns, 10k sims) | **8.20 ms** | 2,223 ms | 416.2 ms | 271× | 51× |
+| ODP Bootstrap (GenIns, 1k sims) | **0.19 ms** | 216.5 ms | 76.8 ms | 1,160× | 412× |
+| ODP Bootstrap (GenIns, 10k sims) | **1.91 ms** | 2,223 ms | 416.2 ms | 1,166× | 218× |
 
 *Note: `reserving-kernels` operates directly on validated `f64` slices with reusable scratch space, whereas the R and Python libraries carry DataFrame and S3/S4 object overhead. All point estimates and Mack / Merz–Wüthrich standard errors were verified for numerical parity before timing.*
 

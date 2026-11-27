@@ -222,20 +222,98 @@ pub fn probability_exceeding(values: &[f64], threshold: f64) -> Result<f64, Vali
 /// Build a standard reserve-distribution summary bundle in `O(n)` via cascading
 /// partial selection (no full `O(n log n)` sort required).
 pub fn summarize(values: &[f64]) -> Result<ReserveDistributionSummary, ValidationError> {
+    let mut scratch = Vec::with_capacity(values.len());
+    summarize_with_scratch(values, &mut scratch, false)
+}
+
+/// Allocation-reusing internal variant of [`summarize`] that shares a caller-
+/// provided scratch buffer across repeated summary calls (e.g., portfolio total
+/// plus every origin year) and optionally skips redundant finiteness validation
+/// when the caller has already enforced finiteness on every element.
+pub(crate) fn summarize_with_scratch(
+    values: &[f64],
+    buf: &mut Vec<f64>,
+    already_finite: bool,
+) -> Result<ReserveDistributionSummary, ValidationError> {
     if values.is_empty() {
         return Err(ValidationError::ShapeMismatch);
     }
-    validate_finite_slice(values)?;
     let len = values.len();
+    let first = values[0];
+
+    // Fast O(1)-probed constant-series shortcut (e.g., fully developed origin 0
+    // when tail == 1.0, or zero-dispersion fixtures): skips variance, copy, and
+    // all five partial selections.
+    if first.is_finite()
+        && first == values[len - 1]
+        && first == values[len / 2]
+        && values.iter().all(|&v| v == first)
+    {
+        return Ok(ReserveDistributionSummary {
+            mean: first,
+            variance: 0.0,
+            std_dev: 0.0,
+            p50: first,
+            p75: first,
+            p90: first,
+            p95: first,
+            p99: first,
+        });
+    }
+
+    // 4-way unrolled sum (auto-vectorizes cleanly). By IEEE-754 arithmetic, any
+    // NaN or ±inf element poisons the accumulator irreversibly to non-finite, so
+    // a single post-loop check validates finiteness with zero per-element branches.
+    let mut s0 = 0.0;
+    let mut s1 = 0.0;
+    let mut s2 = 0.0;
+    let mut s3 = 0.0;
+    let chunks = values.chunks_exact(4);
+    let rem = chunks.remainder();
+    for chunk in chunks {
+        s0 += chunk[0];
+        s1 += chunk[1];
+        s2 += chunk[2];
+        s3 += chunk[3];
+    }
+    for &v in rem {
+        s0 += v;
+    }
+    let total_sum = (s0 + s1) + (s2 + s3);
+    if !already_finite && !total_sum.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
+
     let n = len as f64;
-    let avg = values.iter().sum::<f64>() / n;
+    let avg = total_sum / n;
     let var = if len <= 1 {
         0.0
     } else {
-        values.iter().map(|v| (v - avg).powi(2)).sum::<f64>() / (n - 1.0)
+        let mut v0 = 0.0;
+        let mut v1 = 0.0;
+        let mut v2 = 0.0;
+        let mut v3 = 0.0;
+        let chunks = values.chunks_exact(4);
+        let rem = chunks.remainder();
+        for chunk in chunks {
+            let d0 = chunk[0] - avg;
+            let d1 = chunk[1] - avg;
+            let d2 = chunk[2] - avg;
+            let d3 = chunk[3] - avg;
+            v0 += d0 * d0;
+            v1 += d1 * d1;
+            v2 += d2 * d2;
+            v3 += d3 * d3;
+        }
+        for &val in rem {
+            let d = val - avg;
+            v0 += d * d;
+        }
+        ((v0 + v1) + (v2 + v3)) / (n - 1.0)
     };
 
-    let mut buf = values.to_vec();
+    buf.clear();
+    buf.extend_from_slice(values);
     let i50 = quantile_rank_index(len, 0.50);
     let i75 = quantile_rank_index(len, 0.75);
     let i90 = quantile_rank_index(len, 0.90);
