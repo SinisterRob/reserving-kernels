@@ -130,11 +130,12 @@ jobs:
         run: shellcheck .githooks/* scripts/*.sh
       - name: Syntax-check Python and Node scripts
         run: |
+          shopt -s nullglob
           for py in scripts/*.py; do
-            [[ -f "$py" ]] && python3 -m py_compile "$py"
+            python3 -m py_compile "$py"
           done
           for js in scripts/*.mjs scripts/*.js; do
-            [[ -f "$js" ]] && node --check "$js"
+            node --check "$js"
           done
 
   package:

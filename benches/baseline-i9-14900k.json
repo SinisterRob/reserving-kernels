@@ -1,7 +1,6 @@
 {
   "metadata": {
     "hardware": "Intel Core i9-14900K",
-    "host": "robbit-theliomira",
     "rustc": "1.97.0",
     "commit": "cff50f4",
     "updated_at": "2026-11-26",
