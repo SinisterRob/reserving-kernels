@@ -124,8 +124,10 @@ impl std::fmt::Display for KalmanReservingResult {
 
 fn estimate_static_obs_variance(inc: &[f64], n: usize) -> Result<f64, ValidationError> {
     let p = 2 * n - 1;
-    let mut x = Vec::new();
-    let mut y = Vec::new();
+    let n_obs = n * (n + 1) / 2;
+    let mut x = vec![0.0; n_obs * p];
+    let mut y = Vec::with_capacity(n_obs);
+    let mut row_idx = 0usize;
     for i in 0..n {
         for j in 0..(n - i) {
             let v = inc[i * n + j];
@@ -134,29 +136,29 @@ fn estimate_static_obs_variance(inc: &[f64], n: usize) -> Result<f64, Validation
                     "Kalman log-linear reserving requires strictly positive incremental losses",
                 ));
             }
-            let mut row = vec![0.0; p];
-            row[i] = 1.0;
+            let base = row_idx * p;
+            x[base + i] = 1.0;
             if j > 0 {
-                row[n + j - 1] = 1.0;
+                x[base + n + j - 1] = 1.0;
             }
-            x.extend_from_slice(&row);
             y.push(v.ln());
+            row_idx += 1;
         }
     }
-    let n_obs = y.len();
     if n_obs <= p {
         return Ok(1e-4);
     }
     let w = vec![1.0; n_obs];
     let beta = weighted_least_squares_qr_beta_only(&x, &y, &w, n_obs, p)?;
     let mut rss = 0.0;
-    for r in 0..n_obs {
-        let mut fit = 0.0;
-        for c in 0..p {
-            fit += x[r * p + c] * beta[c];
+    let mut r = 0usize;
+    for i in 0..n {
+        for j in 0..(n - i) {
+            let fit = beta[i] + if j > 0 { beta[n + j - 1] } else { 0.0 };
+            let e = y[r] - fit;
+            rss += e * e;
+            r += 1;
         }
-        let e = y[r] - fit;
-        rss += e * e;
     }
     let df = (n_obs - p) as f64;
     Ok((rss / df).max(1e-10))
@@ -251,9 +253,9 @@ pub fn analyze(
     let mut filtered_calendar_var = vec![0.0; n];
     let mut log_likelihood = 0.0;
 
-    let mut h_vec = vec![0.0; dim];
     let mut ph = vec![0.0; dim];
     let mut k_gain = vec![0.0; dim];
+    let mut ah = vec![0.0; dim];
 
     // Recursive Kalman pass over calendar diagonals t = 0..n-1.
     for t in 0..n {
@@ -272,35 +274,41 @@ pub fn analyze(
         }
 
         // Assimilate all observed cells (i, j) with i + j == t sequentially.
+        // The observation vector h has at most 3 unit entries: {i, n+j-1 (if j>0), cal_idx (if enabled)}.
         for i in 0..=t {
             let j = t - i;
             let y_obs = inc[i * n + j].ln();
 
-            h_vec.fill(0.0);
-            h_vec[i] = 1.0;
+            let mut h_idx = [0usize; 3];
+            let mut h_len = 1usize;
+            h_idx[0] = i;
             if j > 0 {
-                h_vec[n + j - 1] = 1.0;
+                h_idx[h_len] = n + j - 1;
+                h_len += 1;
             }
             if options.include_calendar_state {
-                h_vec[cal_idx] = 1.0;
+                h_idx[h_len] = cal_idx;
+                h_len += 1;
             }
+            let h_active = &h_idx[..h_len];
 
             let mut hx = 0.0;
-            for d in 0..dim {
-                hx += h_vec[d] * x[d];
+            for &c in h_active {
+                hx += x[c];
             }
             let innov = y_obs - hx;
 
             for r in 0..dim {
+                let row_base = r * dim;
                 let mut acc = 0.0;
-                for c in 0..dim {
-                    acc += p_mat[r * dim + c] * h_vec[c];
+                for &c in h_active {
+                    acc += p_mat[row_base + c];
                 }
                 ph[r] = acc;
             }
             let mut s_var = obs_var;
-            for d in 0..dim {
-                s_var += h_vec[d] * ph[d];
+            for &c in h_active {
+                s_var += ph[c];
             }
 
             if s_var > 0.0 && s_var.is_finite() {
@@ -308,39 +316,40 @@ pub fn analyze(
                     -0.5 * ((std::f64::consts::TAU * s_var).ln() + innov * innov / s_var);
             }
 
+            let inv_s = 1.0 / s_var;
             for d in 0..dim {
-                k_gain[d] = ph[d] / s_var;
-                x[d] += k_gain[d] * innov;
+                let kd = ph[d] * inv_s;
+                k_gain[d] = kd;
+                x[d] += kd * innov;
             }
 
-            // Joseph-form covariance update: P <- (I - K h^T) P (I - K h^T)^T + R K K^T.
-            // Since (I - K h^T) P = P - K (P h)^T = P - K ph^T, let A = P - K ph^T.
-            // Then A (I - h K^T) = A - (A h) K^T.
-            let mut a = vec![0.0; dim * dim];
-            for r in 0..dim {
-                for c in 0..dim {
-                    a[r * dim + c] = p_mat[r * dim + c] - k_gain[r] * ph[c];
-                }
-            }
-            let mut ah = vec![0.0; dim];
-            for r in 0..dim {
-                let mut acc = 0.0;
-                for c in 0..dim {
-                    acc += a[r * dim + c] * h_vec[c];
-                }
-                ah[r] = acc;
+            // Sparse Joseph-form covariance update:
+            //   A = P - K (P h)^T,   ah = A h = sum_{c in supp(h)} (P[:, c] - K * ph[c]),
+            //   P_new = A - ah K^T + R K K^T = P - K ph^T - ah K^T + R K K^T.
+            // Updating only the upper triangle and mirroring enforces exact symmetry in a single pass
+            // with zero intermediate matrix allocations.
+            let mut ph_h_sum = 0.0;
+            for &c in h_active {
+                ph_h_sum += ph[c];
             }
             for r in 0..dim {
-                for c in 0..dim {
-                    p_mat[r * dim + c] =
-                        a[r * dim + c] - ah[r] * k_gain[c] + obs_var * k_gain[r] * k_gain[c];
-                }
+                ah[r] = ph[r] - k_gain[r] * ph_h_sum;
             }
-            // Enforce exact symmetry.
             for r in 0..dim {
+                let kr = k_gain[r];
+                let phr = ph[r];
+                let ahr = ah[r];
+                let r_kr = obs_var * kr;
+                let row_r = r * dim;
+                // Diagonal entry (r, r):
+                p_mat[row_r + r] += -kr * phr - ahr * kr + r_kr * kr;
+                // Off-diagonal symmetric update (r, c) and (c, r) for c > r:
                 for c in (r + 1)..dim {
-                    let avg = 0.5 * (p_mat[r * dim + c] + p_mat[c * dim + r]);
-                    p_mat[r * dim + c] = avg;
+                    let kc = k_gain[c];
+                    let val_rc = p_mat[row_r + c] - kr * ph[c] - ahr * kc + r_kr * kc;
+                    let val_cr = p_mat[c * dim + r] - kc * phr - ah[c] * kr + obs_var * kc * kr;
+                    let avg = 0.5 * (val_rc + val_cr);
+                    p_mat[row_r + c] = avg;
                     p_mat[c * dim + r] = avg;
                 }
             }
@@ -357,47 +366,50 @@ pub fn analyze(
     dev_effects[1..n].copy_from_slice(&x[n..base_dim]);
 
     // Forecast all future cells (i, j) with i + j >= n and compute exact log-normal
-    // predictive means, variances, and cross-cell covariances.
+    // predictive means, variances, and cross-cell covariances using sparse 2-3 index h.
     struct FutureCell {
         origin: usize,
         steps_ahead: usize,
-        h: Vec<f64>,
+        h_idx: [usize; 3],
+        h_len: usize,
         var_state: f64,
         mean_x: f64,
     }
 
-    let mut future_cells = Vec::new();
+    let mut future_cells = Vec::with_capacity(n * (n - 1) / 2);
     for i in 1..n {
         for j in (n - i)..n {
             let steps = (i + j) - (n - 1);
-            let mut h = vec![0.0; dim];
-            h[i] = 1.0;
+            let mut h_idx = [0usize; 3];
+            let mut h_len = 1usize;
+            h_idx[0] = i;
             if j > 0 {
-                h[n + j - 1] = 1.0;
+                h_idx[h_len] = n + j - 1;
+                h_len += 1;
             }
             if options.include_calendar_state {
-                h[cal_idx] = 1.0;
+                h_idx[h_len] = cal_idx;
+                h_len += 1;
             }
+            let h_active = &h_idx[..h_len];
 
             let mut mean_y = 0.0;
-            for d in 0..dim {
-                mean_y += h[d] * x[d];
+            for &d in h_active {
+                mean_y += x[d];
             }
             if options.include_calendar_state {
                 mean_y += (steps as f64) * options.calendar_drift;
             }
 
             // State predictive variance: h^T (P_{n-1} + steps * Q) h
+            let steps_f = steps as f64;
             let mut var_state = 0.0;
-            for r in 0..dim {
-                if h[r] != 0.0 {
-                    for c in 0..dim {
-                        if h[c] != 0.0 {
-                            var_state += h[r] * p_mat[r * dim + c] * h[c];
-                        }
-                    }
-                    var_state += h[r] * h[r] * (steps as f64) * q_diag[r];
+            for &r in h_active {
+                let row_r = r * dim;
+                for &c in h_active {
+                    var_state += p_mat[row_r + c];
                 }
+                var_state += steps_f * q_diag[r];
             }
             var_state = var_state.max(0.0);
 
@@ -406,7 +418,8 @@ pub fn analyze(
             future_cells.push(FutureCell {
                 origin: i,
                 steps_ahead: steps,
-                h,
+                h_idx,
+                h_len,
                 var_state,
                 mean_x,
             });
@@ -431,19 +444,18 @@ pub fn analyze(
         origin_var[ca.origin] += var_xa;
         total_var += var_xa;
 
+        let ha = &ca.h_idx[..ca.h_len];
         for b in (a + 1)..future_cells.len() {
             let cb = &future_cells[b];
             let min_steps = ca.steps_ahead.min(cb.steps_ahead) as f64;
+            let hb = &cb.h_idx[..cb.h_len];
             let mut cov_y = 0.0;
-            for r in 0..dim {
-                if ca.h[r] != 0.0 {
-                    for c in 0..dim {
-                        if cb.h[c] != 0.0 {
-                            cov_y += ca.h[r] * p_mat[r * dim + c] * cb.h[c];
-                        }
-                    }
-                    if cb.h[r] != 0.0 {
-                        cov_y += ca.h[r] * cb.h[r] * min_steps * q_diag[r];
+            for &r in ha {
+                let row_r = r * dim;
+                for &c in hb {
+                    cov_y += p_mat[row_r + c];
+                    if r == c {
+                        cov_y += min_steps * q_diag[r];
                     }
                 }
             }

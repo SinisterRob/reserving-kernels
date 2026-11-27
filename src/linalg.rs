@@ -82,40 +82,40 @@ pub(crate) fn solve_lower_transpose(l: &[f64], dim: usize, y: &[f64]) -> Vec<f64
 }
 
 /// Invert a symmetric positive-definite `dim × dim` matrix `A` via Cholesky factorization.
+///
+/// Computes lower-triangular `L^{-1}` directly (O(dim^3 / 6) flops) and forms
+/// `A^{-1} = L^{-T} L^{-1}` with contiguous dot products.
 pub(crate) fn invert_spd(a: &[f64], dim: usize) -> Result<Vec<f64>, ValidationError> {
     let l = cholesky_lower(a, dim)?;
-    let mut inv = vec![0.0; dim * dim];
-    let mut y = vec![0.0; dim];
-    let mut x = vec![0.0; dim];
+    // Store L^{-1} column-major (`l_inv_cm[col * dim + row]` for `row >= col`) so
+    // the final A^{-1}_{i, j} = sum_{k >= max(i, j)} L^{-1}_{k, i} L^{-1}_{k, j}
+    // is a contiguous slice dot product that auto-vectorizes cleanly.
+    let mut l_inv_cm = vec![0.0; dim * dim];
     for col in 0..dim {
-        // Forward substitution for L y = e_col; y[0..col] == 0 identically.
-        y[..col].fill(0.0);
-        y[col] = 1.0 / l[col * dim + col];
-        for i in (col + 1)..dim {
+        let base = col * dim;
+        l_inv_cm[base + col] = 1.0 / l[col * dim + col];
+        for row in (col + 1)..dim {
+            let l_row = &l[row * dim + col..row * dim + row];
+            let inv_col = &l_inv_cm[base + col..base + row];
             let mut sum = 0.0;
-            for k in col..i {
-                sum -= l[i * dim + k] * y[k];
+            for (&lrk, &yk) in l_row.iter().zip(inv_col.iter()) {
+                sum -= lrk * yk;
             }
-            y[i] = sum / l[i * dim + i];
-        }
-        // Backward substitution for L^T x = y.
-        for i in (0..dim).rev() {
-            let mut sum = y[i];
-            for k in (i + 1)..dim {
-                sum -= l[k * dim + i] * x[k];
-            }
-            x[i] = sum / l[i * dim + i];
-        }
-        for row in 0..dim {
-            inv[row * dim + col] = x[row];
+            l_inv_cm[base + row] = sum / l[row * dim + row];
         }
     }
-    // Enforce exact symmetry against floating-point rounding drift.
+
+    let mut inv = vec![0.0; dim * dim];
     for i in 0..dim {
-        for j in (i + 1)..dim {
-            let avg = 0.5 * (inv[i * dim + j] + inv[j * dim + i]);
-            inv[i * dim + j] = avg;
-            inv[j * dim + i] = avg;
+        let col_i = &l_inv_cm[i * dim..(i + 1) * dim];
+        for j in i..dim {
+            let col_j = &l_inv_cm[j * dim..(j + 1) * dim];
+            let mut acc = 0.0;
+            for (&a_ki, &a_kj) in col_i[j..].iter().zip(col_j[j..].iter()) {
+                acc += a_ki * a_kj;
+            }
+            inv[i * dim + j] = acc;
+            inv[j * dim + i] = acc;
         }
     }
     Ok(inv)

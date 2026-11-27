@@ -288,7 +288,7 @@ pub fn analyze(
     // Var(eps_i) = v_{I, i} + v_{P, i}.
     let mut v_inc = vec![0.0; n];
     let mut v_paid = vec![0.0; n];
-    let mut x_row = vec![0.0; p_dim];
+    let mut active_entries: Vec<(usize, f64)> = Vec::with_capacity(p_dim);
     for i in 0..n {
         let d_i = j_max - i;
         let vi: f64 = sigma_sq[(d_i + 1)..n].iter().sum();
@@ -301,26 +301,21 @@ pub fn analyze(
             continue;
         }
         let z_obs = (incurred.get(i, d_i) / paid.get(i, d_i)).ln();
-        x_row.fill(0.0);
+        active_entries.clear();
         for k in (d_i + 1)..n {
-            x_row[k] = -1.0; // -Phi_k
-            x_row[psi_offset + (k - 1)] = 1.0; // +Psi_k
+            active_entries.push((k, -1.0)); // -Phi_k
+            active_entries.push((psi_offset + (k - 1), 1.0)); // +Psi_k
         }
         if has_closing_bridge {
-            x_row[close_idx] = 1.0;
+            active_entries.push((close_idx, 1.0));
         }
         let inv_v = 1.0 / total_v;
-        for a in 0..p_dim {
-            let xa = x_row[a];
-            if xa == 0.0 {
-                continue;
-            }
+        for &(a, xa) in &active_entries {
             rhs[a] += inv_v * xa * z_obs;
-            for b in 0..p_dim {
-                let xb = x_row[b];
-                if xb != 0.0 {
-                    prec[a * p_dim + b] += inv_v * xa * xb;
-                }
+            let row_a = a * p_dim;
+            let scale_a = inv_v * xa;
+            for &(b, xb) in &active_entries {
+                prec[row_a + b] += scale_a * xb;
             }
         }
     }

@@ -112,9 +112,9 @@ pub fn euler_tvar_allocation(
         });
     }
     let (d, n, total) = validate_and_sum_lines(lines)?;
-    let weights = coherent_interval_weights(&total, alpha, 1.0);
+    let (sparse_weights, portfolio_risk_measure) =
+        coherent_interval_sparse_weights(&total, alpha, 1.0);
 
-    let portfolio_risk_measure = tvar_coherent(&total, alpha)?;
     let standalone_risk_measures = lines
         .iter()
         .map(|col| tvar_coherent(col, alpha))
@@ -123,7 +123,7 @@ pub fn euler_tvar_allocation(
     build_euler_result(
         lines,
         &total,
-        &weights,
+        &sparse_weights,
         d,
         n,
         portfolio_risk_measure,
@@ -159,9 +159,9 @@ pub fn euler_rvar_allocation(
         ));
     }
     let (d, n, total) = validate_and_sum_lines(lines)?;
-    let weights = coherent_interval_weights(&total, p_low, p_high);
+    let (sparse_weights, portfolio_risk_measure) =
+        coherent_interval_sparse_weights(&total, p_low, p_high);
 
-    let portfolio_risk_measure = rvar(&total, p_low, p_high)?;
     let standalone_risk_measures = lines
         .iter()
         .map(|col| rvar(col, p_low, p_high))
@@ -170,7 +170,7 @@ pub fn euler_rvar_allocation(
     build_euler_result(
         lines,
         &total,
-        &weights,
+        &sparse_weights,
         d,
         n,
         portfolio_risk_measure,
@@ -264,6 +264,16 @@ pub fn myers_read_allocation(
         return Err(ValidationError::NotFinite);
     }
     let (d, n, total) = validate_and_sum_lines(lines)?;
+    myers_read_allocation_with_total(lines, d, n, &total, total_assets)
+}
+
+fn myers_read_allocation_with_total(
+    lines: &[&[f64]],
+    d: usize,
+    n: usize,
+    total: &[f64],
+    total_assets: f64,
+) -> Result<MyersReadAllocationResult, ValidationError> {
     let nf = n as f64;
 
     let portfolio_liability: f64 = total.iter().sum::<f64>() / nf;
@@ -356,7 +366,7 @@ pub fn myers_read_from_default_ratio(
             "target_default_ratio must lie strictly inside (0, 1)",
         ));
     }
-    let (_d, n, total) = validate_and_sum_lines(lines)?;
+    let (d, n, total) = validate_and_sum_lines(lines)?;
     let nf = n as f64;
     let l = total.iter().sum::<f64>() / nf;
     if !(l > 0.0) {
@@ -366,7 +376,7 @@ pub fn myers_read_from_default_ratio(
     }
     let target_sum_excess = target_default_ratio * l * nf;
     let mut sorted_total = total.clone();
-    sorted_total.sort_by(f64::total_cmp);
+    sorted_total.sort_unstable_by(f64::total_cmp);
     let s_max = sorted_total[n - 1];
 
     // Exact closed-form solver for piecewise-linear G(A) = sum_k max(s_k - A, 0) = target_sum_excess.
@@ -389,7 +399,7 @@ pub fn myers_read_from_default_ratio(
     } else {
         assets
     };
-    myers_read_allocation(lines, safe_assets)
+    myers_read_allocation_with_total(lines, d, n, &total, safe_assets)
 }
 
 fn validate_and_sum_lines(lines: &[&[f64]]) -> Result<(usize, usize, Vec<f64>), ValidationError> {
@@ -415,65 +425,130 @@ fn validate_and_sum_lines(lines: &[&[f64]]) -> Result<(usize, usize, Vec<f64>), 
     Ok((lines.len(), n, total))
 }
 
-/// Exact tie-symmetric scenario weights `w_s` (`sum_s w_s == 1`) such that
-/// `sum_s w_s * total[s] == (1 / (p_high - p_low)) * int_{p_low}^{p_high} F^-(u) du`.
-fn coherent_interval_weights(total: &[f64], p_low: f64, p_high: f64) -> Vec<f64> {
+/// Exact O(N) tie-symmetric sparse scenario weights `(idx, w_idx)` (`sum w == 1`)
+/// and exact portfolio risk measure `sum w_idx * total[idx]`, matching
+/// `(1 / (p_high - p_low)) * int_{p_low}^{p_high} F^-(u) du`.
+fn coherent_interval_sparse_weights(
+    total: &[f64],
+    p_low: f64,
+    p_high: f64,
+) -> (Vec<(usize, f64)>, f64) {
     let n = total.len();
     let nf = n as f64;
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| total[a].total_cmp(&total[b]));
 
-    let mut weights = vec![0.0; n];
     if p_low >= 1.0 {
-        // Put equal weight on all scenarios tied at the maximum.
-        let max_val = total[order[n - 1]];
-        let mut lo = n - 1;
-        while lo > 0 && total[order[lo - 1]] == max_val {
-            lo -= 1;
+        // Put equal weight on all scenarios tied at the maximum in O(N).
+        let mut max_val = f64::NEG_INFINITY;
+        for &v in total {
+            if v > max_val {
+                max_val = v;
+            }
         }
-        let count = (n - lo) as f64;
-        for &idx in &order[lo..n] {
-            weights[idx] = 1.0 / count;
+        let mut sparse = Vec::new();
+        for (idx, &v) in total.iter().enumerate() {
+            if v == max_val {
+                sparse.push((idx, 0.0));
+            }
         }
-        return weights;
+        let w = 1.0 / sparse.len() as f64;
+        for pair in &mut sparse {
+            pair.1 = w;
+        }
+        return (sparse, max_val);
     }
 
     let width = p_high - p_low;
-    // First assign raw quantile-overlap mass to each sorted rank r in [0, n).
-    let mut rank_mass = vec![0.0; n];
-    for r in 0..n {
-        let lo = (r as f64 / nf).max(p_low);
-        let hi = ((r + 1) as f64 / nf).min(p_high);
-        if hi > lo {
-            rank_mass[r] = (hi - lo) / width;
+    let k_lo = ((p_low * nf).floor() as usize).min(n - 1);
+    let k_hi = ((p_high * nf).ceil() as usize).clamp(k_lo + 1, n);
+
+    // Find the boundary order statistics v_lo = S_{(k_lo)} and v_hi = S_{(k_hi - 1)} in O(N).
+    let mut scratch = total.to_vec();
+    let (_, pivot_lo, right) = scratch.select_nth_unstable_by(k_lo, f64::total_cmp);
+    let v_lo = *pivot_lo;
+    let v_hi = if k_hi - 1 == k_lo {
+        v_lo
+    } else {
+        let rel = k_hi - 1 - k_lo - 1;
+        let (_, pivot_hi, _) = right.select_nth_unstable_by(rel, f64::total_cmp);
+        *pivot_hi
+    };
+
+    let interior_w = 1.0 / (nf * width);
+    let mut sparse = Vec::with_capacity(k_hi - k_lo + 8);
+    let mut portfolio_risk = 0.0;
+
+    if v_lo == v_hi {
+        // Entire quantile interval lies within a single tie value v_lo.
+        let mut count_eq = 0usize;
+        for (idx, &v) in total.iter().enumerate() {
+            if v == v_lo {
+                sparse.push((idx, 0.0));
+                count_eq += 1;
+            }
+        }
+        let w = 1.0 / count_eq as f64;
+        for pair in &mut sparse {
+            pair.1 = w;
+        }
+        return (sparse, v_lo);
+    }
+
+    // Single O(N) pass: collect interior elements (v_lo < v < v_hi) directly with exact
+    // weight 1 / (N * width), and track boundary tie groups at v_lo and v_hi.
+    let mut n_lt_lo = 0usize;
+    let mut eq_lo = Vec::new();
+    let mut n_lt_hi = 0usize;
+    let mut eq_hi = Vec::new();
+
+    for (idx, &v) in total.iter().enumerate() {
+        if v < v_lo {
+            n_lt_lo += 1;
+            n_lt_hi += 1;
+        } else if v == v_lo {
+            eq_lo.push(idx);
+            n_lt_hi += 1;
+        } else if v < v_hi {
+            sparse.push((idx, interior_w));
+            portfolio_risk += interior_w * v;
+            n_lt_hi += 1;
+        } else if v == v_hi {
+            eq_hi.push(idx);
         }
     }
 
-    // Symmetrize weights across every group of tied total-loss values so that
-    // the allocation is strictly permutation-invariant while conserving exact sum.
-    let mut r = 0usize;
-    while r < n {
-        let val = total[order[r]];
-        let mut end = r + 1;
-        while end < n && total[order[end]] == val {
-            end += 1;
+    // Tie-symmetric mass for the lower boundary group spanning sorted ranks [n_lt_lo, n_lt_lo + eq_lo.len()).
+    let lo_start = (n_lt_lo as f64 / nf).max(p_low);
+    let lo_end = ((n_lt_lo + eq_lo.len()) as f64 / nf).min(p_high);
+    if lo_end > lo_start && !eq_lo.is_empty() {
+        let group_mass = (lo_end - lo_start) / width;
+        let w_lo = group_mass / eq_lo.len() as f64;
+        portfolio_risk += group_mass * v_lo;
+        for idx in eq_lo {
+            sparse.push((idx, w_lo));
         }
-        let group_mass: f64 = rank_mass[r..end].iter().sum();
-        let per_member = group_mass / (end - r) as f64;
-        for &idx in &order[r..end] {
-            weights[idx] = per_member;
-        }
-        r = end;
     }
-    weights
+
+    // Tie-symmetric mass for the upper boundary group spanning sorted ranks [n_lt_hi, n_lt_hi + eq_hi.len()).
+    let hi_start = (n_lt_hi as f64 / nf).max(p_low);
+    let hi_end = ((n_lt_hi + eq_hi.len()) as f64 / nf).min(p_high);
+    if hi_end > hi_start && !eq_hi.is_empty() {
+        let group_mass = (hi_end - hi_start) / width;
+        let w_hi = group_mass / eq_hi.len() as f64;
+        portfolio_risk += group_mass * v_hi;
+        for idx in eq_hi {
+            sparse.push((idx, w_hi));
+        }
+    }
+
+    (sparse, portfolio_risk)
 }
 
 fn build_euler_result(
     lines: &[&[f64]],
     total: &[f64],
-    weights: &[f64],
+    sparse_weights: &[(usize, f64)],
     d: usize,
-    n: usize,
+    _n: usize,
     portfolio_risk_measure: f64,
     standalone_risk_measures: Vec<f64>,
 ) -> Result<EulerAllocationResult, ValidationError> {
@@ -485,8 +560,8 @@ fn build_euler_result(
     for &col in lines {
         let mu_i = mean(col)?;
         let mut ac_i = 0.0;
-        for k in 0..n {
-            ac_i += weights[k] * col[k];
+        for &(idx, w) in sparse_weights {
+            ac_i += w * col[idx];
         }
         standalone_means.push(mu_i);
         allocated_total.push(ac_i);

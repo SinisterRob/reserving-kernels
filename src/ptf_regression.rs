@@ -280,10 +280,11 @@ pub fn fit_ptf(
     let p = schema.param_names.len();
 
     // Assemble observed rows for all strictly positive observed incremental cells.
-    let mut obs_cells: Vec<(usize, usize)> = Vec::new();
-    let mut x_flat: Vec<f64> = Vec::new();
-    let mut y_vec: Vec<f64> = Vec::new();
-    let mut w_vec: Vec<f64> = Vec::new();
+    let max_obs = n * (n + 1) / 2;
+    let mut obs_cells: Vec<(usize, usize)> = Vec::with_capacity(max_obs);
+    let mut x_flat: Vec<f64> = Vec::with_capacity(max_obs * p);
+    let mut y_vec: Vec<f64> = Vec::with_capacity(max_obs);
+    let mut w_vec: Vec<f64> = Vec::with_capacity(max_obs);
     let mut row_buf = vec![0.0; p];
 
     for i in 0..n {
@@ -353,17 +354,20 @@ pub fn fit_ptf(
     // Extract implied incremental calendar-year inflation rates iota_t for t = 1..n-1.
     let calendar_inflation_rates = schema.calendar_rates(&sol.beta, n);
 
-    // Compute fitted incremental values across full n × n grid and forecast future cells.
+    // Compute fitted incremental values across full n × n grid and forecast future cells
+    // using a single reusable row buffer and flat future design matrix.
+    let n_fut_cap = n * (n - 1) / 2;
     let mut fitted_incremental = vec![0.0; n * n];
-    let mut future_rows: Vec<(usize, usize, f64, f64, f64, Vec<f64>)> = Vec::new();
+    let mut future_meta: Vec<(usize, f64, f64, f64)> = Vec::with_capacity(n_fut_cap);
+    let mut future_x: Vec<f64> = Vec::with_capacity(n_fut_cap * p);
     let mut latest_cum = vec![0.0; n];
+    let mut x_cell = vec![0.0; p];
 
     for i in 0..n {
         let log_exp = options.exposure.as_ref().map_or(0.0, |e| e[i].ln());
         latest_cum[i] = triangle.get(i, n - 1 - i);
         for j in 0..n {
             let w_j = options.dev_weights.as_ref().map_or(1.0, |w| w[j]);
-            let mut x_cell = vec![0.0; p];
             let extra_cal = schema.fill_row(i, j, options.future_calendar_rate, &mut x_cell);
             let mut eta = log_exp + extra_cal;
             for col in 0..p {
@@ -382,7 +386,8 @@ pub fn fit_ptf(
             fitted_incremental[i * n + j] = mu;
 
             if i + j >= n {
-                future_rows.push((i, j, mu, v_proc, v_est, x_cell));
+                future_meta.push((i, mu, v_proc, v_est));
+                future_x.extend_from_slice(&x_cell);
             }
         }
     }
@@ -390,28 +395,30 @@ pub fn fit_ptf(
     // Per-origin and aggregate reserves + exact analytical log-normal MSEP.
     let mut reserves = vec![0.0; n];
     let mut origin_msep = vec![0.0; n];
-    for &(i, _j, mu, _vp, _ve, _) in &future_rows {
+    for &(i, mu, _vp, _ve) in &future_meta {
         reserves[i] += mu;
     }
 
-    // Precompute Cov * x_b for every future cell so pairwise covariances run in O(N_fut^2 * p).
-    let n_fut = future_rows.len();
-    let mut cov_x: Vec<Vec<f64>> = Vec::with_capacity(n_fut);
-    for (_, _, _, _, _, xb) in &future_rows {
-        let mut v = vec![0.0; p];
+    // Precompute Cov * x_b into a flat n_fut × p buffer so pairwise covariances run in O(N_fut^2 * p).
+    let n_fut = future_meta.len();
+    let mut cov_x = vec![0.0; n_fut * p];
+    for b in 0..n_fut {
+        let xb = &future_x[b * p..(b + 1) * p];
+        let dst = &mut cov_x[b * p..(b + 1) * p];
         for r in 0..p {
+            let cov_row = &cov[r * p..(r + 1) * p];
             let mut acc = 0.0;
-            for c in 0..p {
-                acc += cov[r * p + c] * xb[c];
+            for (&cr, &xc) in cov_row.iter().zip(xb.iter()) {
+                acc += cr * xc;
             }
-            v[r] = acc;
+            dst[r] = acc;
         }
-        cov_x.push(v);
     }
 
     let mut total_msep = 0.0;
     for a in 0..n_fut {
-        let (ia, _ja, mu_a, vp_a, v_est_a, ref xa) = future_rows[a];
+        let (ia, mu_a, vp_a, v_est_a) = future_meta[a];
+        let xa = &future_x[a * p..(a + 1) * p];
         let var_a = mu_a * mu_a * (vp_a + v_est_a).exp_m1();
         if !var_a.is_finite() {
             return Err(ValidationError::NotFinite);
@@ -420,11 +427,11 @@ pub fn fit_ptf(
         total_msep += var_a;
 
         for b in (a + 1)..n_fut {
-            let (ib, _jb, mu_b, _vp_b, _ve_b, _) = future_rows[b];
+            let (ib, mu_b, _vp_b, _ve_b) = future_meta[b];
+            let cvb = &cov_x[b * p..(b + 1) * p];
             let mut cov_eta = 0.0;
-            let cvb = &cov_x[b];
-            for r in 0..p {
-                cov_eta += xa[r] * cvb[r];
+            for (&xar, &cvbr) in xa.iter().zip(cvb.iter()) {
+                cov_eta += xar * cvbr;
             }
             let cov_y = mu_a * mu_b * cov_eta.exp_m1();
             if !cov_y.is_finite() {

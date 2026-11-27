@@ -6,12 +6,20 @@ use criterion::{
 use reserving_kernels::{
     aggregate_loss::{FrequencyDistribution, fft_aggregate_loss, panjer_recursion},
     bootstrap_odp::{OdpBootstrapOptions, bootstrap_odp, bootstrap_odp_cdr, fit_odp},
+    capital_allocation::{euler_tvar_allocation, myers_read_from_default_ratio},
     clark_mle::{ClarkOptions, fit_clark_ldf},
-    datasets::{genins as genins_triangle, raa as raa_triangle},
+    datasets::{friedland_us_industry_auto, genins as genins_triangle, raa as raa_triangle},
     dependence::{CorrelationType, iman_conover, synchronized_odp_bootstrap},
-    excess_layers,
+    double_chain_ladder, excess_layers,
     glm_reserving::{GlmOptions, fit_glm},
-    ldf, mack, merz_wuthrich, reserve_distribution,
+    kalman_reserving::{self, KalmanReservingOptions},
+    ldf, mack, merz_wuthrich,
+    micro_reserving::{ClaimRecord, MicroReservingModel, simulate_reserves},
+    multivariate_cl::{MultivariateClOptions, MultivariateModel, analyze_multivariate_cl},
+    multivariate_mack,
+    paid_incurred_chain::{self, PicOptions},
+    ptf_regression::{self, PtfOptions},
+    reserve_distribution,
     types::Triangle,
     validate::MonotonicityPolicy,
 };
@@ -205,6 +213,130 @@ fn bench_aggregate_and_excess(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_advanced_kernels(c: &mut Criterion) {
+    let mut group = c.benchmark_group("advanced");
+    let genins = genins_triangle();
+    let genins_view = genins.view();
+    let auto = friedland_us_industry_auto();
+    let paid_view = auto.paid.view();
+    let inc_view = auto.reported.view();
+
+    let kalman_opts = KalmanReservingOptions::default();
+    group.bench_function("kalman_genins_10x10", |b| {
+        b.iter(|| {
+            kalman_reserving::analyze(black_box(&genins_view), black_box(kalman_opts))
+                .expect("kalman")
+        });
+    });
+
+    let ptf_opts = PtfOptions::default();
+    group.bench_function("ptf_genins_10x10", |b| {
+        b.iter(|| {
+            ptf_regression::fit_ptf(black_box(&genins_view), black_box(&ptf_opts)).expect("ptf")
+        });
+    });
+
+    let pic_opts = PicOptions::default();
+    group.bench_function("pic_friedland_10x10", |b| {
+        b.iter(|| {
+            paid_incurred_chain::analyze(
+                black_box(&paid_view),
+                black_box(&inc_view),
+                black_box(&pic_opts),
+            )
+            .expect("pic")
+        });
+    });
+
+    let tri40_a = synthetic_cumulative_triangle(40);
+    let mut tri40_b_data = vec![f64::NAN; 40 * 40];
+    for i in 0..40 {
+        let mut acc = 1_300.0 + (i as f64 * 23.0);
+        for j in 0..(40 - i) {
+            acc += 14.0 + (j as f64 * 0.35) + ((i * 3 + j) % 5) as f64 * 0.9;
+            tri40_b_data[i * 40 + j] = acc;
+        }
+    }
+    let tri40_b = Triangle::new(40, 40, tri40_b_data);
+    let mv_views_40 = [tri40_a.view(), tri40_b.view()];
+    group.bench_function("multivariate_mack_2line_40x40", |b| {
+        b.iter(|| multivariate_mack::analyze(black_box(&mv_views_40), 1.0).expect("mv mack"));
+    });
+
+    let mv_views_10 = [paid_view, inc_view];
+    let gmcl_opts = MultivariateClOptions {
+        model: MultivariateModel::GeneralGmcl,
+        policy: MonotonicityPolicy::AllowNegativeIncrements,
+    };
+    group.bench_function("multivariate_cl_gmcl_2line_10x10", |b| {
+        b.iter(|| {
+            analyze_multivariate_cl(black_box(&mv_views_10), black_box(&gmcl_opts)).expect("gmcl")
+        });
+    });
+
+    group.bench_function("dcl_40x40", |b| {
+        b.iter(|| {
+            double_chain_ladder::analyze(black_box(&mv_views_40[0]), black_box(&mv_views_40[1]))
+                .expect("dcl")
+        });
+    });
+
+    let n_scen = 10_000usize;
+    let lines_owned: Vec<Vec<f64>> = (0..5)
+        .map(|l| {
+            (0..n_scen)
+                .map(|i| {
+                    (((i * (2_654_435_761usize + l * 97)) % n_scen) as f64 + 10.0) * (l + 1) as f64
+                })
+                .collect()
+        })
+        .collect();
+    let line_slices: Vec<&[f64]> = lines_owned.iter().map(Vec::as_slice).collect();
+    group.bench_function("euler_tvar_10k_x_5", |b| {
+        b.iter(|| euler_tvar_allocation(black_box(&line_slices), 0.95).expect("euler tvar"));
+    });
+    group.bench_function("myers_read_ratio_10k_x_5", |b| {
+        b.iter(|| {
+            myers_read_from_default_ratio(black_box(&line_slices), 0.01).expect("myers read")
+        });
+    });
+
+    let micro_model = MicroReservingModel {
+        occurrence_intensities: vec![40.0; 5],
+        reporting_delay_rate: 2.5,
+        interim_payment_hazard: 1.2,
+        settlement_hazard: 0.8,
+        interim_severity_mu: 7.0,
+        interim_severity_sigma: 0.6,
+        settlement_payment_prob: 0.75,
+        settlement_severity_mu: 8.0,
+        settlement_severity_sigma: 0.7,
+    };
+    let open_claims: Vec<ClaimRecord> = (0..30)
+        .map(|id| ClaimRecord {
+            claim_id: id,
+            occurrence_time: 4.0 + (id as f64) * 0.02,
+            report_time: 4.1 + (id as f64) * 0.02,
+            settlement_time: None,
+            payments: Vec::new(),
+        })
+        .collect();
+    group.bench_function("micro_simulate_1000", |b| {
+        b.iter(|| {
+            simulate_reserves(
+                black_box(&open_claims),
+                black_box(&micro_model),
+                5.0,
+                1_000,
+                42069,
+            )
+            .expect("micro")
+        });
+    });
+
+    group.finish();
+}
+
 fn criterion_config() -> Criterion {
     Criterion::default()
         .warm_up_time(Duration::from_millis(600))
@@ -220,6 +352,7 @@ criterion_group! {
         bench_mle_and_glm,
         bench_bootstrap,
         bench_dependence_and_distribution,
-        bench_aggregate_and_excess
+        bench_aggregate_and_excess,
+        bench_advanced_kernels
 }
 criterion_main!(benches);

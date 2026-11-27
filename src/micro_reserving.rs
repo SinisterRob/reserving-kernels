@@ -25,7 +25,6 @@
 //!    occurrence through reporting to settlement.
 
 use crate::bootstrap_odp::DeterministicRng;
-use crate::reserve_distribution::quantile;
 use crate::validate::ValidationError;
 
 /// A single payment transaction on an individual claim.
@@ -351,9 +350,12 @@ fn fit_lognormal(log_amounts: &[f64]) -> (f64, f64) {
     (mu, var.max(0.0).sqrt())
 }
 
-fn simulate_single_open_claim(model: &MicroReservingModel, rng: &mut DeterministicRng) -> f64 {
-    let total_rate = model.interim_payment_hazard + model.settlement_hazard;
-    let p_interim = model.interim_payment_hazard / total_rate;
+#[inline]
+fn simulate_single_open_claim(
+    model: &MicroReservingModel,
+    p_interim: f64,
+    rng: &mut DeterministicRng,
+) -> f64 {
     let mut paid = 0.0;
     // Competing exponential hazards: geometrically distributed number of interim
     // payments before settlement (memoryless property).
@@ -402,42 +404,42 @@ pub fn simulate_reserves(
         .count();
 
     let expected_ibnr = model.expected_ibnr_count(valuation_time);
+    let p_interim =
+        model.interim_payment_hazard / (model.interim_payment_hazard + model.settlement_hazard);
     let mut rng = DeterministicRng::from_seed(seed);
 
-    let mut rbns_draws = Vec::with_capacity(n_simulations);
-    let mut ibnr_draws = Vec::with_capacity(n_simulations);
     let mut total_draws = Vec::with_capacity(n_simulations);
     let mut ibnr_count_sum = 0.0;
+    let mut w_rbns = OnlineMoments::default();
+    let mut w_ibnr = OnlineMoments::default();
+    let mut w_total = OnlineMoments::default();
 
     for _ in 0..n_simulations {
         let mut rbns = 0.0;
         for _ in 0..n_open_claims {
-            rbns += simulate_single_open_claim(model, &mut rng);
+            rbns += simulate_single_open_claim(model, p_interim, &mut rng);
         }
 
         let n_ibnr = rng.sample_poisson(expected_ibnr).round() as usize;
         ibnr_count_sum += n_ibnr as f64;
         let mut ibnr = 0.0;
         for _ in 0..n_ibnr {
-            ibnr += simulate_single_open_claim(model, &mut rng);
+            ibnr += simulate_single_open_claim(model, p_interim, &mut rng);
         }
 
-        rbns_draws.push(rbns);
-        ibnr_draws.push(ibnr);
-        total_draws.push(rbns + ibnr);
+        let tot = rbns + ibnr;
+        w_rbns.push(rbns);
+        w_ibnr.push(ibnr);
+        w_total.push(tot);
+        total_draws.push(tot);
     }
 
-    let (mean_rbns, sd_rbns) = mean_sd(&rbns_draws);
-    let (mean_ibnr, sd_ibnr) = mean_sd(&ibnr_draws);
-    let (mean_total, sd_total) = mean_sd(&total_draws);
+    let (mean_rbns, sd_rbns) = w_rbns.finish();
+    let (mean_ibnr, sd_ibnr) = w_ibnr.finish();
+    let (mean_total, sd_total) = w_total.finish();
 
-    let total_quantiles = [
-        quantile(&total_draws, 0.50)?,
-        quantile(&total_draws, 0.75)?,
-        quantile(&total_draws, 0.90)?,
-        quantile(&total_draws, 0.95)?,
-        quantile(&total_draws, 0.99)?,
-    ];
+    // Cascading single-clone selection for [50%, 75%, 90%, 95%, 99%] quantiles (O(N)).
+    let total_quantiles = five_quantiles(&total_draws);
 
     Ok(MicroReservingResult {
         n_simulations,
@@ -550,17 +552,56 @@ pub fn simulate_synthetic_portfolio(
     Ok((observed, true_rbns, true_ibnr))
 }
 
-fn mean_sd(xs: &[f64]) -> (f64, f64) {
-    if xs.is_empty() {
-        return (0.0, 0.0);
+#[derive(Default)]
+struct OnlineMoments {
+    n: usize,
+    mean: f64,
+    m2: f64,
+}
+
+impl OnlineMoments {
+    #[inline]
+    fn push(&mut self, x: f64) {
+        self.n += 1;
+        let delta = x - self.mean;
+        self.mean += delta / self.n as f64;
+        self.m2 += delta * (x - self.mean);
     }
-    let m = xs.len() as f64;
-    let mean = xs.iter().sum::<f64>() / m;
-    if xs.len() < 2 {
-        return (mean, 0.0);
+
+    fn finish(&self) -> (f64, f64) {
+        if self.n < 2 {
+            return (self.mean, 0.0);
+        }
+        (self.mean, (self.m2 / (self.n - 1) as f64).max(0.0).sqrt())
     }
-    let var = xs.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (m - 1.0);
-    (mean, var.max(0.0).sqrt())
+}
+
+fn five_quantiles(xs: &[f64]) -> [f64; 5] {
+    const PROBS: [f64; 5] = [0.50, 0.75, 0.90, 0.95, 0.99];
+    let n = xs.len();
+    if n == 1 {
+        return [xs[0]; 5];
+    }
+    let mut buf = xs.to_vec();
+    let mut out = [0.0; 5];
+    let mut start = 0usize;
+    let last = (n - 1) as f64;
+    for (slot, &p) in out.iter_mut().zip(PROBS.iter()) {
+        let pos = p * last;
+        let lo = pos.floor() as usize;
+        let hi = pos.ceil() as usize;
+        let weight = pos - lo as f64;
+        let (_, v_lo_ref, right) = buf[start..].select_nth_unstable_by(lo - start, f64::total_cmp);
+        let v_lo = *v_lo_ref;
+        if lo == hi {
+            *slot = v_lo;
+        } else {
+            let v_hi = right.iter().copied().min_by(f64::total_cmp).unwrap_or(v_lo);
+            *slot = v_lo * (1.0 - weight) + v_hi * weight;
+        }
+        start = lo;
+    }
+    out
 }
 
 #[cfg(test)]

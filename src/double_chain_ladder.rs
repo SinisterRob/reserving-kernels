@@ -206,6 +206,14 @@ pub fn analyze_with_inflation(
     let inc_counts = cumulative_to_incremental(counts_cumulative);
     let latest_paid = latest_diagonal(paid_cumulative);
 
+    // Prefix sums of payment_delay: pay_prefix[m] = sum_{l=0}^{m-1} payment_delay[l].
+    // Collapses both RBNS and IBNR (in-triangle and tail) from O(n^3) to O(n^2).
+    let mut pay_prefix = vec![0.0; n + 1];
+    for l in 0..n {
+        pay_prefix[l + 1] = pay_prefix[l] + payment_delay[l];
+    }
+    let pay_total = pay_prefix[n];
+
     let mut rbns_reserve = vec![0.0; n];
     let mut ibnr_reserve = vec![0.0; n];
     let mut rbns_tail = vec![0.0; n];
@@ -215,38 +223,36 @@ pub fn analyze_with_inflation(
         let last_obs = n - 1 - i;
         let gamma_i = severity_inflation[i];
         let alpha_i = count_cl.ultimates[i];
+        let row_base = i * n;
 
-        // Future payment development periods j = last_obs + 1 .. 2*n - 1
-        // In-triangle: j <= n - 1; Tail: j >= n.
-        for j in (last_obs + 1)..(2 * n - 1) {
-            // RBNS: claims already reported at k in 0..=last_obs with payment lag l = j - k < n.
-            let mut rbns_ij = 0.0;
-            for k in 0..=last_obs {
-                if j >= k && (j - k) < n {
-                    rbns_ij += inc_counts[i * n + k] * payment_delay[j - k];
-                }
-            }
-            rbns_ij *= gamma_i;
-
-            // IBNR: future claims reported at k in (last_obs + 1)..=min(j, n - 1).
-            let mut ibnr_ij = 0.0;
-            let k_max = j.min(n - 1);
-            for k in (last_obs + 1)..=k_max {
-                if j >= k && (j - k) < n {
-                    let n_hat_ik = alpha_i * reporting_delay[k];
-                    ibnr_ij += n_hat_ik * payment_delay[j - k];
-                }
-            }
-            ibnr_ij *= gamma_i;
-
-            if j < n {
-                rbns_reserve[i] += rbns_ij;
-                ibnr_reserve[i] += ibnr_ij;
-            } else {
-                rbns_tail[i] += rbns_ij;
-                ibnr_tail[i] += ibnr_ij;
-            }
+        // RBNS: claims already reported at k in 0..=last_obs.
+        //   In-triangle (j in last_obs+1..n): lag l = j - k in (last_obs + 1 - k)..(n - k).
+        //   Tail (j in n..k+n):               lag l = j - k in (n - k)..n.
+        let mut rbns_in = 0.0;
+        let mut rbns_tl = 0.0;
+        for k in 0..=last_obs {
+            let cnt = inc_counts[row_base + k];
+            let p_nk = pay_prefix[n - k];
+            rbns_in += cnt * (p_nk - pay_prefix[last_obs + 1 - k]);
+            rbns_tl += cnt * (pay_total - p_nk);
         }
+        rbns_reserve[i] = gamma_i * rbns_in;
+        rbns_tail[i] = gamma_i * rbns_tl;
+
+        // IBNR: future claims reported at k in (last_obs + 1)..n.
+        //   In-triangle (j in k..n): lag l = j - k in 0..(n - k).
+        //   Tail (j in n..k+n):      lag l = j - k in (n - k)..n.
+        let mut ibnr_in = 0.0;
+        let mut ibnr_tl = 0.0;
+        for k in (last_obs + 1)..n {
+            let rep = reporting_delay[k];
+            let p_nk = pay_prefix[n - k];
+            ibnr_in += rep * p_nk;
+            ibnr_tl += rep * (pay_total - p_nk);
+        }
+        let scale = gamma_i * alpha_i;
+        ibnr_reserve[i] = scale * ibnr_in;
+        ibnr_tail[i] = scale * ibnr_tl;
     }
 
     let total_in_triangle_by_origin: Vec<f64> =

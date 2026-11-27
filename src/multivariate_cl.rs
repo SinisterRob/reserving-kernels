@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    linalg::{invert_spd, solve_general},
+    linalg::solve_general,
     triangle::latest_diagonal,
     types::TriangleView,
     validate::{
@@ -115,6 +115,7 @@ pub fn analyze_multivariate_cl(
     let mut sigma_mats: Vec<Vec<f64>> = Vec::with_capacity(n_steps);
     let mut s_col: Vec<Vec<f64>> = vec![vec![0.0; k_lines]; n_steps];
 
+    let mut resid = vec![0.0; k_lines];
     // 1. Estimate development matrices B_k and residual covariance Sigma_k.
     for k in 0..n_steps {
         let nk = n - 1 - k;
@@ -129,35 +130,21 @@ pub fn analyze_multivariate_cl(
         let mut bk = vec![0.0; k_lines * k_lines];
         match options.model {
             MultivariateModel::DiagonalMcl => {
-                for a in 0..k_lines {
-                    let mut num = 0.0;
-                    let mut den = 0.0;
-                    for i in 0..nk {
-                        num += triangles[a].get(i, k + 1);
-                        den += triangles[a].get(i, k);
-                    }
-                    bk[a * k_lines + a] = if den > 0.0 { num / den } else { 1.0 };
-                }
+                fill_diagonal_mcl(triangles, k, nk, &mut bk);
             }
             MultivariateModel::GeneralGmcl => {
                 // If nk <= k_lines, fall back to diagonal MCL for numerical stability.
                 if nk <= k_lines {
-                    for a in 0..k_lines {
-                        let mut num = 0.0;
-                        let mut den = 0.0;
-                        for i in 0..nk {
-                            num += triangles[a].get(i, k + 1);
-                            den += triangles[a].get(i, k);
-                        }
-                        bk[a * k_lines + a] = if den > 0.0 { num / den } else { 1.0 };
-                    }
+                    fill_diagonal_mcl(triangles, k, nk, &mut bk);
                 } else {
                     // Weighted multivariate regression for each target line a:
                     // minimize sum_i w_i * (Y_{i,k+1,a} - sum_b B_{a,b} Y_{i,k,b})^2
                     // with w_i = 1 / Y_{i,k,a} (matching Mack's alpha = 1 weighting).
+                    let mut xtx = vec![0.0; k_lines * k_lines];
+                    let mut xty = vec![0.0; k_lines];
                     for a in 0..k_lines {
-                        let mut xtx = vec![0.0; k_lines * k_lines];
-                        let mut xty = vec![0.0; k_lines];
+                        xtx.fill(0.0);
+                        xty.fill(0.0);
                         for i in 0..nk {
                             let y_a = triangles[a].get(i, k);
                             let w = if y_a > 0.0 { 1.0 / y_a } else { 0.0 };
@@ -173,19 +160,11 @@ pub fn analyze_multivariate_cl(
                         }
                         match solve_general(&xtx, k_lines, &xty) {
                             Ok(beta) => {
-                                for b in 0..k_lines {
-                                    bk[a * k_lines + b] = beta[b];
-                                }
+                                bk[a * k_lines..(a + 1) * k_lines].copy_from_slice(&beta);
                             }
                             Err(_) => {
                                 // Ridge/diagonal fallback on collinear lines.
-                                let mut num = 0.0;
-                                let mut den = 0.0;
-                                for i in 0..nk {
-                                    num += triangles[a].get(i, k + 1);
-                                    den += triangles[a].get(i, k);
-                                }
-                                bk[a * k_lines + a] = if den > 0.0 { num / den } else { 1.0 };
+                                bk[a * k_lines + a] = diagonal_ldf(&triangles[a], k, nk);
                             }
                         }
                     }
@@ -208,7 +187,6 @@ pub fn analyze_multivariate_cl(
         };
         if dof >= 1 {
             for i in 0..nk {
-                let mut resid = vec![0.0; k_lines];
                 for a in 0..k_lines {
                     let mut pred = 0.0;
                     for b in 0..k_lines {
@@ -222,13 +200,15 @@ pub fn analyze_multivariate_cl(
                     };
                 }
                 for a in 0..k_lines {
+                    let ra = resid[a];
                     for b in 0..k_lines {
-                        sig[a * k_lines + b] += resid[a] * resid[b];
+                        sig[a * k_lines + b] += ra * resid[b];
                     }
                 }
             }
+            let inv_dof = 1.0 / dof as f64;
             for v in &mut sig {
-                *v /= dof as f64;
+                *v *= inv_dof;
             }
         }
         b_mats.push(bk);
@@ -269,21 +249,25 @@ pub fn analyze_multivariate_cl(
         }
     }
 
-    // 2. Project cumulative triangles jointly: proj[i][k][a].
+    // 2. Project cumulative triangles jointly into a flat n × n × K buffer.
     let latest_by_line: Vec<Vec<f64>> = triangles.iter().map(latest_diagonal).collect();
-    let mut proj = vec![vec![vec![0.0; k_lines]; n]; n];
+    let mut proj = vec![0.0; n * n * k_lines];
+    let proj_idx = |i: usize, k: usize, a: usize| (i * n + k) * k_lines + a;
     for i in 0..n {
         let start = n - 1 - i;
         for a in 0..k_lines {
-            proj[i][start][a] = latest_by_line[a][i];
+            proj[proj_idx(i, start, a)] = latest_by_line[a][i];
         }
         for k in start..n_steps {
+            let src_base = (i * n + k) * k_lines;
+            let dst_base = (i * n + k + 1) * k_lines;
+            let bk = &b_mats[k];
             for a in 0..k_lines {
                 let mut acc = 0.0;
                 for b in 0..k_lines {
-                    acc += b_mats[k][a * k_lines + b] * proj[i][k][b];
+                    acc += bk[a * k_lines + b] * proj[src_base + b];
                 }
-                proj[i][k + 1][a] = acc;
+                proj[dst_base + a] = acc;
             }
         }
     }
@@ -292,8 +276,9 @@ pub fn analyze_multivariate_cl(
     let mut reserves = vec![vec![0.0; n]; k_lines];
     for a in 0..k_lines {
         for i in 0..n {
-            ultimates[a][i] = proj[i][n - 1][a];
-            reserves[a][i] = ultimates[a][i] - latest_by_line[a][i];
+            let ult = proj[proj_idx(i, n - 1, a)];
+            ultimates[a][i] = ult;
+            reserves[a][i] = ult - latest_by_line[a][i];
         }
     }
     let total_reserves_by_line: Vec<f64> = reserves.iter().map(|r| r.iter().sum()).collect();
@@ -301,38 +286,40 @@ pub fn analyze_multivariate_cl(
 
     // 3. Portfolio K × K MSEP covariance matrix via Braun (2004) / Pröhl–Schmidt (2005)
     //    recursive propagation of process and parameter covariance matrices.
-    //    For each origin i, propagate MSEP_proc(i, k) and MSEP_param(i, k) from start = n-1-i to n-1.
-    //    For diagonal MCL this reduces identically to Braun (2004) Theorem 3.1 (and univariate Mack
-    //    on the diagonal entries!).
-    let mut total_msep = vec![0.0; k_lines * k_lines];
+    let kk = k_lines * k_lines;
+    let mut total_msep = vec![0.0; kk];
 
     // Precompute parameter-estimation covariance scale per step k:
-    // For DiagonalMcl: Cov(f_{k,a}, f_{k,b}) = Sigma_{k,ab} / sqrt(S_{k,a} * S_{k,b}) * (approx Braun)
     // Exact Braun (2004) Eq. (3.5) for cross-line parameter covariance:
     //   Cov(f_{k,a}, f_{k,b}) = (sum_{i=0}^{nk-1} sqrt(C_{i,k,a} C_{i,k,b})) / (S_{k,a} S_{k,b}) * Sigma_{k,ab}.
-    let mut param_scale = vec![vec![0.0; k_lines * k_lines]; n_steps];
+    let mut param_scale = vec![0.0; n_steps * kk];
     for k in 0..n_steps {
         let nk = n - 1 - k;
+        let ps_base = k * kk;
         for a in 0..k_lines {
-            for b in 0..k_lines {
-                let sa = s_col[k][a];
+            let sa = s_col[k][a];
+            if sa <= 0.0 {
+                continue;
+            }
+            for b in a..k_lines {
                 let sb = s_col[k][b];
-                if sa > 0.0 && sb > 0.0 {
+                if sb > 0.0 {
                     let mut cross_sqrt = 0.0;
                     for i in 0..nk {
                         let ca = triangles[a].get(i, k).max(0.0);
                         let cb = triangles[b].get(i, k).max(0.0);
                         cross_sqrt += (ca * cb).sqrt();
                     }
-                    param_scale[k][a * k_lines + b] =
-                        (cross_sqrt / (sa * sb)) * sigma_mats[k][a * k_lines + b];
+                    let val = (cross_sqrt / (sa * sb)) * sigma_mats[k][a * k_lines + b];
+                    param_scale[ps_base + a * k_lines + b] = val;
+                    param_scale[ps_base + b * k_lines + a] = val;
                 }
             }
         }
     }
 
-    // Also precompute cumulative transition products P_{k -> n-1} = B_{n-2} ... B_k (K × K).
-    let mut trans_to_ult = vec![vec![0.0; k_lines * k_lines]; n];
+    // Precompute cumulative transition products P_{k -> n-1} = B_{n-2} ... B_k (K × K).
+    let mut trans_to_ult = vec![vec![0.0; kk]; n];
     for a in 0..k_lines {
         trans_to_ult[n - 1][a * k_lines + a] = 1.0;
     }
@@ -340,50 +327,58 @@ pub fn analyze_multivariate_cl(
         trans_to_ult[k] = mat_mul(&trans_to_ult[k + 1], &b_mats[k], k_lines);
     }
 
-    // Per-origin process variance + cross-origin parameter covariance.
-    // Process variance for origin i: sum_{k=start}^{n-2} P_{k+1->ult} D(C_{i,k})^{1/2} Sigma_k D(C_{i,k})^{1/2} P_{k+1->ult}^T
+    // Hoisted scratch buffers for zero-allocation MSEP accumulation.
+    let mut step_mat = vec![0.0; kk];
+    let mut pm_scratch = vec![0.0; kk];
+    let mut sqrt_c = vec![0.0; k_lines];
+    let mut z_k = vec![0.0; k_lines];
+
+    // Per-origin process variance:
+    // sum_{k=start}^{n-2} P_{k+1->ult} D(C_{i,k})^{1/2} Sigma_k D(C_{i,k})^{1/2} P_{k+1->ult}^T
     for i in 1..n {
         let start = n - 1 - i;
         for k in start..n_steps {
             let p_next = &trans_to_ult[k + 1];
-            let mut step_proc = vec![0.0; k_lines * k_lines];
+            let base = (i * n + k) * k_lines;
             for a in 0..k_lines {
-                let sa = proj[i][k][a].max(0.0).sqrt();
+                sqrt_c[a] = proj[base + a].max(0.0).sqrt();
+            }
+            let sig_k = &sigma_mats[k];
+            for a in 0..k_lines {
+                let sa = sqrt_c[a];
                 for b in 0..k_lines {
-                    let sb = proj[i][k][b].max(0.0).sqrt();
-                    step_proc[a * k_lines + b] = sa * sb * sigma_mats[k][a * k_lines + b];
+                    step_mat[a * k_lines + b] = sa * sqrt_c[b] * sig_k[a * k_lines + b];
                 }
             }
-            let propagated = mat_mul_ab_at(p_next, &step_proc, k_lines);
-            for idx in 0..(k_lines * k_lines) {
-                total_msep[idx] += propagated[idx];
-            }
+            add_mat_mul_ab_at(p_next, &step_mat, k_lines, &mut pm_scratch, &mut total_msep);
         }
     }
 
     // Parameter covariance summed across all origins (including cross-origin pairs i, j):
-    // For each step k, all origins i >= n - 1 - k share the same estimated B_k.
-    // Let Z_k = sum_{i = n - 1 - k}^{n - 1} C_hat_{i,k} (vector of length K).
-    // Contribution of step k to total MSEP is:
     //   P_{k+1->ult} [ (Z_k Z_k^T) ∘ Cov(f_k) ] P_{k+1->ult}^T.
     for k in 0..n_steps {
         let first_origin = n - 1 - k;
-        let mut z_k = vec![0.0; k_lines];
+        z_k.fill(0.0);
         for i in first_origin..n {
+            let base = (i * n + k) * k_lines;
             for a in 0..k_lines {
-                z_k[a] += proj[i][k][a];
+                z_k[a] += proj[base + a];
             }
         }
-        let mut step_param = vec![0.0; k_lines * k_lines];
+        let ps_base = k * kk;
         for a in 0..k_lines {
+            let za = z_k[a];
             for b in 0..k_lines {
-                step_param[a * k_lines + b] = z_k[a] * z_k[b] * param_scale[k][a * k_lines + b];
+                step_mat[a * k_lines + b] = za * z_k[b] * param_scale[ps_base + a * k_lines + b];
             }
         }
-        let propagated = mat_mul_ab_at(&trans_to_ult[k + 1], &step_param, k_lines);
-        for idx in 0..(k_lines * k_lines) {
-            total_msep[idx] += propagated[idx];
-        }
+        add_mat_mul_ab_at(
+            &trans_to_ult[k + 1],
+            &step_mat,
+            k_lines,
+            &mut pm_scratch,
+            &mut total_msep,
+        );
     }
 
     // Symmetrize numerically.
@@ -395,8 +390,6 @@ pub fn analyze_multivariate_cl(
         }
     }
 
-    // Ensure SPD check is not violated silently; portfolio variance is 1^T MSEP 1.
-    let _ = invert_spd; // available if future SUR weighting is added
     let portfolio_var: f64 = total_msep.iter().sum();
     let portfolio_standard_error = portfolio_var.max(0.0).sqrt();
     let line_standard_errors: Vec<f64> = (0..k_lines)
@@ -418,6 +411,23 @@ pub fn analyze_multivariate_cl(
     })
 }
 
+fn diagonal_ldf(tri: &TriangleView<'_>, k: usize, nk: usize) -> f64 {
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for i in 0..nk {
+        num += tri.get(i, k + 1);
+        den += tri.get(i, k);
+    }
+    if den > 0.0 { num / den } else { 1.0 }
+}
+
+fn fill_diagonal_mcl(triangles: &[TriangleView<'_>], k: usize, nk: usize, bk: &mut [f64]) {
+    let k_lines = triangles.len();
+    for (a, tri) in triangles.iter().enumerate() {
+        bk[a * k_lines + a] = diagonal_ldf(tri, k, nk);
+    }
+}
+
 fn mat_mul(a: &[f64], b: &[f64], k: usize) -> Vec<f64> {
     let mut out = vec![0.0; k * k];
     for i in 0..k {
@@ -432,19 +442,25 @@ fn mat_mul(a: &[f64], b: &[f64], k: usize) -> Vec<f64> {
     out
 }
 
-fn mat_mul_ab_at(p: &[f64], m: &[f64], k: usize) -> Vec<f64> {
-    let pm = mat_mul(p, m, k);
-    let mut out = vec![0.0; k * k];
+fn add_mat_mul_ab_at(p: &[f64], m: &[f64], k: usize, pm: &mut [f64], out: &mut [f64]) {
+    for i in 0..k {
+        for j in 0..k {
+            let mut acc = 0.0;
+            for r in 0..k {
+                acc += p[i * k + r] * m[r * k + j];
+            }
+            pm[i * k + j] = acc;
+        }
+    }
     for i in 0..k {
         for j in 0..k {
             let mut acc = 0.0;
             for r in 0..k {
                 acc += pm[i * k + r] * p[j * k + r];
             }
-            out[i * k + j] = acc;
+            out[i * k + j] += acc;
         }
     }
-    out
 }
 
 #[cfg(test)]

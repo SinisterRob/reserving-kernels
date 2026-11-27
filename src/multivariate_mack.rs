@@ -274,54 +274,68 @@ pub fn analyze_with_policy(
         }
     }
 
+    let mut param_terms = vec![0.0; n_links];
+    let mut link_scale = vec![0.0; n_links];
     for r in 0..n_lines {
+        let ur = &marginal_mack[r].ultimate;
+        let fr_vec = &marginal_mack[r].ldf;
         for s in (r + 1)..n_lines {
-            let mut cov_total_rs = 0.0;
-            // Same-origin cross-triangle covariance (process + parameter), i = 1..n-1.
-            for i in 1..n {
-                let start_k = n - 1 - i;
-                let mut sum_k = 0.0;
-                for k in start_k..n_links {
-                    let fr = marginal_mack[r].ldf[k];
-                    let fs = marginal_mack[s].ldf[k];
-                    let sig_rs = link_covariances[k][r * n_lines + s];
-                    let cr = projected[r][i * n + k];
-                    let cs = projected[s][i * n + k];
-                    let sr = col_sums[r][k];
-                    let ss = col_sums[s][k];
-                    if fr > 0.0 && fs > 0.0 && cr > 0.0 && cs > 0.0 && sr > 0.0 && ss > 0.0 {
-                        let proc_term = 1.0 / (cr * cs).sqrt();
-                        let param_term = sum_sqrt_prod[k][r * n_lines + s] / (sr * ss);
-                        sum_k += (sig_rs / (fr * fs)) * (proc_term + param_term);
-                    }
+            let us = &marginal_mack[s].ultimate;
+            let fs_vec = &marginal_mack[s].ldf;
+
+            // Precompute per-link cross-covariance scales once for pair (r, s).
+            for k in 0..n_links {
+                let fr = fr_vec[k];
+                let fs = fs_vec[k];
+                let sr = col_sums[r][k];
+                let ss = col_sums[s][k];
+                let sig_rs = link_covariances[k][r * n_lines + s];
+                if fr > 0.0 && fs > 0.0 && sr > 0.0 && ss > 0.0 {
+                    let scale = sig_rs / (fr * fs);
+                    link_scale[k] = scale;
+                    param_terms[k] = scale * (sum_sqrt_prod[k][r * n_lines + s] / (sr * ss));
+                } else {
+                    link_scale[k] = 0.0;
+                    param_terms[k] = 0.0;
                 }
-                let cov_ii = marginal_mack[r].ultimate[i] * marginal_mack[s].ultimate[i] * sum_k;
-                cov_total_rs += cov_ii;
-                origin_total_mse[i] += 2.0 * cov_ii;
             }
 
-            // Cross-origin cross-triangle parameter covariance for 1 <= i < j < n.
+            let mut cov_total_rs = 0.0;
+            // Same-origin cross-triangle covariance (process + parameter), i = 1..n-1.
+            // Suffix sum of param_terms[start_k..n_links] is maintained incrementally as i grows
+            // (since start_k = n - 1 - i decreases by 1 each step).
+            let mut shared_param = 0.0;
+            let mut suf_ur = 0.0;
+            let mut suf_us = 0.0;
+            for i in (1..n).rev() {
+                suf_ur += ur[i];
+                suf_us += us[i];
+            }
             for i in 1..n {
                 let start_k = n - 1 - i;
-                let mut shared_param = 0.0;
+                shared_param += param_terms[start_k];
+
+                let mut proc_sum = 0.0;
+                let row_base = i * n;
                 for k in start_k..n_links {
-                    let fr = marginal_mack[r].ldf[k];
-                    let fs = marginal_mack[s].ldf[k];
-                    let sig_rs = link_covariances[k][r * n_lines + s];
-                    let sr = col_sums[r][k];
-                    let ss = col_sums[s][k];
-                    if fr > 0.0 && fs > 0.0 && sr > 0.0 && ss > 0.0 {
-                        shared_param +=
-                            (sig_rs / (fr * fs)) * (sum_sqrt_prod[k][r * n_lines + s] / (sr * ss));
+                    let scale = link_scale[k];
+                    if scale != 0.0 {
+                        let cr = projected[r][row_base + k];
+                        let cs = projected[s][row_base + k];
+                        if cr > 0.0 && cs > 0.0 {
+                            proc_sum += scale / (cr * cs).sqrt();
+                        }
                     }
                 }
-                for j in (i + 1)..n {
-                    let ui_r = marginal_mack[r].ultimate[i];
-                    let uj_s = marginal_mack[s].ultimate[j];
-                    let uj_r = marginal_mack[r].ultimate[j];
-                    let ui_s = marginal_mack[s].ultimate[i];
-                    cov_total_rs += (ui_r * uj_s + uj_r * ui_s) * shared_param;
-                }
+                let cov_ii = ur[i] * us[i] * (proc_sum + shared_param);
+                cov_total_rs += cov_ii;
+                origin_total_mse[i] += 2.0 * cov_ii;
+
+                // Cross-origin cross-triangle parameter covariance for j > i in O(1):
+                // sum_{j = i+1}^{n-1} (ur[i] * us[j] + ur[j] * us[i]) * shared_param
+                suf_ur -= ur[i];
+                suf_us -= us[i];
+                cov_total_rs += (ur[i] * suf_us + suf_ur * us[i]) * shared_param;
             }
 
             reserve_cov[r * n_lines + s] = cov_total_rs;
