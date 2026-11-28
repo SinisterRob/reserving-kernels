@@ -15,7 +15,7 @@ use crate::deterministic::ldf::{
 };
 use crate::error::ReservingError;
 use crate::preprocessing::ragged::{
-    ex_hi_lo_observed_counts, simple_average_observed_counts,
+    ex_hi_lo_observed_counts, geometric_average_observed_counts, simple_average_observed_counts,
     volume_weighted_last_n_observed_counts,
 };
 use crate::subannual::grid::AsymmetricAgeGrid;
@@ -166,6 +166,9 @@ pub fn asymmetric_chain_ladder(
         }
         LdfSelectionMethod::Median => {
             median_observed_counts(cum, n_o, n_d, counts, &mut ldfs);
+        }
+        LdfSelectionMethod::Geometric => {
+            geometric_average_observed_counts(cum, n_o, n_d, counts, &mut ldfs);
         }
         LdfSelectionMethod::LastNVolumeWeighted { last_n } => {
             if last_n == 0 {

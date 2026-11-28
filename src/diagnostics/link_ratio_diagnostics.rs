@@ -54,6 +54,7 @@ fn method_selector(
         LdfSelectionMethod::SimpleAverage => averaging::simple_average(pairs),
         LdfSelectionMethod::Median => averaging::median(pairs),
         LdfSelectionMethod::ExHiLo => averaging::ex_hi_lo(pairs),
+        LdfSelectionMethod::Geometric => averaging::geometric(pairs),
         LdfSelectionMethod::LastNVolumeWeighted { last_n } => {
             averaging::volume_weighted(averaging::recent(pairs, last_n))
         }

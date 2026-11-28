@@ -265,7 +265,7 @@ pub struct BrosiusLinkExhibitRow {
     pub slope: f64,
     /// Chain-ladder LDF for comparison.
     pub chain_ladder_ldf: Option<f64>,
-    /// Whether the single-pair fallback was used.
+    /// Whether any Brosius fallback (single pair, budget, or link ratio) was used.
     pub fallback_used: bool,
 }
 

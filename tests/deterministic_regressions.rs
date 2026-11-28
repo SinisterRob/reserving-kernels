@@ -239,6 +239,7 @@ fn computed_methods() -> Vec<LdfSelectionMethod> {
         LdfSelectionMethod::ExHiLo,
         LdfSelectionMethod::LastNVolumeWeighted { last_n: 2 },
         LdfSelectionMethod::LastNSimpleAverage { last_n: 2 },
+        LdfSelectionMethod::Geometric,
     ]
 }
 
@@ -248,6 +249,7 @@ fn l1_ldfs(t: &TriangleView<'_>, method: LdfSelectionMethod) -> Vec<f64> {
         LdfSelectionMethod::SimpleAverage => ldf::simple_average(t),
         LdfSelectionMethod::Median => ldf::median(t),
         LdfSelectionMethod::ExHiLo => ldf::ex_hi_lo(t),
+        LdfSelectionMethod::Geometric => ldf::geometric_average(t),
         LdfSelectionMethod::LastNVolumeWeighted { last_n } => {
             ldf::volume_weighted_last_n(t, last_n)
         }
@@ -904,4 +906,33 @@ fn munich_tail_scales_ultimates_and_validates_inputs() {
             .map(|m| m.lambda_paid),
         Err(ReservingError::InvalidTail { tail: 0.9 })
     );
+}
+
+#[test]
+fn geometric_selection_variant_matches_engine_and_diagnostics() {
+    use reserving_kernels::deterministic::ldf::{DevelopmentFactorEngine, LdfSelectionMethod};
+    use reserving_kernels::diagnostics::link_ratio_diagnostics::diagnose_all;
+    let tri = reserving_kernels::datasets::raa();
+    let direct = DevelopmentFactorEngine::geometric_average_with_policy(
+        &tri.view(),
+        1.0,
+        reserving_kernels::validate::MonotonicityPolicy::AllowNegativeIncrements,
+    )
+    .expect("geometric");
+    let via_enum = DevelopmentFactorEngine::select_with_policy(
+        &tri.view(),
+        1.0,
+        LdfSelectionMethod::Geometric,
+        reserving_kernels::validate::MonotonicityPolicy::AllowNegativeIncrements,
+    )
+    .expect("enum geometric");
+    assert_eq!(direct.ldfs, via_enum.ldfs);
+    let diag = diagnose_all(&tri.view(), LdfSelectionMethod::Geometric).expect("diag");
+    for (d, f) in diag.iter().zip(direct.ldfs.iter()) {
+        assert!(
+            (d.selected_factor - f).abs() <= 1e-12 * f.abs(),
+            "{} vs {f}",
+            d.selected_factor
+        );
+    }
 }
