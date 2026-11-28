@@ -202,9 +202,12 @@ pub fn layer_from_severity_schedule(
     }
     validate_positive_finite_slice(ground_up_cdf, "ground_up_cdf")?;
 
-    let exhaustion = attachment + limit;
-    let ult_share =
-        ultimate_severity.excess_ratio(attachment)? - ultimate_severity.excess_ratio(exhaustion)?;
+    if !(attachment + limit).is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
+    // Layer shares R(A) - R(A + W) are evaluated directly as E[layer] / E[X]
+    // (no difference of two nearly equal excess ratios for high layers).
+    let ult_share = ultimate_severity.layer_ratio(attachment, limit)?;
     if !ult_share.is_finite() || ult_share <= 0.0 {
         return Err(ValidationError::InvalidParameter(
             "ultimate layer share must be strictly positive",
@@ -214,7 +217,7 @@ pub fn layer_from_severity_schedule(
     let mut layer_share = Vec::with_capacity(age_severities.len());
     let mut layer_cdf = Vec::with_capacity(age_severities.len());
     for (j, dist) in age_severities.iter().enumerate() {
-        let share = dist.excess_ratio(attachment)? - dist.excess_ratio(exhaustion)?;
+        let share = dist.layer_ratio(attachment, limit)?;
         if !share.is_finite() || share <= 0.0 {
             return Err(ValidationError::InvalidParameter(
                 "age layer share must be strictly positive",
@@ -302,12 +305,18 @@ pub fn project_split_losses(
     })
 }
 
-/// Pinto & Gogol (1987) power-law excess LDF scaling model:
+/// Linear development-portion leverage scaling of ground-up LDFs to excess
+/// LDFs, in the spirit of Pinto & Gogol (1987):
 ///
-/// Given a ground-up LDF $f_j^{\text{GU}} \ge 1$ and excess leverage exponent
-/// $\gamma \ge 1$ (or retention-dependent leverage factor), computes
-/// $\text{LDF}_j^{\text{xs}} = 1 + (f_j^{\text{GU}} - 1) \cdot \text{leverage}_j$,
-/// returning the resulting excess CDFs (accumulated from tail backward).
+/// $$\text{LDF}_j^{\text{xs}} = 1 + (f_j^{\text{GU}} - 1) \cdot \text{leverage}_j$$
+///
+/// for ground-up LDFs $f_j^{\text{GU}} \ge 1$ and caller-supplied,
+/// age-specific leverage multipliers $\text{leverage}_j \ge 0$ (`> 1` means the
+/// excess layer develops proportionally faster than ground-up). The scaling is
+/// **linear in the development portion** `f − 1`; it is *not* a power law
+/// `f^γ` despite the historical function name, which is retained for API
+/// compatibility. Returns the `m + 1` excess CDFs accumulated backward from
+/// `excess_tail` (`cdfs[m] = excess_tail`).
 pub fn pinto_gogol_power_scale(
     ground_up_ldf: &[f64],
     leverage: &[f64],

@@ -2,12 +2,14 @@
 //!
 //! Complements Iman–Conover (which has zero extreme tail dependence) with:
 //!
-//! * **Multivariate Student-$t$ copula (`t_{ν, Σ}`)** with Kendall `τ` /
-//!   Spearman `ρ_S` calibration, Jacobi spectral-clipping non-PSD repair,
+//! * **Multivariate Student-$t$ copula (`t_{ν, Σ}`)** with exact Kendall `τ`
+//!   calibration (`ρ = sin(πτ/2)`, valid for every elliptical copula),
+//!   explicit Spearman rejection (the Gaussian map is inexact for `t_ν`),
+//!   opt-in Higham (2002) nearest-correlation repair,
 //!   Lentz continued-fraction regularized incomplete beta `I_x(a, b)`, and
 //!   exact analytical tail dependence `λ_U = λ_L`.
 //! * **$d$-Dimensional Clayton and Gumbel Archimedean copulas** via exact
-//!   Marshall–Olkin frailty sampling (Gamma frailty for Clayton; log-domain
+//!   Marshall–Olkin frailty sampling (log-space Gamma frailty for Clayton; log-domain
 //!   Chambers–Mallows–Stuck positive `α`-stable draws for Gumbel).
 //! * **Hierarchical / Nested Archimedean Copulas (HAC)** for multi-line
 //!   aggregation enforcing McNeil's (2008) sufficient nesting condition
@@ -15,10 +17,14 @@
 
 use std::f64::consts::PI;
 
-use crate::capital::dependence::CorrelationType;
-use crate::linalg::{cholesky_lower, jacobi_eigen_symmetric};
+use crate::capital::correlation::{
+    CorrelationRepair, CorrelationType, PreparedCorrelation, prepare_latent_correlation,
+    rank_match_reorder, validate_and_convert_correlation_matrix,
+};
 use crate::stochastic::bootstrap_odp::{DeterministicRng, ln_gamma};
 use crate::validate::ValidationError;
+
+pub use crate::capital::correlation::repair_correlation_matrix;
 
 // ===========================================================================
 // Special Functions: Regularized Incomplete Beta & Student-t CDF
@@ -133,43 +139,60 @@ pub fn student_t_tail_dependence(nu: f64, rho: f64) -> Result<f64, ValidationErr
 }
 
 // ===========================================================================
-// Non-PSD Correlation Matrix Repair (Spectral Clipping)
+// Log-Space Gamma Sampling (frailty / chi-square mixing variables)
 // ===========================================================================
 
-/// Repair a symmetric `dim × dim` correlation matrix via Jacobi spectral
-/// clipping (`λ_k <- max(λ_k, 1e-8)`) and unit-diagonal rescaling.
-pub fn repair_correlation_matrix(corr: &[f64], dim: usize) -> Result<Vec<f64>, ValidationError> {
-    if corr.len() != dim * dim || dim == 0 {
-        return Err(ValidationError::ShapeMismatch);
+/// Draw `ln G` for `G ~ Gamma(shape, 1)` entirely in log space.
+///
+/// * `shape >= 1`: Marsaglia & Tsang (2000) squeeze/acceptance, returning
+///   `ln(d) + 3 ln(v)`.
+/// * `shape < 1`: boosting identity `G = G_{shape+1} · U^{1/shape}` evaluated
+///   as `ln G_{shape+1} + ln(U) / shape`, which stays finite for arbitrarily
+///   small `shape` (e.g. Clayton frailty `shape = 1/θ` with `θ >> 200`), where
+///   the linear-domain product underflows to zero.
+pub(crate) fn sample_ln_gamma(rng: &mut DeterministicRng, shape: f64) -> f64 {
+    if shape < 1.0 {
+        let ln_g = sample_ln_gamma_ge1(rng, shape + 1.0);
+        let ln_u = rng.next_open01().ln();
+        return ln_g + ln_u / shape;
     }
-    let (eigvals, q) = jacobi_eigen_symmetric(corr, dim)?;
-    let eps = 1e-8;
-    let clipped: Vec<f64> = eigvals.iter().map(|&v| v.max(eps)).collect();
+    sample_ln_gamma_ge1(rng, shape)
+}
 
-    // Reconstruct Sigma_tilde = Q diag(clipped) Q^T.
-    let mut sigma = vec![0.0; dim * dim];
-    for i in 0..dim {
-        for j in i..dim {
-            let mut sum = 0.0;
-            for k in 0..dim {
-                sum += q[i * dim + k] * clipped[k] * q[j * dim + k];
-            }
-            sigma[i * dim + j] = sum;
-            sigma[j * dim + i] = sum;
+fn sample_ln_gamma_ge1(rng: &mut DeterministicRng, shape: f64) -> f64 {
+    let d = shape - (1.0 / 3.0);
+    let c = (1.0 / 3.0) / d.sqrt();
+    loop {
+        let z = rng.next_standard_normal();
+        let v_root = 1.0 + c * z;
+        if v_root <= 0.0 {
+            continue;
+        }
+        let ln_v = 3.0 * v_root.ln();
+        let v = v_root * v_root * v_root;
+        let u = rng.next_open01();
+        let z2 = z * z;
+        if u < 1.0 - 0.0331 * z2 * z2 || u.ln() < 0.5 * z2 + d * (1.0 - v + ln_v) {
+            return d.ln() + ln_v;
         }
     }
+}
 
-    // Rescale to unit diagonal.
-    let inv_sd: Vec<f64> = (0..dim).map(|i| 1.0 / sigma[i * dim + i].sqrt()).collect();
-    for i in 0..dim {
-        sigma[i * dim + i] = 1.0;
-        for j in (i + 1)..dim {
-            let val = (sigma[i * dim + j] * inv_sd[i] * inv_sd[j]).clamp(-1.0, 1.0);
-            sigma[i * dim + j] = val;
-            sigma[j * dim + i] = val;
-        }
+/// Numerically stable softplus `ln(1 + e^x)`.
+#[inline]
+fn softplus(x: f64) -> f64 {
+    if x > 0.0 {
+        x + (-x).exp().ln_1p()
+    } else {
+        x.exp().ln_1p()
     }
-    Ok(sigma)
+}
+
+/// Clamp a copula draw into the open unit interval without collapsing tails:
+/// `[f64::MIN_POSITIVE, 1 - 2^-53]`.
+#[inline]
+fn clamp_open_unit(u: f64) -> f64 {
+    u.clamp(f64::MIN_POSITIVE, 1.0 - 0.5 * f64::EPSILON)
 }
 
 // ===========================================================================
@@ -188,6 +211,10 @@ pub struct CopulaSampleResult {
     /// Effective correlation matrix (populated for Student-$t$ copulas; empty
     /// for Archimedean / HAC copulas).
     pub effective_correlation: Vec<f64>,
+    /// Frobenius distance `‖Σ_repaired − Σ_target‖_F` when the latent target
+    /// was repaired under [`CorrelationRepair::Higham`]; `None` otherwise.
+    #[serde(default)]
+    pub repair_frobenius_distance: Option<f64>,
 }
 
 /// Apply copula uniform draws to empirical marginal scenario vectors by rank
@@ -221,29 +248,13 @@ pub fn apply_copula_reordering(
         }
     }
 
-    let mut out = Vec::with_capacity(d);
-    let mut u_order: Vec<usize> = (0..n).collect();
-    let mut v_order: Vec<usize> = (0..n).collect();
-
-    for col in 0..d {
-        for (i, slot) in u_order.iter_mut().enumerate() {
-            *slot = i;
-        }
-        u_order
-            .sort_unstable_by(|&a, &b| copula_uniforms[col][a].total_cmp(&copula_uniforms[col][b]));
-
-        let vals = marginals[col];
-        for (i, slot) in v_order.iter_mut().enumerate() {
-            *slot = i;
-        }
-        v_order.sort_unstable_by(|&a, &b| vals[a].total_cmp(&vals[b]));
-
-        let mut reordered = vec![0.0; n];
-        for rank in 0..n {
-            reordered[u_order[rank]] = vals[v_order[rank]];
-        }
-        out.push(reordered);
-    }
+    // Values-only output: within-value tie order is irrelevant, so no RNG is
+    // used (see `rank_match_reorder` tie policy).
+    let out = marginals
+        .iter()
+        .zip(copula_uniforms.iter())
+        .map(|(vals, u)| rank_match_reorder(vals, u, None).1)
+        .collect();
     Ok(out)
 }
 
@@ -252,8 +263,10 @@ pub fn apply_copula_reordering(
 // ===========================================================================
 
 /// Sample `n_samples` vectors from a `dim`-dimensional Student-$t$ copula
-/// `t_{ν, Σ}` with automatic Kendall/Spearman calibration and Jacobi spectral
-/// non-PSD repair.
+/// `t_{ν, Σ}`, rejecting non-positive-definite latent targets.
+///
+/// Equivalent to [`student_t_copula_sample_with_repair`] with
+/// [`CorrelationRepair::Reject`].
 pub fn student_t_copula_sample(
     target_corr: &[f64],
     dim: usize,
@@ -261,6 +274,39 @@ pub fn student_t_copula_sample(
     corr_type: CorrelationType,
     n_samples: usize,
     seed: u64,
+) -> Result<CopulaSampleResult, ValidationError> {
+    student_t_copula_sample_with_repair(
+        target_corr,
+        dim,
+        nu,
+        corr_type,
+        n_samples,
+        seed,
+        CorrelationRepair::Reject,
+    )
+}
+
+/// Sample `n_samples` vectors from a `dim`-dimensional Student-$t$ copula
+/// `t_{ν, Σ}` with an explicit non-positive-definite [`CorrelationRepair`] policy.
+///
+/// * [`CorrelationType::LatentGaussian`]: `target_corr` is `Σ` directly.
+/// * [`CorrelationType::KendallTarget`]: `Σ_ij = sin(π τ_ij / 2)`, exact for
+///   every elliptical copula including `t_ν` (Lindskog, McNeil & Schmock 2003).
+/// * [`CorrelationType::SpearmanTarget`] is **rejected**: the Gaussian map
+///   `2 sin(π ρ_S / 6)` is not the Student-$t$ relation (it depends on `ν`;
+///   e.g. at `ν = 2` a `ρ_S = 0.5` target achieves only `≈ 0.47`). Supply
+///   Kendall's `τ` instead.
+///
+/// The chi-square mixing variable is drawn in log space, so tiny `ν` cannot
+/// underflow the radial scale.
+pub fn student_t_copula_sample_with_repair(
+    target_corr: &[f64],
+    dim: usize,
+    nu: f64,
+    corr_type: CorrelationType,
+    n_samples: usize,
+    seed: u64,
+    repair: CorrelationRepair,
 ) -> Result<CopulaSampleResult, ValidationError> {
     if dim < 2 || target_corr.len() != dim * dim {
         return Err(ValidationError::ShapeMismatch);
@@ -274,32 +320,28 @@ pub fn student_t_copula_sample(
     if nu <= 0.0 {
         return Err(ValidationError::NonPositive("degrees of freedom nu"));
     }
+    if corr_type == CorrelationType::SpearmanTarget {
+        return Err(ValidationError::InvalidParameter(
+            "Spearman targets are not supported for the Student-t copula (the Gaussian map 2 sin(pi rho_S / 6) is inexact for t_nu); use CorrelationType::KendallTarget, which is exact for elliptical copulas",
+        ));
+    }
 
-    let raw = crate::capital::dependence::validate_and_convert_correlation_matrix(
-        target_corr,
-        dim,
-        corr_type,
-    )?;
-
-    let (sigma, chol) = if let Ok(c) = cholesky_lower(&raw, dim) {
-        (raw, c)
-    } else {
-        let repaired = repair_correlation_matrix(&raw, dim)?;
-        let c = cholesky_lower(&repaired, dim)?;
-        (repaired, c)
-    };
+    let latent = validate_and_convert_correlation_matrix(target_corr, dim, corr_type)?;
+    let (sigma, chol, repair_frobenius_distance): PreparedCorrelation =
+        prepare_latent_correlation(latent, dim, repair)?;
 
     let mut rng = DeterministicRng::from_seed(seed);
     let mut columns: Vec<Vec<f64>> = (0..dim).map(|_| Vec::with_capacity(n_samples)).collect();
     let mut z = vec![0.0; dim];
+    let ln_nu = nu.ln();
 
     for _ in 0..n_samples {
         for zi in &mut z {
             *zi = rng.next_standard_normal();
         }
-        // W ~ Chi^2(nu) = Gamma(shape = nu/2, scale = 2).
-        let w = rng.sample_gamma(0.5 * nu, 2.0).max(1e-300);
-        let scale = (nu / w).sqrt();
+        // W ~ Chi^2(nu) = 2 * Gamma(nu / 2, 1), drawn as ln W.
+        let ln_w = std::f64::consts::LN_2 + sample_ln_gamma(&mut rng, 0.5 * nu);
+        let scale = (0.5 * (ln_nu - ln_w)).exp();
 
         for i in 0..dim {
             let mut lx = 0.0;
@@ -317,6 +359,7 @@ pub fn student_t_copula_sample(
         n_samples,
         columns,
         effective_correlation: sigma,
+        repair_frobenius_distance,
     })
 }
 
@@ -430,17 +473,21 @@ pub fn clayton_copula_sample(
             n_samples,
             columns,
             effective_correlation: Vec::new(),
+            repair_frobenius_distance: None,
         });
     }
 
+    // Marshall–Olkin: V ~ Gamma(1/θ, 1), E_j ~ Exp(1), U_j = ψ(E_j / V) with
+    // ψ(t) = (1 + t)^{-1/θ}. Everything is evaluated in log space:
+    // ln(1 + E/V) = softplus(ln E − ln V), so huge θ (V ≈ e^{-θ}) never
+    // underflows.
     let inv_theta = 1.0 / theta;
     for _ in 0..n_samples {
-        let v = rng.sample_gamma(inv_theta, 1.0).max(1e-300);
+        let ln_v = sample_ln_gamma(&mut rng, inv_theta);
         for col in &mut columns {
-            let e = (-rng.next_open01().ln()).max(1e-300);
-            let ratio = e / v;
-            let u = (-inv_theta * ratio.ln_1p()).exp();
-            col.push(u.clamp(1e-16, 1.0 - 1e-16));
+            let ln_e = (-rng.next_open01().ln()).ln();
+            let u = (-inv_theta * softplus(ln_e - ln_v)).exp();
+            col.push(clamp_open_unit(u));
         }
     }
 
@@ -449,6 +496,7 @@ pub fn clayton_copula_sample(
         n_samples,
         columns,
         effective_correlation: Vec::new(),
+        repair_frobenius_distance: None,
     })
 }
 
@@ -491,6 +539,7 @@ pub fn gumbel_copula_sample(
             n_samples,
             columns,
             effective_correlation: Vec::new(),
+            repair_frobenius_distance: None,
         });
     }
 
@@ -501,7 +550,7 @@ pub fn gumbel_copula_sample(
             let e = (-rng.next_open01().ln()).max(1e-300);
             let inner = (alpha * (e.ln() - ln_v)).clamp(-700.0, 700.0);
             let u = (-inner.exp()).exp();
-            col.push(u.clamp(1e-16, 1.0 - 1e-16));
+            col.push(clamp_open_unit(u));
         }
     }
 
@@ -510,6 +559,7 @@ pub fn gumbel_copula_sample(
         n_samples,
         columns,
         effective_correlation: Vec::new(),
+        repair_frobenius_distance: None,
     })
 }
 
@@ -626,7 +676,7 @@ impl GumbelHac {
                     let e = (-rng.next_open01().ln()).max(1e-300);
                     let inner = (alpha_c * (e.ln() - ln_v0c)).clamp(-700.0, 700.0);
                     let u = (-inner.exp()).exp();
-                    columns[col_idx].push(u.clamp(1e-16, 1.0 - 1e-16));
+                    columns[col_idx].push(clamp_open_unit(u));
                     col_idx += 1;
                 }
             }
@@ -637,6 +687,7 @@ impl GumbelHac {
             n_samples,
             columns,
             effective_correlation: Vec::new(),
+            repair_frobenius_distance: None,
         })
     }
 }
@@ -720,6 +771,32 @@ mod tests {
     }
 
     #[test]
+    fn student_t_rejects_non_pd_by_default_and_reports_repair_distance() {
+        #[rustfmt::skip]
+        let bad = [
+            1.0,  0.9,  0.9,
+            0.9,  1.0, -0.9,
+            0.9, -0.9,  1.0,
+        ];
+        assert!(
+            student_t_copula_sample(&bad, 3, 4.0, CorrelationType::LatentGaussian, 10, 42069)
+                .is_err()
+        );
+        let res = student_t_copula_sample_with_repair(
+            &bad,
+            3,
+            4.0,
+            CorrelationType::LatentGaussian,
+            10,
+            42069,
+            CorrelationRepair::Higham(crate::capital::correlation::HighamOptions::default()),
+        )
+        .expect("repaired");
+        let dist = res.repair_frobenius_distance.expect("distance");
+        assert!(dist > 0.1 && dist.is_finite());
+    }
+
+    #[test]
     fn non_psd_correlation_repair_produces_valid_spd_correlation() {
         #[rustfmt::skip]
         let bad = [
@@ -727,9 +804,9 @@ mod tests {
             0.9,  1.0, -0.9,
             0.9, -0.9,  1.0,
         ];
-        assert!(cholesky_lower(&bad, 3).is_err());
+        assert!(crate::linalg::cholesky_lower(&bad, 3).is_err());
         let fixed = repair_correlation_matrix(&bad, 3).expect("repair");
-        assert!(cholesky_lower(&fixed, 3).is_ok());
+        assert!(crate::linalg::cholesky_lower(&fixed, 3).is_ok());
         for i in 0..3 {
             assert!((fixed[i * 3 + i] - 1.0).abs() < 1e-12);
         }
@@ -770,9 +847,9 @@ mod tests {
         .expect("valid hac");
         let draws = hac.sample(15_000, 42069).expect("hac sample");
         let within_c1 =
-            crate::capital::dependence::spearman_correlation(&draws.columns[0], &draws.columns[1]);
+            crate::capital::correlation::spearman_correlation(&draws.columns[0], &draws.columns[1]);
         let across =
-            crate::capital::dependence::spearman_correlation(&draws.columns[0], &draws.columns[2]);
+            crate::capital::correlation::spearman_correlation(&draws.columns[0], &draws.columns[2]);
         assert!(
             within_c1 > across + 0.25,
             "within={within_c1}, across={across}"
