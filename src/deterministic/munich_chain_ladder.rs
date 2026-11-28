@@ -22,13 +22,15 @@
 //! Î_{i, k+1} = Î_{i, k} · [ f_k^I + λ^I · (σ_k^I / τ_k^I) · (P̂_{i,k}/Î_{i,k} - q_k) ]
 //! ```
 
-use crate::deterministic::ldf::volume_weighted;
+use crate::deterministic::ldf::{mack_sigma_sq_by_link, volume_weighted};
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
-use crate::validate::{ValidationError, validate_tail, validate_triangle};
+use crate::validate::{validate_tail, validate_triangle};
 
 /// Full bivariate Munich Chain Ladder result.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct MunichChainLadder {
     /// Traditional univariate volume-weighted paid LDFs (length `n - 1`).
     pub paid_ldfs: Vec<f64>,
@@ -88,28 +90,6 @@ impl MunichChainLadder {
     }
 }
 
-fn mack_sigma_sq(t: &TriangleView<'_>, ldfs: &[f64]) -> Vec<f64> {
-    let n = t.n_origins;
-    let mut s = vec![0.0; n - 1];
-    for k in 0..(n - 1) {
-        let nk = n - k - 1;
-        if nk >= 2 {
-            let mut acc = 0.0;
-            for i in 0..nk {
-                let c_k = t.get(i, k);
-                let c_kp1 = t.get(i, k + 1);
-                let ratio = c_kp1 / c_k;
-                acc += c_k * (ratio - ldfs[k]).powi(2);
-            }
-            s[k] = acc / (nk as f64 - 1.0);
-        } else {
-            s[k] = f64::NAN;
-        }
-    }
-    extrapolate_last_sigma_sq(&mut s);
-    s
-}
-
 fn extrapolate_last_sigma_sq(s: &mut [f64]) {
     let raw: Vec<Option<f64>> = s.iter().map(|&v| v.is_finite().then_some(v)).collect();
     let extrap = crate::deterministic::ldf::extrapolate_mack_min_rule(&raw);
@@ -128,18 +108,18 @@ pub fn project(
     incurred: &TriangleView<'_>,
     paid_tail: f64,
     incurred_tail: f64,
-) -> Result<MunichChainLadder, ValidationError> {
+) -> Result<MunichChainLadder, ReservingError> {
     validate_triangle(paid)?;
     validate_triangle(incurred)?;
     validate_tail(paid_tail)?;
     validate_tail(incurred_tail)?;
 
     if paid.n_origins != incurred.n_origins || paid.n_devs != incurred.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let n = paid.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Munich Chain Ladder requires at least a 3x3 triangle",
         ));
     }
@@ -147,10 +127,10 @@ pub fn project(
     for i in 0..n {
         for j in 0..(n - i) {
             if paid.get(i, j) <= 0.0 {
-                return Err(ValidationError::DivideByZero("paid cell"));
+                return Err(ReservingError::DivideByZero("paid cell"));
             }
             if incurred.get(i, j) <= 0.0 {
-                return Err(ValidationError::DivideByZero("incurred cell"));
+                return Err(ReservingError::DivideByZero("incurred cell"));
             }
         }
     }
@@ -160,14 +140,14 @@ pub fn project(
     if paid_ldfs.iter().any(|f| !f.is_finite() || *f <= 0.0)
         || incurred_ldfs.iter().any(|f| !f.is_finite() || *f <= 0.0)
     {
-        return Err(ValidationError::DivideByZero("univariate LDF"));
+        return Err(ReservingError::DivideByZero("univariate LDF"));
     }
 
-    let sigma_paid: Vec<f64> = mack_sigma_sq(paid, &paid_ldfs)
+    let sigma_paid: Vec<f64> = mack_sigma_sq_by_link(paid, &paid_ldfs)
         .into_iter()
         .map(|v| v.max(0.0).sqrt())
         .collect();
-    let sigma_incurred: Vec<f64> = mack_sigma_sq(incurred, &incurred_ldfs)
+    let sigma_incurred: Vec<f64> = mack_sigma_sq_by_link(incurred, &incurred_ldfs)
         .into_iter()
         .map(|v| v.max(0.0).sqrt())
         .collect();
@@ -278,7 +258,7 @@ pub fn project(
             let p_prev = full_paid[i * n + k];
             let i_prev = full_incurred[i * n + k];
             if !(p_prev > 0.0) || !(i_prev > 0.0) {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             let f_p_adj = paid_ldfs[k] + coeff_p * (i_prev / p_prev - q_incurred_to_paid[k]);
             let f_i_adj = incurred_ldfs[k] + coeff_i * (p_prev / i_prev - q_paid_to_incurred[k]);
@@ -298,10 +278,10 @@ pub fn project(
         let p_end = full_paid[i * n + (n - 1)];
         let i_end = full_incurred[i * n + (n - 1)];
         if !p_end.is_finite() || !i_end.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if p_end < 0.0 || i_end < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
         paid_ultimates[i] = p_end * paid_tail;
         incurred_ultimates[i] = i_end * incurred_tail;
@@ -326,7 +306,7 @@ pub fn project(
         || paid_ultimates.iter().any(|v| !v.is_finite())
         || incurred_ultimates.iter().any(|v| !v.is_finite())
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(MunichChainLadder {

@@ -12,12 +12,14 @@
 //! emergence curve `ΔG_{i,j}(ω, θ) = G(x_{i,j}) - G(x_{i,j-1})` without needing
 //! LDF interpolation.
 
+use crate::error::ReservingError;
 use crate::linalg::{invert_spd, quad_form};
 use crate::stochastic::clark_mle::GrowthCurve;
-use crate::validate::{MonotonicityPolicy, ValidationError, validate_positive_finite_slice};
+use crate::validate::{MonotonicityPolicy, validate_positive_finite_slice};
 
 /// Configuration options for [`clark_mle_exact_age`].
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ClarkExactAgeOptions {
     /// Parametric growth curve family (`Loglogistic` or `Weibull`).
     pub curve: GrowthCurve,
@@ -30,16 +32,46 @@ pub struct ClarkExactAgeOptions {
 
 impl Default for ClarkExactAgeOptions {
     fn default() -> Self {
+        Self::new(GrowthCurve::Loglogistic)
+    }
+}
+
+impl ClarkExactAgeOptions {
+    /// Options for `curve`, projecting to infinity with strict monotonicity.
+    pub const fn new(curve: GrowthCurve) -> Self {
         Self {
-            curve: GrowthCurve::Loglogistic,
+            curve,
             max_age: None,
             monotonicity_policy: MonotonicityPolicy::Strict,
         }
+    }
+
+    /// Clark (2003) Loglogistic defaults.
+    pub const fn loglogistic() -> Self {
+        Self::new(GrowthCurve::Loglogistic)
+    }
+
+    /// Clark (2003) Weibull defaults.
+    pub const fn weibull() -> Self {
+        Self::new(GrowthCurve::Weibull)
+    }
+
+    /// Truncate the ultimate projection at a finite maximum age.
+    pub const fn with_max_age(mut self, max_age: f64) -> Self {
+        self.max_age = Some(max_age);
+        self
+    }
+
+    /// Set the cumulative monotonicity validation policy.
+    pub const fn with_monotonicity_policy(mut self, policy: MonotonicityPolicy) -> Self {
+        self.monotonicity_policy = policy;
+        self
     }
 }
 
 /// Full output from [`clark_mle_exact_age`] (both LDF and Cape Cod variants).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ClarkExactAgeResult {
     /// Growth curve family fitted.
     pub curve: GrowthCurve,
@@ -112,15 +144,15 @@ fn prepare_exact_age_data(
     n_devs: usize,
     observed_counts: &[usize],
     options: &ClarkExactAgeOptions,
-) -> Result<ExactAgeData, ValidationError> {
+) -> Result<ExactAgeData, ReservingError> {
     if n_origins == 0 || n_devs == 0 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
-    if cum.len() != n_origins * n_devs
-        || cell_ages.len() != n_origins * n_devs
-        || observed_counts.len() != n_origins
-    {
-        return Err(ValidationError::ShapeMismatch);
+    let n_cells = n_origins
+        .checked_mul(n_devs)
+        .ok_or(ReservingError::ShapeMismatch)?;
+    if cum.len() != n_cells || cell_ages.len() != n_cells || observed_counts.len() != n_origins {
+        return Err(ReservingError::ShapeMismatch);
     }
 
     let mut inc = vec![f64::NAN; n_origins * n_devs];
@@ -134,7 +166,7 @@ fn prepare_exact_age_data(
     for i in 0..n_origins {
         let cnt = observed_counts[i];
         if cnt == 0 || cnt > n_devs {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         let mut prev_c = 0.0;
         let mut prev_age = 0.0;
@@ -143,18 +175,18 @@ fn prepare_exact_age_data(
             let c = cum[idx];
             let x = cell_ages[idx];
             if !c.is_finite() || !x.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             if c < 0.0 {
-                return Err(ValidationError::Negative);
+                return Err(ReservingError::Negative);
             }
             if x <= prev_age {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "cell_ages must be strictly positive and strictly increasing within each origin row",
                 ));
             }
             if j > 0 && options.monotonicity_policy == MonotonicityPolicy::Strict && c < prev_c {
-                return Err(ValidationError::NonMonotoneCumulative {
+                return Err(ReservingError::NonMonotoneCumulative {
                     origin: i,
                     dev: j,
                     previous: prev_c,
@@ -176,7 +208,7 @@ fn prepare_exact_age_data(
     if let Some(mx) = options.max_age
         && (!mx.is_finite() || mx < max_obs_age - 1e-9)
     {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "max_age must be finite and >= maximum observed cell age",
         ));
     }
@@ -339,7 +371,7 @@ fn optimize_exact_age_params(
     data: &ExactAgeData,
     exposure_weights: Option<&[f64]>,
     curve: GrowthCurve,
-) -> Result<(f64, f64, f64, f64), ValidationError> {
+) -> Result<(f64, f64, f64, f64), ReservingError> {
     let omega_grid = [0.4_f64, 0.8, 1.3, 2.0, 3.2];
     let theta_mults = [0.25_f64, 0.5, 1.0, 2.0, 4.0];
 
@@ -361,7 +393,7 @@ fn optimize_exact_age_params(
     }
 
     if !best_ll.is_finite() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Clark exact-age MLE failed to find a valid starting point",
         ));
     }
@@ -480,15 +512,15 @@ pub fn clark_mle_exact_age(
     observed_counts: &[usize],
     exposure_weights: Option<&[f64]>,
     options: &ClarkExactAgeOptions,
-) -> Result<ClarkExactAgeResult, ValidationError> {
+) -> Result<ClarkExactAgeResult, ReservingError> {
     let data = prepare_exact_age_data(cum, cell_ages, n_origins, n_devs, observed_counts, options)?;
     if let Some(weights) = exposure_weights {
         if weights.len() != n_origins {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         validate_positive_finite_slice(weights, "exposure_weights")?;
     } else if data.latest.iter().any(|&v| v <= 0.0) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Clark exact-age LDF requires strictly positive latest losses for every origin",
         ));
     }
@@ -499,7 +531,7 @@ pub fn clark_mle_exact_age(
         n_origins + 2
     };
     if data.n_obs <= n_params {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Clark exact-age MLE requires more observed cells than parameters for positive degrees of freedom",
         ));
     }
@@ -559,7 +591,7 @@ pub fn clark_mle_exact_age(
             let ui = u_hat[i];
             let mu = ui * dg;
             if !(mu > 0.0) || !mu.is_finite() {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Clark exact-age MLE produced non-positive fitted increment",
                 ));
             }
@@ -686,7 +718,7 @@ pub fn fit_clark_ldf_exact_age(
     n_devs: usize,
     observed_counts: &[usize],
     options: &ClarkExactAgeOptions,
-) -> Result<ClarkExactAgeResult, ValidationError> {
+) -> Result<ClarkExactAgeResult, ReservingError> {
     clark_mle_exact_age(
         cum,
         cell_ages,
@@ -707,7 +739,7 @@ pub fn fit_clark_cape_cod_exact_age(
     observed_counts: &[usize],
     exposure_weights: &[f64],
     options: &ClarkExactAgeOptions,
-) -> Result<ClarkExactAgeResult, ValidationError> {
+) -> Result<ClarkExactAgeResult, ReservingError> {
     clark_mle_exact_age(
         cum,
         cell_ages,

@@ -40,11 +40,12 @@
 //! `2 × Ĉ_{i,n−1} × Ĉ_{j,n−1} × se(f_tail)²`.
 
 use crate::deterministic::ldf::volume_weighted_ldfs_observed_counts;
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_monotone_cumulative,
-    validate_observed_count_inputs, validate_tail, validate_triangle,
+    MonotonicityPolicy, validate_monotone_cumulative, validate_observed_count_inputs_with_policy,
+    validate_tail, validate_triangle,
 };
 
 /// Tail-factor mean and variance parameters for Mack (1999) recursive standard errors.
@@ -412,7 +413,7 @@ pub fn analyze_observed_counts(
     t: &TriangleView<'_>,
     observed_counts: &[usize],
     tail: f64,
-) -> Result<Mack, ValidationError> {
+) -> Result<Mack, ReservingError> {
     analyze_observed_counts_with_policy(
         t,
         observed_counts,
@@ -421,64 +422,26 @@ pub fn analyze_observed_counts(
     )
 }
 
-/// Validate ragged observed-count inputs under a [`MonotonicityPolicy`].
-///
-/// `Strict` delegates to the crate-wide strict validator; the relaxed policy
-/// performs the same shape / finiteness / non-negativity checks without the
-/// monotone-row requirement.
-fn validate_observed_counts_with_policy(
-    t: &TriangleView<'_>,
-    observed_counts: &[usize],
-    tail: f64,
-    policy: MonotonicityPolicy,
-) -> Result<(), ValidationError> {
-    if policy == MonotonicityPolicy::Strict {
-        return validate_observed_count_inputs(t, observed_counts, tail);
-    }
-    if t.data.len() != t.n_origins * t.n_devs
-        || observed_counts.len() != t.n_origins
-        || t.n_devs < 2
-    {
-        return Err(ValidationError::ShapeMismatch);
-    }
-    validate_tail(tail)?;
-    for (origin, &count) in observed_counts.iter().enumerate() {
-        if count == 0 || count > t.n_devs {
-            return Err(ValidationError::ShapeMismatch);
-        }
-        for dev in 0..count {
-            let value = t.get(origin, dev);
-            if !value.is_finite() {
-                return Err(ValidationError::NotFinite);
-            }
-            if value < 0.0 {
-                return Err(ValidationError::Negative);
-            }
-        }
-    }
-    Ok(())
-}
-
 /// [`analyze_observed_counts`] under an explicit [`MonotonicityPolicy`].
 pub fn analyze_observed_counts_with_policy(
     t: &TriangleView<'_>,
     observed_counts: &[usize],
     tail: f64,
     policy: MonotonicityPolicy,
-) -> Result<Mack, ValidationError> {
-    validate_observed_counts_with_policy(t, observed_counts, tail, policy)?;
+) -> Result<Mack, ReservingError> {
+    validate_observed_count_inputs_with_policy(t, observed_counts, tail, policy)?;
 
     let n_origin = t.n_origins;
     let n_dev = t.n_devs;
     let mut ldf = vec![0.0; n_dev.saturating_sub(1)];
     volume_weighted_ldfs_observed_counts(t.data, n_origin, n_dev, observed_counts, &mut ldf);
     if ldf.iter().any(|value| !value.is_finite()) {
-        return Err(ValidationError::DivideByZero("development denominator"));
+        return Err(ReservingError::DivideByZero("development denominator"));
     }
 
     let sigma_sq = sigma_sq_vec_observed_counts(t, observed_counts, &ldf);
     if sigma_sq.iter().any(|value| !value.is_finite()) {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let mut s_col = vec![0.0; n_dev.saturating_sub(1)];
@@ -606,9 +569,9 @@ pub fn analyze_observed_counts_with_policy(
 /// let res = mack::analyze(&tri.view(), 1.0)?;
 /// assert!(res.total_reserve > 0.0);
 /// assert!(res.total_standard_error > 0.0);
-/// # Ok::<(), reserving_kernels::validate::ValidationError>(())
+/// # Ok::<(), reserving_kernels::validate::ReservingError>(())
 /// ```
-pub fn analyze(t: &TriangleView<'_>, tail: f64) -> Result<Mack, ValidationError> {
+pub fn analyze(t: &TriangleView<'_>, tail: f64) -> Result<Mack, ReservingError> {
     analyze_with_policy(t, tail, MonotonicityPolicy::AllowNegativeIncrements)
 }
 
@@ -617,7 +580,7 @@ pub fn analyze_with_policy(
     t: &TriangleView<'_>,
     tail: f64,
     policy: MonotonicityPolicy,
-) -> Result<Mack, ValidationError> {
+) -> Result<Mack, ReservingError> {
     analyze_with_tail_uncertainty_and_policy(t, MackTailSpec::fixed(tail), policy)
 }
 
@@ -625,7 +588,7 @@ pub fn analyze_with_policy(
 pub fn analyze_with_tail_uncertainty(
     t: &TriangleView<'_>,
     tail_spec: MackTailSpec,
-) -> Result<Mack, ValidationError> {
+) -> Result<Mack, ReservingError> {
     analyze_with_tail_uncertainty_and_policy(
         t,
         tail_spec,
@@ -639,7 +602,7 @@ pub fn analyze_with_tail_uncertainty_and_policy(
     t: &TriangleView<'_>,
     tail_spec: MackTailSpec,
     policy: MonotonicityPolicy,
-) -> Result<Mack, ValidationError> {
+) -> Result<Mack, ReservingError> {
     validate_triangle(t)?;
     if policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(t)?;
@@ -647,7 +610,7 @@ pub fn analyze_with_tail_uncertainty_and_policy(
     validate_tail_spec(tail_spec)?;
     let n = t.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Mack variance estimation requires at least a 3x3 triangle",
         ));
     }
@@ -656,16 +619,16 @@ pub fn analyze_with_tail_uncertainty_and_policy(
         let row = &t.data[i * n_devs..i * n_devs + (n - i)];
         for k in 0..(n - 1 - i) {
             if row[k] == 0.0 && row[k + 1] != 0.0 {
-                return Err(ValidationError::DivideByZero("mack link denominator"));
+                return Err(ReservingError::DivideByZero("mack link denominator"));
             }
         }
     }
     let result = analyze_with_tail_spec_unchecked(t, tail_spec);
     if result.ldf.iter().any(|&v| !v.is_finite() || v <= 0.0) {
-        return Err(ValidationError::DivideByZero("development denominator"));
+        return Err(ReservingError::DivideByZero("development denominator"));
     }
     if result.sigma_sq.iter().any(|v| !v.is_finite()) {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     Ok(result)
 }
@@ -733,9 +696,9 @@ impl MackOptions {
 pub fn analyze_with_options(
     t: &TriangleView<'_>,
     options: &MackOptions,
-) -> Result<Mack, ValidationError> {
+) -> Result<Mack, ReservingError> {
     if !options.alpha.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if options.weights.is_none() && (options.alpha - 1.0).abs() <= 1e-12 {
         return analyze_with_tail_uncertainty_and_policy(t, options.tail_spec, options.policy);
@@ -749,16 +712,16 @@ pub fn analyze_with_options(
 
     let n = t.n_origins.min(t.n_devs);
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Mack variance estimation requires at least a 3x3 triangle",
         ));
     }
     if let Some(ref w) = options.weights {
         if w.len() != t.n_origins * t.n_devs {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if w.iter().any(|&v| !v.is_finite() || v < 0.0) {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
     }
 
@@ -794,7 +757,7 @@ pub fn analyze_with_options(
             den += w * c_pow;
         }
         if den <= 0.0 {
-            return Err(ValidationError::DivideByZero("mack weighted denominator"));
+            return Err(ReservingError::DivideByZero("mack weighted denominator"));
         }
         let fk = num / den;
         ldf[k] = fk;
@@ -826,7 +789,7 @@ pub fn analyze_with_options(
     // exactly as in `analyze` / `analyze_observed_counts`.
     let sigma_sq = extrapolate_missing_sigma(&sigma_sq_obs);
     if sigma_sq.iter().any(|v| !v.is_finite()) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Mack sigma^2 cannot be extrapolated: the first development link has fewer than two active pairs",
         ));
     }
@@ -942,13 +905,13 @@ pub fn analyze_with_options(
     })
 }
 
-fn validate_tail_spec(spec: MackTailSpec) -> Result<(), ValidationError> {
+fn validate_tail_spec(spec: MackTailSpec) -> Result<(), ReservingError> {
     validate_tail(spec.tail_factor)?;
     if !spec.tail_sigma_sq.is_finite() || !spec.tail_se.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if spec.tail_sigma_sq < 0.0 || spec.tail_se < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     Ok(())
 }
@@ -998,7 +961,7 @@ mod observed_count_tests {
 
         assert_eq!(
             analyze_observed_counts(&view, &[4, 5, 2], 1.0).map(|_| ()),
-            Err(ValidationError::ShapeMismatch)
+            Err(ReservingError::ShapeMismatch)
         );
     }
 }

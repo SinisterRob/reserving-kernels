@@ -40,10 +40,10 @@
 
 use crate::deterministic::chain_ladder::ChainLadderEngine;
 use crate::deterministic::ldf::DevelopmentFactorEngine;
+use crate::error::ReservingError;
 use crate::types::{Triangle, TriangleView};
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_positive_finite_slice, validate_tail,
-    validate_triangle,
+    MonotonicityPolicy, validate_positive_finite_slice, validate_tail, validate_triangle,
 };
 
 // ===========================================================================
@@ -61,6 +61,16 @@ pub enum CaseReserveTrend {
     /// Fit the continuous exponential rate `r` via pooled log-linear OLS across
     /// all observed columns with strictly positive average case reserves
     /// (`ln(A_{i,j}) = alpha_j + r * i`).
+    ///
+    /// **Limitation (circularity):** the adjustment exists because average case
+    /// reserves are distorted by changing adequacy, so a trend fitted to them
+    /// absorbs the very distortion being removed (e.g. a strengthening on the
+    /// latest diagonal inflates the fitted `r`). Friedland (2010, Ch. 13)
+    /// selects the severity trend from paid-on-closed (or reported) severities
+    /// instead; prefer
+    /// `ExponentialRate(fit_severity_trend(paid, closed_counts)?)` (see
+    /// [`fit_severity_trend`]) whenever closed counts are available. This
+    /// variant is kept only as a last-resort diagnostic.
     FitFromAverageCase,
 }
 
@@ -73,7 +83,8 @@ pub struct CaseReserveAdjustmentResult {
     pub annual_compound_rate: f64,
     /// Raw observed case outstanding triangle (`Reported - Paid`).
     pub raw_case_reserves: Triangle,
-    /// Raw observed average case outstanding (`Case / Open`, `0` where `Open == 0`).
+    /// Raw observed average case outstanding (`Case / Open`; `0` where
+    /// `Open == 0`, which is only accepted when `Case == 0`).
     pub raw_average_case: Triangle,
     /// Restated average case outstanding (`S_{i_max,j} * exp(-r * (i_max - i))`).
     pub adjusted_average_case: Triangle,
@@ -105,7 +116,7 @@ pub fn adjust_case_reserves(
     trend: CaseReserveTrend,
     tail: f64,
     policy: MonotonicityPolicy,
-) -> Result<CaseReserveAdjustmentResult, ValidationError> {
+) -> Result<CaseReserveAdjustmentResult, ReservingError> {
     validate_triangle(reported)?;
     validate_triangle(paid)?;
     validate_triangle(open_counts)?;
@@ -113,7 +124,7 @@ pub fn adjust_case_reserves(
 
     let n = reported.n_origins;
     if n < 2 || paid.n_origins != n || open_counts.n_origins != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     let mut raw_case = vec![f64::NAN; n * n];
@@ -123,30 +134,38 @@ pub fn adjust_case_reserves(
             let idx = i * n + j;
             let case_val = reported.data[idx] - paid.data[idx];
             if case_val < -1e-9 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "reported loss must be >= paid loss for case-reserve adjustment",
                 ));
             }
             let case_clamped = case_val.max(0.0);
             raw_case[idx] = case_clamped;
             let open = open_counts.data[idx];
-            raw_avg[idx] = if open > 0.0 { case_clamped / open } else { 0.0 };
+            raw_avg[idx] = if open > 0.0 {
+                case_clamped / open
+            } else if case_clamped > 1e-9 {
+                return Err(ReservingError::InvalidParameter(
+                    "case reserves are positive where open claim counts are zero",
+                ));
+            } else {
+                0.0
+            };
         }
     }
 
     let rate = match trend {
         CaseReserveTrend::ExponentialRate(r) => {
             if !r.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             r
         }
         CaseReserveTrend::AnnualCompoundRate(g) => {
             if !g.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             if g <= -1.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "annual compound trend must be > -1.0",
                 ));
             }
@@ -154,6 +173,9 @@ pub fn adjust_case_reserves(
         }
         CaseReserveTrend::FitFromAverageCase => fit_pooled_log_linear_trend(&raw_avg, n)?,
     };
+    if !rate.is_finite() {
+        return Err(ReservingError::NotFinite);
+    }
 
     let mut adj_avg = vec![f64::NAN; n * n];
     let mut adj_case = vec![f64::NAN; n * n];
@@ -162,6 +184,16 @@ pub fn adjust_case_reserves(
     for j in 0..n {
         let i_max = n - 1 - j;
         let anchor_avg = raw_avg[i_max * n + j];
+        let anchor_open = open_counts.data[i_max * n + j];
+        if !(anchor_open > 0.0) && (0..i_max).any(|i| open_counts.data[i * n + j] > 0.0) {
+            // The latest-diagonal average case is undefined (no open claims), so
+            // earlier rows with open claims cannot be restated without silently
+            // zeroing their case reserves.
+            return Err(ReservingError::InvalidParameter(
+                "latest-diagonal open count is zero at a development age where earlier \
+                 origins have open claims; average case reserve anchor is undefined",
+            ));
+        }
         for i in 0..=i_max {
             let idx = i * n + j;
             let lag = (i_max - i) as f64;
@@ -191,7 +223,7 @@ pub fn adjust_case_reserves(
 
     let annual_compound_rate = rate.exp_m1();
     if !annual_compound_rate.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(CaseReserveAdjustmentResult {
@@ -211,8 +243,44 @@ pub fn adjust_case_reserves(
     })
 }
 
+/// Fit a continuous severity trend `r` from average severities
+/// `S_{i,j} = loss_{i,j} / counts_{i,j}` (e.g. cumulative paid on cumulative
+/// closed counts, Friedland 2010 Ch. 13) by pooled within-column log-linear OLS
+/// `ln(S_{i,j}) = alpha_j + r * i` over observed cells with positive counts and
+/// positive severities.
+///
+/// The result feeds [`CaseReserveTrend::ExponentialRate`] and avoids the
+/// circularity of [`CaseReserveTrend::FitFromAverageCase`].
+///
+/// # Errors
+///
+/// Shape/validation errors for the triangles, or
+/// [`ReservingError::InvalidParameter`] when no development column has at
+/// least two positive severities.
+pub fn fit_severity_trend(
+    loss: &TriangleView<'_>,
+    counts: &TriangleView<'_>,
+) -> Result<f64, ReservingError> {
+    validate_triangle(loss)?;
+    validate_triangle(counts)?;
+    let n = loss.n_origins;
+    if counts.n_origins != n {
+        return Err(ReservingError::ShapeMismatch);
+    }
+    let mut sev = vec![f64::NAN; n * n];
+    for i in 0..n {
+        for j in 0..(n - i) {
+            let c = counts.get(i, j);
+            if c > 0.0 {
+                sev[i * n + j] = loss.get(i, j) / c;
+            }
+        }
+    }
+    fit_pooled_log_linear_trend(&sev, n)
+}
+
 /// Fit pooled within-column log-linear trend `r` from `ln(A_{i,j}) = alpha_j + r * i`.
-fn fit_pooled_log_linear_trend(raw_avg: &[f64], n: usize) -> Result<f64, ValidationError> {
+fn fit_pooled_log_linear_trend(raw_avg: &[f64], n: usize) -> Result<f64, ReservingError> {
     let mut num = 0.0;
     let mut den = 0.0;
     for j in 0..n {
@@ -238,7 +306,7 @@ fn fit_pooled_log_linear_trend(raw_avg: &[f64], n: usize) -> Result<f64, Validat
         }
     }
     if den <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "insufficient positive average case reserves to estimate severity trend",
         ));
     }
@@ -278,9 +346,11 @@ pub struct PaidDisposalAdjustmentResult {
     pub ldfs: Vec<f64>,
     /// Cumulative development factors (including tail).
     pub cdfs: Vec<f64>,
-    /// Adjusted chain-ladder paid ultimates by origin.
+    /// Adjusted chain-ladder paid ultimates by origin: the adjusted latest
+    /// diagonal `Paid*_{i, n-1-i}` developed with the adjusted-triangle CDFs.
     pub ultimates: Vec<f64>,
-    /// Adjusted chain-ladder paid reserves by origin.
+    /// Adjusted paid reserves by origin (`ultimates[i]` minus the **actual**
+    /// latest cumulative paid `Paid_{i, n-1-i}`).
     pub reserves: Vec<f64>,
     /// Total adjusted paid ultimate.
     pub total_ultimate: f64,
@@ -305,14 +375,14 @@ pub fn adjust_paid_disposal_rate(
     target_disposal_rates: Option<&[f64]>,
     interpolation: DisposalInterpolation,
     tail: f64,
-) -> Result<PaidDisposalAdjustmentResult, ValidationError> {
+) -> Result<PaidDisposalAdjustmentResult, ReservingError> {
     validate_triangle(paid)?;
     validate_triangle(closed_counts)?;
     validate_tail(tail)?;
 
     let n = paid.n_origins;
     if n < 2 || closed_counts.n_origins != n || ultimate_counts.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(ultimate_counts, "ultimate_counts")?;
 
@@ -323,7 +393,7 @@ pub fn adjust_paid_disposal_rate(
         for j in 0..(n - i) {
             let c = closed_counts.get(i, j);
             if c < prev_c - 1e-12 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "closed_counts must be non-decreasing across development periods",
                 ));
             }
@@ -335,17 +405,22 @@ pub fn adjust_paid_disposal_rate(
     let targets: Vec<f64> = match target_disposal_rates {
         Some(custom) => {
             if custom.len() != n {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             for (idx, &d) in custom.iter().enumerate() {
                 if !d.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if !(0.0..=1.0 + 1e-9).contains(&d) {
-                    return Err(ValidationError::InvalidMaturity {
+                    return Err(ReservingError::InvalidMaturity {
                         index: idx,
                         value: d,
                     });
+                }
+                if idx > 0 && d < custom[idx - 1] - 1e-12 {
+                    return Err(ReservingError::InvalidParameter(
+                        "target disposal rates must be non-decreasing across development ages",
+                    ));
                 }
             }
             custom.to_vec()
@@ -385,9 +460,21 @@ pub fn adjust_paid_disposal_rate(
     let policy = MonotonicityPolicy::AllowNegativeIncrements;
     let factors =
         DevelopmentFactorEngine::volume_weighted_with_policy(&adjusted_paid.view(), tail, policy)?;
-    // Project ultimates and reserves from the actual cumulative paid diagonal
-    // using the disposal-rate-adjusted LDFs so Ultimate == Paid + Reserve holds.
-    let cl = ChainLadderEngine::project_with_policy(paid, &factors, policy)?;
+    // Friedland (2010, Ch. 13): develop the *adjusted* paid triangle. Its
+    // latest diagonal sits at the target disposal rates, which is the level the
+    // adjusted LDFs are calibrated to. With the default (latest-diagonal)
+    // targets the adjusted diagonal equals actual paid; with custom targets it
+    // does not, and applying adjusted LDFs to actual paid would mix two
+    // settlement-rate bases. Reserves are measured against actual paid to date.
+    let cl = ChainLadderEngine::project_with_policy(&adjusted_paid.view(), &factors, policy)?;
+    let mut reserves = Vec::with_capacity(n);
+    for i in 0..n {
+        reserves.push(cl.ultimates[i] - paid.get(i, n - 1 - i));
+    }
+    let total_reserve: f64 = reserves.iter().sum();
+    if !total_reserve.is_finite() {
+        return Err(ReservingError::NotFinite);
+    }
 
     Ok(PaidDisposalAdjustmentResult {
         observed_disposal_rates: Triangle::new(n, n, obs_rates),
@@ -397,9 +484,9 @@ pub fn adjust_paid_disposal_rate(
         ldfs: factors.ldfs,
         cdfs: factors.cdfs,
         ultimates: cl.ultimates,
-        reserves: cl.reserves,
+        reserves,
         total_ultimate: cl.total_ultimate,
-        total_reserve: cl.total_reserve,
+        total_reserve,
     })
 }
 

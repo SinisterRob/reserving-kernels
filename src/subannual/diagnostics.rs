@@ -7,10 +7,12 @@
 //!   product of interpolated sub-annual LDFs across each 12-month window
 //!   matches the source annual LDF within floating-point tolerance.
 
-use crate::validate::{ValidationError, validate_positive_finite_slice};
+use crate::error::ReservingError;
+use crate::validate::validate_positive_finite_slice;
 
 /// Output of [`equilibrium_ibnr_check`] (Robbin 2018).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct EquilibriumIbnrCheckResult {
     /// Sub-period emergence rates `(P(t_k) - P(t_{k-1})) / (t_k - t_{k-1})` (length `m - 1`).
     pub emergence_rates: Vec<f64>,
@@ -48,23 +50,23 @@ pub fn equilibrium_ibnr_check(
     subannual_cdfs: &[f64],
     sub_periods_per_year: usize,
     tolerance: f64,
-) -> Result<EquilibriumIbnrCheckResult, ValidationError> {
+) -> Result<EquilibriumIbnrCheckResult, ReservingError> {
     if subannual_ages_months.len() < 2
         || subannual_ages_months.len() != subannual_cdfs.len()
         || sub_periods_per_year == 0
     {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(subannual_ages_months, "subannual_ages_months")?;
     validate_positive_finite_slice(subannual_cdfs, "subannual_cdfs")?;
     if !tolerance.is_finite() || tolerance < 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "tolerance must be finite and non-negative",
         ));
     }
     for k in 1..subannual_ages_months.len() {
         if subannual_ages_months[k] <= subannual_ages_months[k - 1] {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "subannual_ages_months must be strictly increasing",
             ));
         }
@@ -130,6 +132,7 @@ pub fn equilibrium_ibnr_check(
 
 /// Product-parity diagnostic for a single annual window `[start_age_months, end_age_months]`.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct AnnualWindowParity {
     /// Window index (`0..annual_ldfs.len()`).
     pub window_index: usize,
@@ -153,6 +156,7 @@ pub struct AnnualWindowParity {
 
 /// Output of [`subannual_product_parity`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SubannualProductParityResult {
     /// Per-window parity diagnostics.
     pub windows: Vec<AnnualWindowParity>,
@@ -173,30 +177,30 @@ pub fn subannual_product_parity(
     subannual_ages_months: &[f64],
     subannual_ldfs: &[f64],
     tolerance: f64,
-) -> Result<SubannualProductParityResult, ValidationError> {
+) -> Result<SubannualProductParityResult, ReservingError> {
     if annual_ages_months.len() < 2
         || annual_ldfs.len() + 1 != annual_ages_months.len()
         || subannual_ages_months.len() < 2
         || subannual_ldfs.len() + 1 != subannual_ages_months.len()
     {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(annual_ages_months, "annual_ages_months")?;
     validate_positive_finite_slice(annual_ldfs, "annual_ldfs")?;
     validate_positive_finite_slice(subannual_ages_months, "subannual_ages_months")?;
     validate_positive_finite_slice(subannual_ldfs, "subannual_ldfs")?;
     if annual_ages_months.windows(2).any(|w| w[1] <= w[0]) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "annual_ages_months must be strictly increasing",
         ));
     }
     if subannual_ages_months.windows(2).any(|w| w[1] <= w[0]) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "subannual_ages_months must be strictly increasing",
         ));
     }
     if !tolerance.is_finite() || tolerance < 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "tolerance must be finite and non-negative",
         ));
     }
@@ -213,17 +217,17 @@ pub fn subannual_product_parity(
         let idx_start = subannual_ages_months
             .iter()
             .position(|&a| (a - t_start).abs() <= age_tol)
-            .ok_or(ValidationError::InvalidParameter(
+            .ok_or(ReservingError::InvalidParameter(
                 "subannual_ages_months must include every annual knot age",
             ))?;
         let idx_end = subannual_ages_months
             .iter()
             .position(|&a| (a - t_end).abs() <= age_tol)
-            .ok_or(ValidationError::InvalidParameter(
+            .ok_or(ReservingError::InvalidParameter(
                 "subannual_ages_months must include every annual knot age",
             ))?;
         if idx_end <= idx_start {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "annual window endpoints must be strictly increasing in subannual_ages_months",
             ));
         }

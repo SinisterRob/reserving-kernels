@@ -18,12 +18,13 @@
 //!   residual correlation `ρ_12 ∈ (-1, 1)`.
 
 use crate::deterministic::ldf::{cdfs_from_ldfs, volume_weighted_ldfs};
+use crate::error::ReservingError;
 use crate::linalg::{
     cholesky_lower, invert_spd, jacobi_eigen_symmetric, quad_form, solve_lower_into,
 };
 use crate::stochastic::bootstrap_odp::DeterministicRng;
 use crate::types::TriangleView;
-use crate::validate::{ValidationError, validate_triangle};
+use crate::validate::validate_triangle;
 
 // ===========================================================================
 // 4.1 Empirical Bayes / Laplace-Approximated Bayesian Chain Ladder
@@ -89,7 +90,7 @@ pub struct BayesianOdpResult {
     pub converged: bool,
 }
 
-fn solve_spd_system(a: &[f64], b: &[f64], dim: usize) -> Result<Vec<f64>, ValidationError> {
+fn solve_spd_system(a: &[f64], b: &[f64], dim: usize) -> Result<Vec<f64>, ReservingError> {
     let l = cholesky_lower(a, dim)?;
     let mut y = vec![0.0; dim];
     solve_lower_into(&l, dim, b, &mut y);
@@ -119,7 +120,7 @@ fn fit_odp_map(
     prior_prec: f64,
     max_iter: usize,
     tol: f64,
-) -> Result<OdpMapFit, ValidationError> {
+) -> Result<OdpMapFit, ReservingError> {
     let p = 2 * n - 1;
     let mut theta = vec![0.0; p];
     // Initialize alphas from log row sums / n for fast convergence.
@@ -237,7 +238,7 @@ fn fit_odp_map(
     })
 }
 
-fn log_det_spd(a: &[f64], dim: usize) -> Result<f64, ValidationError> {
+fn log_det_spd(a: &[f64], dim: usize) -> Result<f64, ReservingError> {
     let l = cholesky_lower(a, dim)?;
     let mut sum = 0.0;
     for i in 0..dim {
@@ -254,32 +255,32 @@ fn log_det_spd(a: &[f64], dim: usize) -> Result<f64, ValidationError> {
 pub fn bayesian_odp_laplace(
     cumulative: &TriangleView<'_>,
     options: &BayesianOdpOptions,
-) -> Result<BayesianOdpResult, ValidationError> {
+) -> Result<BayesianOdpResult, ReservingError> {
     validate_triangle(cumulative)?;
     let n = cumulative.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Bayesian ODP Laplace requires at least a 3x3 triangle",
         ));
     }
     if !options.prior_sd.is_finite() || options.prior_sd <= 0.0 {
-        return Err(ValidationError::NonPositive("prior_sd"));
+        return Err(ReservingError::NonPositive("prior_sd"));
     }
     if options.max_iterations == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
     if !options.tolerance.is_finite() || options.tolerance <= 0.0 {
-        return Err(ValidationError::NonPositive("tolerance"));
+        return Err(ReservingError::NonPositive("tolerance"));
     }
 
     let p = 2 * n - 1;
     let mu0 = match &options.prior_mean {
         Some(v) => {
             if v.len() != p {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             if v.iter().any(|x| !x.is_finite()) {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             v.clone()
         }
@@ -298,7 +299,7 @@ pub fn bayesian_odp_laplace(
     }
     let n_obs = obs.len();
     if n_obs <= p {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "insufficient degrees of freedom (n_obs <= 2n - 1)",
         ));
     }
@@ -535,7 +536,7 @@ impl MeyersPriors {
         }
     }
 
-    fn validate(&self) -> Result<(), ValidationError> {
+    fn validate(&self) -> Result<(), ReservingError> {
         let vals = [
             self.alpha_sd,
             self.log_elr_lower,
@@ -549,7 +550,7 @@ impl MeyersPriors {
             self.smooth_sigma_increment_rate,
         ];
         if vals.iter().any(|v| !v.is_finite()) {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if self.alpha_sd <= 0.0
             || self.beta_bound <= 0.0
@@ -560,10 +561,10 @@ impl MeyersPriors {
             || self.smooth_sigma_increment_shape <= 0.0
             || self.smooth_sigma_increment_rate <= 0.0
         {
-            return Err(ValidationError::NonPositive("Meyers prior scale"));
+            return Err(ReservingError::NonPositive("Meyers prior scale"));
         }
         if self.log_elr_lower >= self.log_elr_upper {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "Meyers log_elr_lower must be < log_elr_upper",
             ));
         }
@@ -604,7 +605,7 @@ pub struct MeyersOptions {
     /// Number of Self-Normalized Importance Sampling (SNIS) draws `M` per round (default `4096`).
     pub n_samples: usize,
     /// Minimum acceptable `ESS / M` (default `0.025`, i.e. ESS ≥ ~102 at `M = 4096`).
-    /// Below it the fit returns [`ValidationError::InvalidParameter`] unless
+    /// Below it the fit returns [`ReservingError::InvalidParameter`] unless
     /// [`Self::fallback_to_laplace`] is set.
     pub min_ess_fraction: f64,
     /// When `true` and the final ESS is below the minimum, fall back to
@@ -1181,10 +1182,7 @@ where
 /// differences of the exact analytic gradient (O(eps^(1/2)) accuracy, ~15x faster
 /// than 2p^2 scalar differences), applying a Levenberg–Marquardt spectral shift if
 /// `A` is indefinite or near-singular.
-fn safe_neg_hessian_and_inverse<F>(
-    fg: F,
-    x: &[f64],
-) -> Result<(Vec<f64>, Vec<f64>), ValidationError>
+fn safe_neg_hessian_and_inverse<F>(fg: F, x: &[f64]) -> Result<(Vec<f64>, Vec<f64>), ReservingError>
 where
     F: Fn(&[f64]) -> (f64, Vec<f64>),
 {
@@ -1256,12 +1254,12 @@ fn logit(x: f64) -> f64 {
     (x / (1.0 - x)).ln()
 }
 
-fn validate_meyers_options(options: &MeyersOptions) -> Result<(), ValidationError> {
+fn validate_meyers_options(options: &MeyersOptions) -> Result<(), ReservingError> {
     if options.n_samples == 0 || options.max_map_iterations == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
     if !options.proposal_nu.is_finite() || options.proposal_nu <= 2.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "proposal_nu must be finite and > 2.0",
         ));
     }
@@ -1271,10 +1269,10 @@ fn validate_meyers_options(options: &MeyersOptions) -> Result<(), ValidationErro
         || !options.defensive_weight.is_finite()
         || !options.min_ess_fraction.is_finite()
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if options.proposal_inflation <= 0.0 {
-        return Err(ValidationError::NonPositive("proposal_inflation"));
+        return Err(ReservingError::NonPositive("proposal_inflation"));
     }
     for value in [
         options.tempering_ess_fraction,
@@ -1282,11 +1280,11 @@ fn validate_meyers_options(options: &MeyersOptions) -> Result<(), ValidationErro
         options.min_ess_fraction,
     ] {
         if !(0.0..=1.0).contains(&value) {
-            return Err(ValidationError::InvalidProbability { value });
+            return Err(ReservingError::InvalidProbability { value });
         }
     }
     if options.tempering_ess_fraction <= 0.0 {
-        return Err(ValidationError::NonPositive("tempering_ess_fraction"));
+        return Err(ReservingError::NonPositive("tempering_ess_fraction"));
     }
     options.priors.validate()
 }
@@ -1294,11 +1292,11 @@ fn validate_meyers_options(options: &MeyersOptions) -> Result<(), ValidationErro
 fn prepare_log_triangle_and_init(
     cumulative: &TriangleView<'_>,
     options: &MeyersOptions,
-) -> Result<MeyersInitData, ValidationError> {
+) -> Result<MeyersInitData, ReservingError> {
     validate_triangle(cumulative)?;
     let n = cumulative.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Meyers LCL/CCL requires at least a 3x3 triangle",
         ));
     }
@@ -1309,7 +1307,7 @@ fn prepare_log_triangle_and_init(
         for j in 0..(n - i) {
             let v = cumulative.get(i, j);
             if v <= 0.0 {
-                return Err(ValidationError::NonPositive(
+                return Err(ReservingError::NonPositive(
                     "cumulative triangle cell for log-loss Meyers model",
                 ));
             }
@@ -1330,15 +1328,15 @@ fn prepare_log_triangle_and_init(
     let alpha_center = match &options.earned_premium {
         Some(prem) => {
             if prem.len() != n {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             let mut m = Vec::with_capacity(n);
             for &p_i in prem {
                 if !p_i.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if p_i <= 0.0 {
-                    return Err(ValidationError::NonPositive("earned_premium"));
+                    return Err(ReservingError::NonPositive("earned_premium"));
                 }
                 m.push(if monograph {
                     p_i.ln()
@@ -1465,7 +1463,7 @@ struct TProposal {
 }
 
 impl TProposal {
-    fn new(mean: Vec<f64>, cov: &[f64], p: usize) -> Result<Self, ValidationError> {
+    fn new(mean: Vec<f64>, cov: &[f64], p: usize) -> Result<Self, ReservingError> {
         let chol = cholesky_lower(cov, p)?;
         let half_log_det = (0..p).map(|i| chol[i * p + i].ln()).sum();
         Ok(Self {
@@ -1585,7 +1583,7 @@ fn adaptive_importance_sample<F>(
     cov_laplace: &[f64],
     options: &MeyersOptions,
     rng: &mut DeterministicRng,
-) -> Result<ImportanceSample, ValidationError>
+) -> Result<ImportanceSample, ReservingError>
 where
     F: Fn(&[f64]) -> f64,
 {
@@ -1722,7 +1720,7 @@ where
     }
     let ess_sum: f64 = round_ess.iter().sum();
     if !(ess_sum > 0.0) {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     for (w_r, e_r) in round_w.iter().zip(&round_ess) {
         weights.extend(w_r.iter().map(|w| w * e_r / ess_sum));
@@ -1739,7 +1737,7 @@ where
         });
     }
     if !options.fallback_to_laplace {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Meyers SNIS effective sample size fell below min_ess_fraction * n_samples; increase \
              n_samples / adaptation_rounds or set fallback_to_laplace",
         ));
@@ -2002,12 +2000,12 @@ fn weighted_mean_sd(weights: &[f64], values: &[f64]) -> (f64, f64) {
 ///
 /// # Errors
 ///
-/// Returns [`ValidationError::InvalidParameter`] when the final ESS is below
+/// Returns [`ReservingError::InvalidParameter`] when the final ESS is below
 /// `min_ess_fraction · n_samples` and `fallback_to_laplace` is `false`.
 pub fn meyers_laplace_snis(
     cumulative: &TriangleView<'_>,
     options: &MeyersOptions,
-) -> Result<MeyersResult, ValidationError> {
+) -> Result<MeyersResult, ReservingError> {
     let (res, _, _, _) = meyers_laplace_snis_internal(cumulative, options)?;
     Ok(res)
 }
@@ -2016,7 +2014,7 @@ pub fn meyers_laplace_snis(
 fn meyers_laplace_snis_internal(
     cumulative: &TriangleView<'_>,
     options: &MeyersOptions,
-) -> Result<(MeyersResult, Vec<f64>, MeyersSpec, Vec<f64>), ValidationError> {
+) -> Result<(MeyersResult, Vec<f64>, MeyersSpec, Vec<f64>), ReservingError> {
     let n = cumulative.n_origins;
     let MeyersInitData { log_y, spec, init } = prepare_log_triangle_and_init(cumulative, options)?;
     let is_ccl = spec.is_ccl;
@@ -2124,7 +2122,7 @@ fn meyers_laplace_snis_internal(
     }
     let w_sum: f64 = weights.iter().sum();
     if !(w_sum > 0.0) {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     for w in &mut weights {
         *w /= w_sum;
@@ -2140,7 +2138,7 @@ fn meyers_laplace_snis_internal(
         origin_sd_reserves[i] = s_i;
     }
 
-    let map = spec.unpack(&psi_map).ok_or(ValidationError::NotFinite)?;
+    let map = spec.unpack(&psi_map).ok_or(ReservingError::NotFinite)?;
     let result = MeyersResult {
         model: options.model,
         alpha_map: map.alphas,
@@ -2312,9 +2310,9 @@ pub fn meyers_bivariate_ccl(
     line1: &TriangleView<'_>,
     line2: &TriangleView<'_>,
     options: &MeyersOptions,
-) -> Result<BivariateCclResult, ValidationError> {
+) -> Result<BivariateCclResult, ReservingError> {
     if line1.n_origins != line2.n_origins || line1.n_devs != line2.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let (fit1, log_y1, spec1, psi1_map) = meyers_laplace_snis_internal(line1, options)?;
     let (fit2, log_y2, spec2, psi2_map) = meyers_laplace_snis_internal(line2, options)?;
@@ -2482,7 +2480,7 @@ pub fn meyers_bivariate_ccl(
     }
     let w_sum: f64 = weights.iter().sum();
     if !(w_sum > 0.0) {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     for w in &mut weights {
         *w /= w_sum;
@@ -2621,7 +2619,7 @@ mod tests {
         };
         assert!(matches!(
             meyers_laplace_snis(&tri.view(), &strict),
-            Err(ValidationError::InvalidParameter(_))
+            Err(ReservingError::InvalidParameter(_))
         ));
         let fallback = MeyersOptions {
             fallback_to_laplace: true,

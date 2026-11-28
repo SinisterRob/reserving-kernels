@@ -1,13 +1,17 @@
 //! Numeric scoring helpers for deterministic factor selectors.
 
 use crate::deterministic::ldf;
-use crate::diagnostics::link_ratio_diagnostics::{LinkRatioDiagnostics, diagnose_all};
+use crate::deterministic::ldf::LdfSelectionMethod;
+use crate::diagnostics::link_ratio_diagnostics::{
+    LinkRatioDiagnostics, diagnose_all, diagnose_all_selected,
+};
 use crate::preprocessing::selection::CandidateSelector;
 use crate::preprocessing::selection::backtest::BacktestScore;
 use crate::types::TriangleView;
 
 /// Scored selector candidate with its factor vector.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct SelectorScore {
     /// Candidate selector being scored.
     pub selector: CandidateSelector,
@@ -97,24 +101,28 @@ fn backtest_component(score: &BacktestScore) -> f64 {
     1.0 / (1.0 + score.mape)
 }
 
-fn to_ldf_method(selector: &CandidateSelector) -> crate::deterministic::ldf::LdfSelectionMethod {
-    match selector {
-        CandidateSelector::VolumeWeighted => {
-            crate::deterministic::ldf::LdfSelectionMethod::VolumeWeighted
-        }
-        CandidateSelector::SimpleAverage => {
-            crate::deterministic::ldf::LdfSelectionMethod::SimpleAverage
-        }
-        CandidateSelector::Median => crate::deterministic::ldf::LdfSelectionMethod::Median,
-        CandidateSelector::ExHiLo => crate::deterministic::ldf::LdfSelectionMethod::ExHiLo,
+fn selector_diagnostics(
+    t: &TriangleView<'_>,
+    selector: &CandidateSelector,
+) -> Vec<LinkRatioDiagnostics> {
+    let method = match selector {
+        CandidateSelector::VolumeWeighted => LdfSelectionMethod::VolumeWeighted,
+        CandidateSelector::SimpleAverage => LdfSelectionMethod::SimpleAverage,
+        CandidateSelector::Median => LdfSelectionMethod::Median,
+        CandidateSelector::ExHiLo => LdfSelectionMethod::ExHiLo,
         CandidateSelector::VolumeWeightedLastN(last_n) => {
-            crate::deterministic::ldf::LdfSelectionMethod::LastNVolumeWeighted { last_n: *last_n }
+            LdfSelectionMethod::LastNVolumeWeighted { last_n: *last_n }
         }
         CandidateSelector::SimpleAverageLastN(last_n) => {
-            crate::deterministic::ldf::LdfSelectionMethod::LastNSimpleAverage { last_n: *last_n }
+            LdfSelectionMethod::LastNSimpleAverage { last_n: *last_n }
         }
-        CandidateSelector::Manual(_) => crate::deterministic::ldf::LdfSelectionMethod::Selected,
-    }
+        // Manual factors are diagnosed against the explicit selections; a
+        // length mismatch leaves no diagnostics (neutral stability score).
+        CandidateSelector::Manual(values) => {
+            return diagnose_all_selected(t, values).unwrap_or_default();
+        }
+    };
+    diagnose_all(t, method).unwrap_or_default()
 }
 
 /// Score one selector using stability, holdout accuracy, smoothness, and leave-one-out sensitivity.
@@ -134,7 +142,7 @@ fn score_selector_with_holdout(
     holdout: &crate::preprocessing::selection::backtest::HoldoutSet,
 ) -> SelectorScore {
     let ldfs = selector_ldfs(t, &selector);
-    let diagnostics = diagnose_all(t, to_ldf_method(&selector));
+    let diagnostics = selector_diagnostics(t, &selector);
     let backtest = crate::preprocessing::selection::backtest::fit_predict_score(
         holdout,
         selector.clone(),

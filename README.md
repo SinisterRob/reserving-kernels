@@ -29,13 +29,13 @@
 
 ---
 
-`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). For prospective ratemaking, reinsurance layering, and underwriting risk, see its sibling crate [`pricing-kernels`](https://github.com/SinisterRob/pricing-kernels). Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs)).
+`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). It is part of a four-crate pure-Rust actuarial kernel suite alongside [`pricing-kernels`](https://github.com/SinisterRob/pricing-kernels) (prospective ratemaking and underwriting risk), [`reinsurance-kernels`](https://github.com/SinisterRob/reinsurance-kernels) (treaty pricing and structuring), and [`esg-kernels`](https://github.com/SinisterRob/esg-kernels) (economic scenario generation). Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs)).
 
 ## Why `reserving-kernels`?
 
 - **Zero heavy dependencies:** Pure Rust with no BLAS, LAPACK, FFTW, or `ndarray`. Linear algebra, IRLS, and FFT routines are built in and compile cleanly to `wasm32` (`--features wasm`).
 - **Validated flat triangles:** Row-major `f64` grids using `NaN` for unobserved cells, with explicit monotonicity validation and support for negative development in incurred or reinsurance triangles.
-- **Deterministic by design:** Fixed-seed PRNG streams and custom samplers keep ODP bootstraps, multi-line correlations, and Monte Carlo runs deterministic and reproducible on each target.
+- **Deterministic by design:** Fixed-seed PRNG streams and custom samplers make ODP bootstraps, multi-line correlations, and Monte Carlo runs bit-identical across reruns on the same target/platform. Samplers call the platform `libm` (`exp`, `ln`, …), so results across different targets or OS toolchains may differ in the last few ulps.
 
 ## Quick Start
 
@@ -43,7 +43,7 @@ Add `reserving-kernels` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-reserving-kernels = "0.4"
+reserving-kernels = "0.5"
 ```
 
 Basic triangle reserving and aggregate loss convolution:
@@ -51,7 +51,7 @@ Basic triangle reserving and aggregate loss convolution:
 ```rust
 use reserving_kernels::{prelude::*, triangle};
 
-fn main() -> Result<(), ValidationError> {
+fn main() -> Result<(), ReservingError> {
     // Build from upper-triangle rows (no manual NaN padding needed)
     let triangle = triangle![
         [100, 160, 195, 205],
@@ -87,7 +87,7 @@ fn main() -> Result<(), ValidationError> {
 
 ## Implemented Modules
 
-`reserving-kernels` is organized into clean domain modules (`deterministic`, `stochastic`, `capital`, `excess`, `preprocessing`, `diagnostics`, `subannual`, `datasets`, `types`, `validate`, plus the zero-dep `triangle!` macro and optional `wasm_exports` behind `--features wasm`).
+`reserving-kernels` is organized into clean domain modules (`deterministic`, `stochastic`, `capital`, `excess`, `preprocessing`, `diagnostics`, `subannual`, `datasets`, `types`, `error`, `validate`, plus the zero-dep `triangle!` macro and optional `wasm_exports` behind `--features wasm`).
 
 | Domain Module | Highlights |
 | --- | --- |
@@ -101,11 +101,11 @@ fn main() -> Result<(), ValidationError> {
 <details>
 <summary><strong>Full module directory</strong></summary>
 
-### Core (`types`, `validate`, `datasets`, `triangle!`)
+### Core (`types`, `error`, `validate`, `datasets`, `triangle!`)
 
 | Module | Capabilities |
 | --- | --- |
-| `types`, `validate` | Pure row-major `Triangle` / `TriangleView`, monotonicity policies, validation errors, and `triangle!` literal macro |
+| `types`, `error`, `validate` | Pure row-major `Triangle` / `TriangleView`, `ReservingError` / `Result`, monotonicity policies, input validation, and `triangle!` literal macro |
 | `datasets` | Zero-I/O benchmark triangles (RAA, GenIns, Quarg & Mack, Friedland Auto) |
 
 ### `deterministic` — Loss Development & Point Estimators
@@ -174,7 +174,7 @@ fn main() -> Result<(), ValidationError> {
 
 ## Performance
 
-Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kernels` (`--release`) against `mages/ChainLadder` 0.2.21 (R) and `casact/chainladder-python` 0.10.1 (Python) on identical triangles:
+Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kernels` (`--release`) against `mages/ChainLadder` 0.2.21 (R) and `casact/chainladder-python` 0.10.1 (Python) on identical triangles. Reference numbers come from [`scripts/parity_r.R`](https://github.com/SinisterRob/reserving-kernels/blob/main/scripts/parity_r.R) and [`scripts/parity_python.py`](https://github.com/SinisterRob/reserving-kernels/blob/main/scripts/parity_python.py), which assert numerical parity within explicit tolerances (and exit non-zero on mismatch) before reporting timings:
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/SinisterRob/reserving-kernels/main/assets/benchmarks.svg" alt="reserving-kernels vs R ChainLadder and chainladder-python benchmark comparison" width="100%" />
@@ -228,7 +228,11 @@ Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kerne
 
 </details>
 
-*Note: `reserving-kernels` operates directly on validated `f64` slices with reusable scratch space, whereas the R and Python libraries carry DataFrame and S3/S4 object overhead. All point estimates and Mack / Merz–Wüthrich standard errors were verified for numerical parity before timing.*
+*Notes:*
+
+- *Ratios compare a compiled Rust kernel against end-to-end R / Python calls, so they include interpreter, DataFrame, and S3/S4 object overhead, not just the numerical work.*
+- *The ODP GLM row is not like-for-like: for the cross-classified ODP design `stochastic::glm_reserving` uses the exact closed-form volume-weighted chain-ladder MLE fast path, whereas R `glmReserve` and chainladder-python fit the GLM by iterative IRLS. Iterative GLM fits in this crate (e.g. Gamma GLM, 87.3 µs above) are the closer comparison.*
+- *All point estimates and Mack / Merz–Wüthrich standard errors were verified for numerical parity before timing.*
 
 ## Verification
 
@@ -292,7 +296,7 @@ const totalReserve = rk.rk_mack_total_reserve(n);
 console.log({ reserves, totalReserve, standardError });
 ```
 
-Each instance uses shared scratch buffers and supports up to 20 origins. Finish each calculation and copy its outputs before starting another on the same instance. The [runtime smoke test](scripts/wasm-smoke.mjs) also shows how to call Chain Ladder, Bornhuetter–Ferguson, Cape Cod, and Brosius.
+Each instance uses shared scratch buffers and supports up to `rk_n_max()` (20) origins; a larger `n` is rejected rather than truncated. The `rk_ldf_*` exports return the number of LDFs written (`0` is valid for `n = 1`) or `-1` on invalid input; other count exports return `0` and scalar exports return `NaN` on invalid input, with stale output buffers cleared to `NaN`. Panics are converted to these error statuses only on native/Miri builds; on `wasm32-unknown-unknown` (`panic = "abort"`) a panic traps the instance, so re-instantiate it after a `WebAssembly.RuntimeError`. Finish each calculation and copy its outputs before starting another on the same instance. The [runtime smoke test](scripts/wasm-smoke.mjs) also shows how to call Chain Ladder, Bornhuetter–Ferguson, Cape Cod, and Brosius.
 
 ## Excel XLL
 

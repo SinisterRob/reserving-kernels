@@ -12,6 +12,7 @@
 
 use crate::capital::reserve_distribution::{ReserveDistributionSummary, summarize_with_scratch};
 use crate::deterministic::ldf::{cdfs_from_ldfs, volume_weighted_ldfs_observed_counts};
+use crate::error::ReservingError;
 use crate::linalg::invert_spd;
 use crate::stochastic::bootstrap_odp::{
     DeterministicRng, FastIndexSampler, OdpBootstrapOptions, OdpCellResidual, ProcessDistribution,
@@ -19,11 +20,12 @@ use crate::stochastic::bootstrap_odp::{
 };
 use crate::subannual::grid::{AsymmetricAgeGrid, CalendarDiagonalMap, calendar_diagonal_index};
 use crate::subannual::reserving::validate_asymmetric_cumulative;
-use crate::validate::{MonotonicityPolicy, ValidationError, validate_tail};
+use crate::validate::{MonotonicityPolicy, validate_tail};
 
 /// Asymmetric ODP GLM fit diagnostics, exact hat-matrix leverages, and analytic
 /// prediction errors.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct AsymmetricOdpFit {
     /// Number of origin periods.
     pub n_origins: usize,
@@ -65,6 +67,7 @@ pub struct AsymmetricOdpFit {
 
 /// Full output of [`asymmetric_odp_bootstrap`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct AsymmetricOdpBootstrapResult {
     /// Underlying asymmetric ODP GLM fit.
     pub fit: AsymmetricOdpFit,
@@ -93,7 +96,7 @@ pub fn fit_asymmetric_odp(
     grid: &AsymmetricAgeGrid,
     tail: f64,
     policy: MonotonicityPolicy,
-) -> Result<AsymmetricOdpFit, ValidationError> {
+) -> Result<AsymmetricOdpFit, ReservingError> {
     validate_asymmetric_cumulative(cum, grid, policy)?;
     validate_tail(tail)?;
 
@@ -105,14 +108,14 @@ pub fn fit_asymmetric_odp(
     // produces exact ODP GLM sufficient-statistic expectations.
     for i in 1..n_o {
         if counts[i] > counts[i - 1] {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "asymmetric ODP requires non-increasing observed_counts across origins",
             ));
         }
     }
     let max_obs = counts[0];
     if max_obs < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "asymmetric ODP requires at least 2 observed development columns",
         ));
     }
@@ -125,7 +128,7 @@ pub fn fit_asymmetric_odp(
         }
     }
     if ldfs.iter().any(|&f| !f.is_finite() || f < 1.0) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "asymmetric ODP GLM requires all volume-weighted LDFs >= 1.0",
         ));
     }
@@ -209,7 +212,7 @@ pub fn fit_asymmetric_odp(
 
     let n_observed = active_cells.len();
     if n_observed <= param_count {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "asymmetric ODP model has non-positive residual degrees of freedom",
         ));
     }
@@ -322,9 +325,9 @@ pub fn asymmetric_odp_bootstrap(
     grid: &AsymmetricAgeGrid,
     tail: f64,
     options: OdpBootstrapOptions,
-) -> Result<AsymmetricOdpBootstrapResult, ValidationError> {
+) -> Result<AsymmetricOdpBootstrapResult, ReservingError> {
     if options.iterations == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
     let fit = fit_asymmetric_odp(cum, grid, tail, options.monotonicity_policy)?;
 
@@ -345,7 +348,7 @@ pub fn asymmetric_odp_bootstrap(
         }
     }
     if pool.is_empty() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "no eligible non-saturated residuals available for asymmetric ODP bootstrap",
         ));
     }
@@ -529,7 +532,7 @@ pub fn asymmetric_odp_bootstrap(
     }
 
     if simulated_totals.is_empty() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "all asymmetric ODP bootstrap iterations failed",
         ));
     }
@@ -615,7 +618,7 @@ mod tests {
             }
         }
 
-        let opts = OdpBootstrapOptions::shapland(250, 12345);
+        let opts = OdpBootstrapOptions::shapland(250, 42069);
         let boot = asymmetric_odp_bootstrap(&cum, &grid, 1.0, opts).unwrap();
         assert!((boot.fit.leverage_sum - boot.fit.n_params as f64).abs() < 1e-8);
         assert_eq!(boot.simulated_totals.len() + boot.failed_iterations, 250);

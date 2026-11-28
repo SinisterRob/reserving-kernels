@@ -3,8 +3,7 @@
 //! Call these at the ingress boundary (CSV/DB/API → `Triangle`). Kernels in
 //! the rest of the crate assume validated inputs and skip defensive checks.
 
-use std::fmt;
-
+use crate::error::ReservingError;
 use crate::types::TriangleView;
 
 /// Policy controlling whether cumulative rows must be monotonically non-decreasing.
@@ -23,101 +22,14 @@ pub enum MonotonicityPolicy {
     AllowNegativeIncrements,
 }
 
-/// Validation failure modes for triangle inputs.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
-#[non_exhaustive]
-pub enum ValidationError {
-    /// `data.len() != n_origins * n_devs`.
-    ShapeMismatch,
-    /// Triangle must be square (`n_origins == n_devs`) for the reserving
-    /// kernels as implemented here.
-    NotSquare,
-    /// An observed cell held a non-finite value other than `NaN`.
-    NotFinite,
-    /// An observed cell held a negative cumulative loss.
-    Negative,
-    /// A required denominator was zero (column sum or observed-cell value).
-    DivideByZero(&'static str),
-    /// An observed cumulative row decreased.
-    NonMonotoneCumulative {
-        /// Origin row index.
-        origin: usize,
-        /// Development index holding the lower value.
-        dev: usize,
-        /// Previous cumulative value.
-        previous: f64,
-        /// Current cumulative value.
-        value: f64,
-    },
-    /// Tail factor is below the supported cumulative-development minimum.
-    InvalidTail {
-        /// Supplied tail factor.
-        tail: f64,
-    },
-    /// Maturity percentage is outside `[0, 1]`.
-    InvalidMaturity {
-        /// Maturity vector index.
-        index: usize,
-        /// Supplied maturity value.
-        value: f64,
-    },
-    /// Probability or confidence level is outside `[0, 1]`.
-    InvalidProbability {
-        /// Supplied probability value.
-        value: f64,
-    },
-    /// Simulation or bootstrap iteration count is zero.
-    InvalidIterations,
-    /// A required strictly positive input was zero or negative.
-    NonPositive(&'static str),
-    /// Model or matrix specification is invalid or numerically singular.
-    InvalidParameter(&'static str),
-}
-
-impl fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ShapeMismatch => write!(f, "input dimensions do not match expected shape"),
-            Self::NotSquare => write!(f, "triangle must be square (n_origins == n_devs)"),
-            Self::NotFinite => write!(f, "input contains NaN or infinite values"),
-            Self::Negative => write!(
-                f,
-                "input contains negative values where non-negative required"
-            ),
-            Self::DivideByZero(ctx) => write!(f, "division by zero in {ctx}"),
-            Self::NonMonotoneCumulative {
-                origin,
-                dev,
-                previous,
-                value,
-            } => write!(
-                f,
-                "non-monotone cumulative triangle at origin {origin}, dev {dev}: {value} < {previous}"
-            ),
-            Self::InvalidTail { tail } => write!(f, "invalid tail factor {tail} (must be >= 1.0)"),
-            Self::InvalidMaturity { index, value } => {
-                write!(f, "invalid maturity/probability {value} at index {index}")
-            }
-            Self::InvalidProbability { value } => {
-                write!(f, "invalid probability {value} (must be in [0, 1])")
-            }
-            Self::InvalidIterations => write!(f, "iteration count must be at least 1"),
-            Self::NonPositive(ctx) => write!(f, "{ctx} must be strictly positive"),
-            Self::InvalidParameter(msg) => write!(f, "invalid parameter: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for ValidationError {}
-
 /// Validate a triangle view: square shape, finite non-negative observed
 /// cells. Unobserved cells (`i + j > n − 1`) are ignored.
-pub fn validate_triangle(t: &TriangleView<'_>) -> Result<(), ValidationError> {
-    if t.data.len() != t.n_origins * t.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+pub fn validate_triangle(t: &TriangleView<'_>) -> Result<(), ReservingError> {
+    if t.n_origins.checked_mul(t.n_devs) != Some(t.data.len()) {
+        return Err(ReservingError::ShapeMismatch);
     }
     if t.n_origins != t.n_devs {
-        return Err(ValidationError::NotSquare);
+        return Err(ReservingError::NotSquare);
     }
     let n = t.n_origins;
     for i in 0..n {
@@ -126,10 +38,10 @@ pub fn validate_triangle(t: &TriangleView<'_>) -> Result<(), ValidationError> {
             if !v.is_finite() {
                 // NaN is our "unobserved" sentinel — within the observed
                 // upper triangle, NaN or infinity is an error.
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             if v < 0.0 {
-                return Err(ValidationError::Negative);
+                return Err(ReservingError::Negative);
             }
         }
     }
@@ -137,23 +49,23 @@ pub fn validate_triangle(t: &TriangleView<'_>) -> Result<(), ValidationError> {
 }
 
 /// Validate a premium vector: length matches origins, finite positive.
-pub fn validate_premium(premium: &[f64], n_origins: usize) -> Result<(), ValidationError> {
+pub fn validate_premium(premium: &[f64], n_origins: usize) -> Result<(), ReservingError> {
     if premium.len() != n_origins {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for &p in premium {
         if !p.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if p <= 0.0 {
-            return Err(ValidationError::NonPositive("premium"));
+            return Err(ReservingError::NonPositive("premium"));
         }
     }
     Ok(())
 }
 
 /// Validate that observed cumulative rows are non-decreasing.
-pub(crate) fn validate_monotone_cumulative(t: &TriangleView<'_>) -> Result<(), ValidationError> {
+pub(crate) fn validate_monotone_cumulative(t: &TriangleView<'_>) -> Result<(), ReservingError> {
     let n = t.n_origins.min(t.n_devs);
     for i in 0..n {
         let row_len = n - i;
@@ -166,7 +78,7 @@ pub(crate) fn validate_monotone_cumulative(t: &TriangleView<'_>) -> Result<(), V
             if let Some(prev_value) = prev
                 && value < prev_value
             {
-                return Err(ValidationError::NonMonotoneCumulative {
+                return Err(ReservingError::NonMonotoneCumulative {
                     origin: i,
                     dev: j,
                     previous: prev_value,
@@ -180,32 +92,50 @@ pub(crate) fn validate_monotone_cumulative(t: &TriangleView<'_>) -> Result<(), V
 }
 
 /// Validate a finite slice.
-pub(crate) fn validate_finite_slice(values: &[f64]) -> Result<(), ValidationError> {
+pub(crate) fn validate_finite_slice(values: &[f64]) -> Result<(), ReservingError> {
     if values.iter().any(|value| !value.is_finite()) {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     Ok(())
 }
 
-/// Validate a tail factor under the crate's cumulative-loss production policy.
-pub(crate) fn validate_tail(tail: f64) -> Result<(), ValidationError> {
+/// Validate a tail factor under the crate's cumulative-loss production policy
+/// (strict: `tail >= 1.0`).
+pub(crate) fn validate_tail(tail: f64) -> Result<(), ReservingError> {
+    validate_tail_with_policy(tail, MonotonicityPolicy::Strict)
+}
+
+/// Validate a tail factor under an explicit [`MonotonicityPolicy`].
+///
+/// * [`MonotonicityPolicy::Strict`] — `tail` must be finite and `>= 1.0`.
+/// * [`MonotonicityPolicy::AllowNegativeIncrements`] — `tail` must be finite
+///   and strictly positive; tails below `1.0` (expected net downward incurred
+///   development, salvage/subrogation) are permitted.
+pub(crate) fn validate_tail_with_policy(
+    tail: f64,
+    policy: MonotonicityPolicy,
+) -> Result<(), ReservingError> {
     if !tail.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
-    if tail < 1.0 {
-        return Err(ValidationError::InvalidTail { tail });
+    let valid = match policy {
+        MonotonicityPolicy::Strict => tail >= 1.0,
+        MonotonicityPolicy::AllowNegativeIncrements => tail > 0.0,
+    };
+    if !valid {
+        return Err(ReservingError::InvalidTail { tail });
     }
     Ok(())
 }
 
 /// Validate a finite, non-negative slice.
-pub(crate) fn validate_nonnegative_finite_slice(values: &[f64]) -> Result<(), ValidationError> {
+pub(crate) fn validate_nonnegative_finite_slice(values: &[f64]) -> Result<(), ReservingError> {
     for &value in values {
         if !value.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if value < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
     }
     Ok(())
@@ -215,9 +145,9 @@ pub(crate) fn validate_nonnegative_finite_slice(values: &[f64]) -> Result<(), Va
 pub(crate) fn validate_nonnegative_finite_vector(
     values: &[f64],
     expected_len: usize,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if values.len() != expected_len {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_nonnegative_finite_slice(values)
 }
@@ -226,33 +156,34 @@ pub(crate) fn validate_nonnegative_finite_vector(
 pub(crate) fn validate_positive_finite_slice(
     values: &[f64],
     zero_context: &'static str,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     for &value in values {
         if !value.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if value <= 0.0 {
-            return Err(ValidationError::DivideByZero(zero_context));
+            return Err(ReservingError::DivideByZero(zero_context));
         }
     }
     Ok(())
 }
 
-/// Validate LDF/CDF vector shape and positivity.
-pub(crate) fn validate_development_factor_slices(
+/// Validate LDF/CDF vector shape and positivity with a policy-aware tail check.
+pub(crate) fn validate_development_factor_slices_with_policy(
     ldfs: &[f64],
     cdfs: &[f64],
     tail: f64,
     n_devs: usize,
     zero_context: &'static str,
-) -> Result<(), ValidationError> {
+    policy: MonotonicityPolicy,
+) -> Result<(), ReservingError> {
     if cdfs.len() != n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if ldfs.len() + 1 != cdfs.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
-    validate_tail(tail)?;
+    validate_tail_with_policy(tail, policy)?;
     validate_positive_finite_slice(cdfs, zero_context)?;
     validate_positive_finite_slice(ldfs, zero_context)?;
     Ok(())
@@ -263,51 +194,72 @@ pub(crate) fn validate_latest_and_dev(
     latest: &[f64],
     latest_dev: &[usize],
     cdfs: &[f64],
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if latest.len() != latest_dev.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for i in 0..latest.len() {
         if latest_dev[i] >= cdfs.len() {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if !latest[i].is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
     }
     Ok(())
 }
 
-/// Validate rectangular/ragged cumulative triangle inputs keyed by per-origin observed counts.
+/// Validate rectangular/ragged cumulative triangle inputs keyed by per-origin
+/// observed counts under strict monotonicity (and strict `tail >= 1.0`).
 pub(crate) fn validate_observed_count_inputs(
     t: &TriangleView<'_>,
     observed_counts: &[usize],
     tail: f64,
-) -> Result<(), ValidationError> {
-    if t.data.len() != t.n_origins * t.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+) -> Result<(), ReservingError> {
+    validate_observed_count_inputs_with_policy(t, observed_counts, tail, MonotonicityPolicy::Strict)
+}
+
+/// Validate rectangular/ragged cumulative triangle inputs keyed by per-origin
+/// observed counts under an explicit [`MonotonicityPolicy`].
+///
+/// Always enforces: flat shape, `observed_counts.len() == n_origins`,
+/// `n_devs >= 2`, every count in `1..=n_devs`, and finite non-negative
+/// observed cells. [`MonotonicityPolicy::Strict`] additionally rejects
+/// decreasing cumulative rows and tails `< 1.0`;
+/// [`MonotonicityPolicy::AllowNegativeIncrements`] permits both (tail must
+/// still be finite and `> 0`).
+pub(crate) fn validate_observed_count_inputs_with_policy(
+    t: &TriangleView<'_>,
+    observed_counts: &[usize],
+    tail: f64,
+    policy: MonotonicityPolicy,
+) -> Result<(), ReservingError> {
+    if t.n_origins.checked_mul(t.n_devs) != Some(t.data.len()) {
+        return Err(ReservingError::ShapeMismatch);
     }
     if observed_counts.len() != t.n_origins || t.n_devs < 2 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
-    validate_tail(tail)?;
+    validate_tail_with_policy(tail, policy)?;
+    let strict = policy == MonotonicityPolicy::Strict;
     for (origin, &count) in observed_counts.iter().enumerate() {
         if count == 0 || count > t.n_devs {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         let mut previous = None;
         for dev in 0..count {
             let value = t.get(origin, dev);
             if !value.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             if value < 0.0 {
-                return Err(ValidationError::Negative);
+                return Err(ReservingError::Negative);
             }
-            if let Some(previous_value) = previous
+            if strict
+                && let Some(previous_value) = previous
                 && value < previous_value
             {
-                return Err(ValidationError::NonMonotoneCumulative {
+                return Err(ReservingError::NonMonotoneCumulative {
                     origin,
                     dev,
                     previous: previous_value,
@@ -333,7 +285,7 @@ mod tests {
         };
         assert_eq!(
             validate_triangle(&bad_len),
-            Err(ValidationError::ShapeMismatch)
+            Err(ReservingError::ShapeMismatch)
         );
 
         let rect = TriangleView {
@@ -341,37 +293,101 @@ mod tests {
             n_devs: 3,
             data: &[1.0, 2.0, 3.0, 4.0, 5.0, f64::NAN],
         };
-        assert_eq!(validate_triangle(&rect), Err(ValidationError::NotSquare));
+        assert_eq!(validate_triangle(&rect), Err(ReservingError::NotSquare));
 
         let nan_obs = TriangleView {
             n_origins: 2,
             n_devs: 2,
             data: &[1.0, f64::NAN, 3.0, f64::NAN],
         };
-        assert_eq!(validate_triangle(&nan_obs), Err(ValidationError::NotFinite));
+        assert_eq!(validate_triangle(&nan_obs), Err(ReservingError::NotFinite));
 
         let neg = TriangleView {
             n_origins: 2,
             n_devs: 2,
             data: &[1.0, -2.0, 3.0, f64::NAN],
         };
-        assert_eq!(validate_triangle(&neg), Err(ValidationError::Negative));
+        assert_eq!(validate_triangle(&neg), Err(ReservingError::Negative));
     }
 
     #[test]
     fn validate_premium_checks_length_finiteness_and_positivity() {
         assert_eq!(
             validate_premium(&[100.0], 2),
-            Err(ValidationError::ShapeMismatch)
+            Err(ReservingError::ShapeMismatch)
         );
         assert_eq!(
             validate_premium(&[100.0, f64::NAN], 2),
-            Err(ValidationError::NotFinite)
+            Err(ReservingError::NotFinite)
         );
         assert_eq!(
             validate_premium(&[100.0, 0.0], 2),
-            Err(ValidationError::NonPositive("premium"))
+            Err(ReservingError::NonPositive("premium"))
         );
         assert_eq!(validate_premium(&[100.0, 200.0], 2), Ok(()));
+    }
+
+    #[test]
+    fn tail_policy_allows_positive_sub_unity_tail_only_when_permitted() {
+        assert_eq!(
+            validate_tail_with_policy(0.97, MonotonicityPolicy::Strict),
+            Err(ReservingError::InvalidTail { tail: 0.97 })
+        );
+        assert_eq!(
+            validate_tail_with_policy(0.97, MonotonicityPolicy::AllowNegativeIncrements),
+            Ok(())
+        );
+        for bad in [0.0, -0.5] {
+            assert_eq!(
+                validate_tail_with_policy(bad, MonotonicityPolicy::AllowNegativeIncrements),
+                Err(ReservingError::InvalidTail { tail: bad })
+            );
+        }
+        assert_eq!(
+            validate_tail_with_policy(f64::INFINITY, MonotonicityPolicy::AllowNegativeIncrements),
+            Err(ReservingError::NotFinite)
+        );
+    }
+
+    #[test]
+    fn observed_count_validation_respects_policy() {
+        #[rustfmt::skip]
+        let data = [
+            100.0, 90.0, 95.0,
+            120.0, 130.0, f64::NAN,
+            140.0, f64::NAN, f64::NAN,
+        ];
+        let t = TriangleView {
+            n_origins: 3,
+            n_devs: 3,
+            data: &data,
+        };
+        let counts = [3, 2, 1];
+        assert!(matches!(
+            validate_observed_count_inputs(&t, &counts, 1.0),
+            Err(ReservingError::NonMonotoneCumulative {
+                origin: 0,
+                dev: 1,
+                ..
+            })
+        ));
+        assert_eq!(
+            validate_observed_count_inputs_with_policy(
+                &t,
+                &counts,
+                0.98,
+                MonotonicityPolicy::AllowNegativeIncrements
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_observed_count_inputs_with_policy(
+                &t,
+                &[3, 2, 0],
+                1.0,
+                MonotonicityPolicy::AllowNegativeIncrements
+            ),
+            Err(ReservingError::ShapeMismatch)
+        );
     }
 }

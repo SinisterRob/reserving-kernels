@@ -16,11 +16,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ReservingError,
     preprocessing::triangle::{cumulative_to_incremental, latest_diagonal},
     types::TriangleView,
-    validate::{
-        MonotonicityPolicy, ValidationError, validate_monotone_cumulative, validate_triangle,
-    },
+    validate::{MonotonicityPolicy, validate_monotone_cumulative, validate_triangle},
 };
 
 /// Averaging rule for incremental-to-exposure ratios.
@@ -81,7 +80,7 @@ pub fn project_incremental_additive(
     cumulative: &TriangleView<'_>,
     exposures: &[f64],
     options: &IncrementalAdditiveOptions,
-) -> Result<IncrementalAdditiveProjection, ValidationError> {
+) -> Result<IncrementalAdditiveProjection, ReservingError> {
     validate_triangle(cumulative)?;
     if options.policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(cumulative)?;
@@ -89,16 +88,16 @@ pub fn project_incremental_additive(
     let n_origins = cumulative.n_origins;
     let n_devs = cumulative.n_devs;
     if exposures.len() != n_origins {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if !options.trend.is_finite() || options.trend <= -1.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "trend must be finite and greater than -1.0",
         ));
     }
     for &e in exposures {
         if !e.is_finite() || e <= 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "exposures must be finite and strictly positive",
             ));
         }
@@ -118,24 +117,35 @@ pub fn project_incremental_additive(
             }
         }
         if pairs.is_empty() {
-            zeta[j] = 0.0;
-            continue;
+            return Err(ReservingError::InvalidParameter(
+                "incremental additive factor unestimable: no observed incremental loss at a \
+                 development age",
+            ));
         }
         let slice = match options.last_n {
             Some(k) if k > 0 && k < pairs.len() => &pairs[pairs.len() - k..],
             _ => &pairs[..],
         };
-        zeta[j] = match options.average {
+        let z = match options.average {
             IncrementalRatioAverage::ExposureWeighted => {
                 let num: f64 = slice.iter().map(|(y, _)| *y).sum();
                 let den: f64 = slice.iter().map(|(_, e)| *e).sum();
-                if den > 0.0 { num / den } else { 0.0 }
+                if !(den > 0.0) {
+                    return Err(ReservingError::DivideByZero(
+                        "incremental additive exposure sum",
+                    ));
+                }
+                num / den
             }
             IncrementalRatioAverage::Simple => {
                 let sum: f64 = slice.iter().map(|(y, e)| *y / *e).sum();
                 sum / slice.len() as f64
             }
         };
+        if !z.is_finite() {
+            return Err(ReservingError::NotFinite);
+        }
+        zeta[j] = z;
     }
 
     let mut completed_incremental = inc;
@@ -159,12 +169,8 @@ pub fn project_incremental_additive(
             completed_cumulative[i * n_devs + j] = acc;
         }
         ultimate.push(acc);
-        let lp = if latest[i].is_finite() {
-            latest[i]
-        } else {
-            0.0
-        };
-        reserve.push(acc - lp);
+        // Latest diagonal cells are observed and were validated finite above.
+        reserve.push(acc - latest[i]);
     }
 
     let total_reserve: f64 = reserve.iter().sum();
@@ -172,7 +178,7 @@ pub fn project_incremental_additive(
         || ultimate.iter().any(|v| !v.is_finite())
         || reserve.iter().any(|v| !v.is_finite())
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(IncrementalAdditiveProjection {

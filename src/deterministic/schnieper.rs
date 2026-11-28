@@ -29,11 +29,13 @@
 //! variance, and cross-origin covariance (Liu & Verrall 2009, §3). When
 //! $N_{i,j} = 0$ for all $j \ge 1$, the model reduces identically to Mack (1993).
 
+use crate::error::ReservingError;
 use crate::types::TriangleView;
-use crate::validate::{ValidationError, validate_positive_finite_slice};
+use crate::validate::validate_positive_finite_slice;
 
 /// Result of Schnieper (1991) / Liu & Verrall (2009) True IBNR & IBNER separation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SchnieperResult {
     /// True IBNR emergence factors $\hat{\lambda}_j$ per development $j = 1..n-1$, length $n - 1$.
     pub lambda: Vec<f64>,
@@ -83,29 +85,29 @@ impl std::fmt::Display for SchnieperResult {
     }
 }
 
-fn validate_square_signed_triangle(t: &TriangleView<'_>) -> Result<(), ValidationError> {
+fn validate_square_signed_triangle(t: &TriangleView<'_>) -> Result<(), ReservingError> {
     validate_square_signed_triangle_from_col(t, 0)
 }
 
-fn validate_square_signed_triangle_skip_col0(t: &TriangleView<'_>) -> Result<(), ValidationError> {
+fn validate_square_signed_triangle_skip_col0(t: &TriangleView<'_>) -> Result<(), ReservingError> {
     validate_square_signed_triangle_from_col(t, 1)
 }
 
 fn validate_square_signed_triangle_from_col(
     t: &TriangleView<'_>,
     start_col: usize,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if t.data.len() != t.n_origins * t.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if t.n_origins != t.n_devs {
-        return Err(ValidationError::NotSquare);
+        return Err(ReservingError::NotSquare);
     }
     let n = t.n_origins;
     for i in 0..n {
         for j in start_col..(n - i) {
             if !t.get(i, j).is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
         }
     }
@@ -129,17 +131,17 @@ pub fn analyze(
     new_claims: &TriangleView<'_>,
     known_development: &TriangleView<'_>,
     exposures: &[f64],
-) -> Result<SchnieperResult, ValidationError> {
+) -> Result<SchnieperResult, ReservingError> {
     validate_square_signed_triangle(new_claims)?;
     validate_square_signed_triangle_skip_col0(known_development)?;
     let n = new_claims.n_origins;
     if n < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "triangles must be at least 2x2",
         ));
     }
     if known_development.n_origins != n || exposures.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(exposures, "exposures")?;
 
@@ -148,18 +150,18 @@ pub fn analyze(
     for i in 0..n {
         let n0 = new_claims.get(i, 0);
         if n0 < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
         cum[i * n] = n0;
         for j in 1..(n - i) {
             let nij = new_claims.get(i, j);
             if nij < 0.0 {
-                return Err(ValidationError::Negative);
+                return Err(ReservingError::Negative);
             }
             let dij = known_development.get(i, j);
             let next_c = cum[i * n + (j - 1)] + nij + dij;
             if next_c < 0.0 {
-                return Err(ValidationError::Negative);
+                return Err(ReservingError::Negative);
             }
             cum[i * n + j] = next_c;
         }
@@ -190,7 +192,7 @@ pub fn analyze(
             den_c += cum[i * n + (j - 1)];
         }
         if den_e <= 0.0 || den_c <= 0.0 {
-            return Err(ValidationError::DivideByZero(
+            return Err(ReservingError::DivideByZero(
                 "exposure or prior cumulative sum",
             ));
         }

@@ -16,11 +16,11 @@
 //!   Poisson profile MLE linking incremental paid ALAE to ultimate losses via
 //!   Loglogistic or Weibull emergence curves.
 
+use crate::error::ReservingError;
 use crate::stochastic::clark_mle::GrowthCurve;
 use crate::types::TriangleView;
 use crate::validate::{
-    ValidationError, validate_finite_slice, validate_nonnegative_finite_slice, validate_tail,
-    validate_triangle,
+    validate_finite_slice, validate_nonnegative_finite_slice, validate_tail, validate_triangle,
 };
 
 // ===========================================================================
@@ -197,6 +197,22 @@ pub struct ClarkAlaeOptions {
     pub max_iterations: usize,
     /// Parameter convergence tolerance.
     pub tolerance: f64,
+    /// Average accident-date offset within the first development period
+    /// (default `0.5`): development index `j` is evaluated at age
+    /// `(j + 1) - origin_offset`, matching
+    /// [`crate::stochastic::clark_mle::ClarkOptions::origin_offset`]. Must be
+    /// finite and `< 1.0`; `0.0` evaluates `G` at integer period ends.
+    #[serde(default = "default_origin_offset")]
+    pub origin_offset: f64,
+    /// Optional finite ultimate-age truncation `max_age >= n - origin_offset`.
+    /// When `Some`, reserves use `G(max_age) - G(x_{n-1-i})` instead of
+    /// `1 - G(x_{n-1-i})` (Clark 2003 truncated tail).
+    #[serde(default)]
+    pub max_age: Option<f64>,
+}
+
+const fn default_origin_offset() -> f64 {
+    0.5
 }
 
 impl Default for ClarkAlaeOptions {
@@ -207,6 +223,8 @@ impl Default for ClarkAlaeOptions {
             initial_theta: 2.0,
             max_iterations: 500,
             tolerance: 1e-10,
+            origin_offset: default_origin_offset(),
+            max_age: None,
         }
     }
 }
@@ -224,9 +242,14 @@ pub struct ClarkAlaeResult {
     pub elr_alae: f64,
     /// Concentrated ODP log-likelihood at the optimum (up to additive constant).
     pub log_likelihood: f64,
-    /// Fitted cumulative emergence `G(t_j; ω, θ)` at each development age `j = 1..=n`.
+    /// Development ages `x_j = (j + 1) - origin_offset` used for fitting (length `n`).
+    pub ages: Vec<f64>,
+    /// Fitted cumulative emergence `G(x_j; ω, θ)` at each development age `x_j` (length `n`).
     pub emergence_curve: Vec<f64>,
-    /// Indicated ALAE reserve per origin `L_hat_i * ELR_A * (1 - G(t_{n-i}))`.
+    /// Emergence at the ultimate horizon: `G(max_age)` when truncated, else `1.0`.
+    pub ultimate_emergence: f64,
+    /// Indicated ALAE reserve per origin
+    /// `L_hat_i * ELR_A * max(G_ult - G(x_{n-1-i}), 0)`.
     pub reserves: Vec<f64>,
     /// Projected ultimate ALAE per origin (observed paid ALAE + indicated reserve).
     pub ultimate_alae: Vec<f64>,
@@ -246,20 +269,20 @@ fn validate_ulae_common(
     case_reserves: f64,
     ibnr: f64,
     options: UlaeOptions,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if paid_ulae.is_empty() || paid_ulae.len() != denominators.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_nonnegative_finite_slice(paid_ulae)?;
     validate_finite_slice(denominators)?;
     if !case_reserves.is_finite() || !ibnr.is_finite() || !options.opening_weight.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if case_reserves < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     if !(0.0..=1.0).contains(&options.opening_weight) {
-        return Err(ValidationError::InvalidProbability {
+        return Err(ReservingError::InvalidProbability {
             value: options.opening_weight,
         });
     }
@@ -272,7 +295,7 @@ fn compute_ulae_from_denominators(
     case_reserves: f64,
     ibnr: f64,
     options: UlaeOptions,
-) -> Result<UlaeRatioResult, ValidationError> {
+) -> Result<UlaeRatioResult, ReservingError> {
     validate_ulae_common(paid_ulae, denominators, case_reserves, ibnr, options)?;
 
     let mut annual_ratios = Vec::with_capacity(paid_ulae.len());
@@ -280,14 +303,14 @@ fn compute_ulae_from_denominators(
     let mut sum_d = 0.0;
     for (&u, &d) in paid_ulae.iter().zip(denominators.iter()) {
         if d <= 0.0 {
-            return Err(ValidationError::NonPositive("ULAE denominator"));
+            return Err(ReservingError::NonPositive("ULAE denominator"));
         }
         annual_ratios.push(u / d);
         sum_u += u;
         sum_d += d;
     }
     if sum_d <= 0.0 {
-        return Err(ValidationError::NonPositive("ULAE denominator sum"));
+        return Err(ReservingError::NonPositive("ULAE denominator sum"));
     }
 
     let selected_ratio = match options.selection {
@@ -326,7 +349,7 @@ pub fn ulae_paid_to_paid(
     case_reserves: f64,
     ibnr: f64,
     options: UlaeOptions,
-) -> Result<UlaeRatioResult, ValidationError> {
+) -> Result<UlaeRatioResult, ReservingError> {
     compute_ulae_from_denominators(paid_ulae, paid_loss, case_reserves, ibnr, options)
 }
 
@@ -343,14 +366,14 @@ pub fn ulae_kittel(
     case_reserves: f64,
     ibnr: f64,
     options: UlaeOptions,
-) -> Result<UlaeRatioResult, ValidationError> {
+) -> Result<UlaeRatioResult, ReservingError> {
     if paid_loss.len() != incurred_loss.len() || paid_loss.len() != paid_ulae.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_finite_slice(paid_loss)?;
     validate_finite_slice(incurred_loss)?;
     if !options.opening_weight.is_finite() || !(0.0..=1.0).contains(&options.opening_weight) {
-        return Err(ValidationError::InvalidProbability {
+        return Err(ReservingError::InvalidProbability {
             value: options.opening_weight,
         });
     }
@@ -373,10 +396,10 @@ pub fn ulae_kittel(
 pub fn expected_calendar_emergence(
     ultimates: &[f64],
     incremental_pattern: &[f64],
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     let n = ultimates.len();
     if n == 0 || incremental_pattern.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_finite_slice(ultimates)?;
     validate_finite_slice(incremental_pattern)?;
@@ -402,7 +425,7 @@ pub fn ulae_mango_allen(
     case_reserves: f64,
     ibnr: f64,
     options: UlaeOptions,
-) -> Result<UlaeRatioResult, ValidationError> {
+) -> Result<UlaeRatioResult, ReservingError> {
     ulae_kittel(
         paid_ulae,
         expected_paid_loss,
@@ -425,10 +448,10 @@ pub fn ulae_johnson_count_based(
     projected_counts: &[ClaimCountYear],
     weights: JohnsonUlaeWeights,
     inflation_rate: f64,
-) -> Result<JohnsonUlaeResult, ValidationError> {
+) -> Result<JohnsonUlaeResult, ReservingError> {
     let t_len = historical_ulae.len();
     if t_len == 0 || historical_counts.len() != t_len || projected_counts.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_nonnegative_finite_slice(historical_ulae)?;
     if !weights.newly_reported.is_finite()
@@ -436,23 +459,23 @@ pub fn ulae_johnson_count_based(
         || !weights.closed.is_finite()
         || !inflation_rate.is_finite()
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if weights.newly_reported < 0.0 || weights.open < 0.0 || weights.closed < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     if inflation_rate <= -1.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "ULAE inflation rate must be strictly greater than -1.0",
         ));
     }
 
-    let weighted_count = |c: ClaimCountYear| -> Result<f64, ValidationError> {
+    let weighted_count = |c: ClaimCountYear| -> Result<f64, ReservingError> {
         if !c.newly_reported.is_finite() || !c.open.is_finite() || !c.closed.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if c.newly_reported < 0.0 || c.open < 0.0 || c.closed < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
         Ok(weights.newly_reported * c.newly_reported
             + weights.open * c.open
@@ -471,7 +494,7 @@ pub fn ulae_johnson_count_based(
     {
         let n_star = weighted_count(cnt)?;
         if n_star <= 0.0 {
-            return Err(ValidationError::NonPositive(
+            return Err(ReservingError::NonPositive(
                 "historical weighted claim count",
             ));
         }
@@ -525,16 +548,16 @@ pub fn alae_ratio_triangle(
     ultimate_loss: &[f64],
     tail: f64,
     weighting: AlaeRatioWeighting,
-) -> Result<AlaeRatioTriangleResult, ValidationError> {
+) -> Result<AlaeRatioTriangleResult, ReservingError> {
     validate_triangle(paid_loss)?;
     validate_triangle(paid_alae)?;
     validate_tail(tail)?;
     let n = paid_loss.n_origins;
     if paid_alae.n_origins != n || paid_alae.n_devs != n || ultimate_loss.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if n < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "ALAE ratio triangle requires at least a 2x2 triangle",
         ));
     }
@@ -567,7 +590,7 @@ pub fn alae_ratio_triangle(
                     }
                 }
                 if den <= 0.0 {
-                    return Err(ValidationError::DivideByZero("ALAE ratio column sum"));
+                    return Err(ReservingError::DivideByZero("ALAE ratio column sum"));
                 }
                 num / den
             }
@@ -587,7 +610,7 @@ pub fn alae_ratio_triangle(
                     }
                 }
                 if l0 <= 0.0 || l1 <= 0.0 || a0 <= 0.0 {
-                    return Err(ValidationError::DivideByZero("loss-weighted ALAE ratio"));
+                    return Err(ReservingError::DivideByZero("loss-weighted ALAE ratio"));
                 }
                 (a1 / l1) / (a0 / l0)
             }
@@ -609,7 +632,7 @@ pub fn alae_ratio_triangle(
         let last_j = n - 1 - i;
         let q_last = ratio_grid[i * n + last_j];
         if !q_last.is_finite() {
-            return Err(ValidationError::DivideByZero(
+            return Err(ReservingError::DivideByZero(
                 "latest diagonal paid loss in ALAE ratio triangle",
             ));
         }
@@ -639,42 +662,31 @@ pub fn alae_ratio_triangle(
 // 1.5b Clark (2003) / Johnson Ratio-to-Loss ALAE ODP-MLE
 // ===========================================================================
 
-#[inline]
-fn eval_emergence(curve: GrowthCurve, t: f64, omega: f64, theta: f64) -> f64 {
-    if t <= 0.0 {
-        return 0.0;
-    }
-    match curve {
-        GrowthCurve::Loglogistic => {
-            let ratio = (t / theta).powf(omega);
-            if ratio.is_infinite() {
-                1.0
-            } else {
-                ratio / (1.0 + ratio)
-            }
-        }
-        GrowthCurve::Weibull => -((-(t / theta).powf(omega)).exp_m1()),
-    }
-}
-
 /// Clark (2003) / Johnson ratio-to-loss ALAE ODP-MLE model.
 ///
 /// Models incremental paid ALAE `a_{i,j}` with
 /// `E[a_{i,j}] = L_hat_i * ELR_A * (G(t_j; ω, θ) - G(t_{j-1}; ω, θ))`
 /// using closed-form profile MLE for `ELR_A` and deterministic Nelder–Mead
 /// optimization over `(ln ω, ln θ)`.
+///
+/// Development index `j` is evaluated at age `x_j = (j + 1) - origin_offset`
+/// (Clark 2003 average-accident-date convention, default offset `0.5`). The
+/// model is the Clark Cape Cod likelihood with `ultimate_loss` as the exposure
+/// base, so it reproduces
+/// [`crate::stochastic::clark_mle::fit_clark_cape_cod`] (premium =
+/// `ultimate_loss`) at the same ages and `max_age`.
 pub fn clark_alae_mle(
     cumulative_paid_alae: &TriangleView<'_>,
     ultimate_loss: &[f64],
     options: ClarkAlaeOptions,
-) -> Result<ClarkAlaeResult, ValidationError> {
+) -> Result<ClarkAlaeResult, ReservingError> {
     validate_triangle(cumulative_paid_alae)?;
     let n = cumulative_paid_alae.n_origins;
     if ultimate_loss.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if n < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Clark ALAE MLE requires at least a 2x2 triangle",
         ));
     }
@@ -685,19 +697,35 @@ pub fn clark_alae_mle(
         || !options.tolerance.is_finite()
         || options.tolerance <= 0.0
     {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Clark ALAE initial parameters and tolerance must be finite and positive",
         ));
     }
     if options.max_iterations == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
+    }
+    if !options.origin_offset.is_finite() || options.origin_offset >= 1.0 {
+        return Err(ReservingError::InvalidParameter(
+            "Clark ALAE origin_offset must be finite and < 1.0",
+        ));
+    }
+    let ages: Vec<f64> = (0..n)
+        .map(|j| (j as f64 + 1.0) - options.origin_offset)
+        .collect();
+    let last_age = ages[n - 1];
+    if let Some(mx) = options.max_age
+        && (!mx.is_finite() || mx < last_age)
+    {
+        return Err(ReservingError::InvalidParameter(
+            "Clark ALAE max_age must be finite and >= largest development age",
+        ));
     }
     for &u in ultimate_loss {
         if !u.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if u <= 0.0 {
-            return Err(ValidationError::NonPositive("ultimate_loss"));
+            return Err(ReservingError::NonPositive("ultimate_loss"));
         }
     }
 
@@ -715,7 +743,7 @@ pub fn clark_alae_mle(
         }
     }
     if sum_a <= 0.0 {
-        return Err(ValidationError::NonPositive("total observed paid ALAE"));
+        return Err(ReservingError::NonPositive("total observed paid ALAE"));
     }
 
     let mut g_vals = vec![0.0; n + 1];
@@ -726,8 +754,8 @@ pub fn clark_alae_mle(
         let omega = log_omega.exp();
         let theta = log_theta.exp();
         g_vals[0] = 0.0;
-        for j in 1..=n {
-            g_vals[j] = eval_emergence(options.curve, j as f64, omega, theta);
+        for (g, &age) in g_vals[1..].iter_mut().zip(&ages) {
+            *g = options.curve.eval(age, omega, theta);
         }
         let mut denom = 0.0;
         for &(i, j, _) in &obs {
@@ -829,14 +857,18 @@ pub fn clark_alae_mle(
     let best_x = simplex[0].0;
     let (neg_ll, elr_alae) = neg_profile_ll(best_x[0], best_x[1]);
     if !neg_ll.is_finite() || !elr_alae.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let omega = best_x[0].exp();
     let theta = best_x[1].exp();
-    let emergence_curve: Vec<f64> = (1..=n)
-        .map(|j| eval_emergence(options.curve, j as f64, omega, theta))
+    let emergence_curve: Vec<f64> = ages
+        .iter()
+        .map(|&age| options.curve.eval(age, omega, theta))
         .collect();
+    let ultimate_emergence = options
+        .max_age
+        .map_or(1.0, |mx| options.curve.eval(mx, omega, theta));
 
     let mut reserves = Vec::with_capacity(n);
     let mut ultimate_alae = Vec::with_capacity(n);
@@ -845,7 +877,7 @@ pub fn clark_alae_mle(
         let last_j = n - 1 - i;
         let paid_to_date = cumulative_paid_alae.get(i, last_j);
         let g_last = emergence_curve[last_j];
-        let res = ultimate_loss[i] * elr_alae * (1.0 - g_last);
+        let res = ultimate_loss[i] * elr_alae * (ultimate_emergence - g_last).max(0.0);
         reserves.push(res);
         ultimate_alae.push(paid_to_date + res);
         total_reserve += res;
@@ -857,7 +889,9 @@ pub fn clark_alae_mle(
         theta,
         elr_alae,
         log_likelihood: -neg_ll,
+        ages,
         emergence_curve,
+        ultimate_emergence,
         reserves,
         ultimate_alae,
         total_reserve,
@@ -963,9 +997,10 @@ mod tests {
         let mut loss_data = vec![f64::NAN; n * n];
         for i in 0..n {
             for j in 0..(n - i) {
-                let t = (j + 1) as f64;
-                let g_alae = eval_emergence(GrowthCurve::Loglogistic, t, omega_true, theta_true);
-                let g_loss = eval_emergence(GrowthCurve::Loglogistic, t, 1.4, 1.5);
+                // Default origin_offset = 0.5: ages 0.5, 1.5, ...
+                let t = j as f64 + 0.5;
+                let g_alae = GrowthCurve::Loglogistic.eval(t, omega_true, theta_true);
+                let g_loss = GrowthCurve::Loglogistic.eval(t, 1.4, 1.5);
                 alae_data[i * n + j] = ults[i] * elr_true * g_alae;
                 loss_data[i * n + j] = ults[i] * g_loss;
             }

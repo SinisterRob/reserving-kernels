@@ -11,13 +11,15 @@ use crate::deterministic::brosius::{self, Brosius};
 use crate::deterministic::cape_cod::{CapeCodEngine, CapeCodProjection};
 use crate::deterministic::chain_ladder::ChainLadderEngine;
 use crate::deterministic::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::cumulative_to_incremental;
 use crate::stochastic::mack::{self, Mack};
 use crate::types::TriangleView;
-use crate::validate::{ValidationError, validate_monotone_cumulative, validate_triangle};
+use crate::validate::{validate_monotone_cumulative, validate_triangle};
 
 /// Full exhibit payload for a visualization workbench.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct ExhibitBundle {
     /// Cumulative triangle heatmap/table exhibit.
     pub triangle: TriangleExhibit,
@@ -37,6 +39,7 @@ pub struct ExhibitBundle {
 
 /// Validation status and display messages.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct ValidationExhibit {
     /// Whether the exhibit builder accepted the inputs.
     pub ok: bool,
@@ -48,6 +51,7 @@ pub struct ValidationExhibit {
 
 /// One triangle cell for heatmaps and dense tables.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct TriangleCellDto {
     /// Origin row index.
     pub origin: usize,
@@ -65,6 +69,7 @@ pub struct TriangleCellDto {
 
 /// Triangle display payload.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct TriangleExhibit {
     /// Origin row count.
     pub n_origins: usize,
@@ -76,6 +81,7 @@ pub struct TriangleExhibit {
 
 /// One factor row tying factor selection, CDF, maturity, and credibility.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct FactorExhibitRow {
     /// Development age `j` for the `j -> j + 1` link.
     pub dev: usize,
@@ -95,6 +101,7 @@ pub struct FactorExhibitRow {
 
 /// Factor exhibit payload.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct FactorExhibit {
     /// Factor rows by development age.
     pub rows: Vec<FactorExhibitRow>,
@@ -104,6 +111,7 @@ pub struct FactorExhibit {
 
 /// One origin row comparing reserving methods.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct ProjectionRow {
     /// Origin row index.
     pub origin: usize,
@@ -145,6 +153,7 @@ pub struct ProjectionRow {
 
 /// Projection totals across methods.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct ProjectionTotals {
     /// Total latest observed loss.
     pub latest: f64,
@@ -162,6 +171,7 @@ pub struct ProjectionTotals {
 
 /// Method comparison display payload.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct ProjectionComparisonExhibit {
     /// Per-origin method rows.
     pub rows: Vec<ProjectionRow>,
@@ -171,6 +181,7 @@ pub struct ProjectionComparisonExhibit {
 
 /// Mack uncertainty display payload.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct MackExhibit {
     /// Origin rows with reserve uncertainty.
     pub rows: Vec<MackOriginRiskRow>,
@@ -190,6 +201,7 @@ pub struct MackExhibit {
 
 /// Per-origin Mack uncertainty row.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct MackOriginRiskRow {
     /// Origin row index.
     pub origin: usize,
@@ -207,6 +219,7 @@ pub struct MackOriginRiskRow {
 
 /// Mack sigma-squared row by development link.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct MackSigmaRow {
     /// Development link start index.
     pub dev: usize,
@@ -216,6 +229,7 @@ pub struct MackSigmaRow {
 
 /// Normal-approximation Mack reserve quantiles.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct MackQuantiles {
     /// 50th percentile.
     pub p50: f64,
@@ -229,6 +243,7 @@ pub struct MackQuantiles {
 
 /// Brosius regression display payload.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct BrosiusExhibit {
     /// Link fit diagnostics.
     pub links: Vec<BrosiusLinkExhibitRow>,
@@ -238,6 +253,7 @@ pub struct BrosiusExhibit {
 
 /// One Brosius link fit row.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct BrosiusLinkExhibitRow {
     /// Development link start index.
     pub dev: usize,
@@ -255,6 +271,7 @@ pub struct BrosiusLinkExhibitRow {
 
 /// One observed point for a Brosius scatter/fitted-line chart.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct BrosiusScatterPoint {
     /// Development link start index.
     pub dev: usize,
@@ -277,7 +294,7 @@ pub fn build_exhibit_bundle(
     premium: Option<&[f64]>,
     expected_ultimate: Option<&[f64]>,
     tail: f64,
-) -> Result<ExhibitBundle, ValidationError> {
+) -> Result<ExhibitBundle, ReservingError> {
     validate_triangle(triangle)?;
     validate_monotone_cumulative(triangle)?;
 

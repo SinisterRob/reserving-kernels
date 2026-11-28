@@ -25,15 +25,17 @@
 //! * **L2 service / engine** — [`BornhuetterFergusonEngine`] performs the
 //!   same projection from a validated [`DevelopmentFactors`].
 
-use crate::deterministic::chain_ladder::latest_observed_by_origin;
+use crate::deterministic::chain_ladder::{
+    latest_observed_by_origin, validate_cumulative_with_factors,
+};
 use crate::deterministic::ldf::{DevelopmentFactors, cdf_from_ldf, pct_reported};
+use crate::error::ReservingError;
 use crate::preprocessing::apriori::{AprioriInput, build_apriori};
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_development_factor_slices,
-    validate_latest_and_dev, validate_monotone_cumulative, validate_nonnegative_finite_slice,
-    validate_nonnegative_finite_vector, validate_triangle,
+    MonotonicityPolicy, validate_latest_and_dev, validate_nonnegative_finite_slice,
+    validate_nonnegative_finite_vector,
 };
 
 // ===========================================================================
@@ -71,37 +73,51 @@ pub struct BornhuetterFergusonProjection {
 // ===========================================================================
 
 /// Build expected ultimate losses from earned premium and expected loss ratio.
+///
+/// Returns `ShapeMismatch` unless all three slices share one length.
 pub fn expected_ultimate_from_elr(
     earned_premium: &[f64],
     expected_loss_ratio: &[f64],
     out: &mut [f64],
-) {
-    debug_assert_eq!(earned_premium.len(), expected_loss_ratio.len());
-    debug_assert_eq!(earned_premium.len(), out.len());
-
-    for i in 0..earned_premium.len() {
-        out[i] = earned_premium[i] * expected_loss_ratio[i];
-    }
+) -> Result<(), ReservingError> {
+    zip_into(earned_premium, expected_loss_ratio, out, |p, elr| p * elr)
 }
 
 /// BF reserves: `expected_ultimate[i] * (1 - maturity[i])`.
-pub fn bf_reserves(expected_ultimate: &[f64], maturity: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(expected_ultimate.len(), maturity.len());
-    debug_assert_eq!(expected_ultimate.len(), out.len());
-
-    for i in 0..expected_ultimate.len() {
-        out[i] = expected_ultimate[i] * (1.0 - maturity[i]);
-    }
+///
+/// Returns `ShapeMismatch` unless all three slices share one length.
+pub fn bf_reserves(
+    expected_ultimate: &[f64],
+    maturity: &[f64],
+    out: &mut [f64],
+) -> Result<(), ReservingError> {
+    zip_into(expected_ultimate, maturity, out, |e, m| e * (1.0 - m))
 }
 
 /// BF ultimates: `latest[i] + reserves[i]`.
-pub fn bf_ultimates(latest: &[f64], reserves: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(latest.len(), reserves.len());
-    debug_assert_eq!(latest.len(), out.len());
+///
+/// Returns `ShapeMismatch` unless all three slices share one length.
+pub fn bf_ultimates(
+    latest: &[f64],
+    reserves: &[f64],
+    out: &mut [f64],
+) -> Result<(), ReservingError> {
+    zip_into(latest, reserves, out, |c, r| c + r)
+}
 
-    for i in 0..latest.len() {
-        out[i] = latest[i] + reserves[i];
+fn zip_into(
+    left: &[f64],
+    right: &[f64],
+    out: &mut [f64],
+    op: impl Fn(f64, f64) -> f64,
+) -> Result<(), ReservingError> {
+    if left.len() != right.len() || left.len() != out.len() {
+        return Err(ReservingError::ShapeMismatch);
     }
+    for ((slot, &a), &b) in out.iter_mut().zip(left).zip(right) {
+        *slot = op(a, b);
+    }
+    Ok(())
 }
 
 // ===========================================================================
@@ -117,7 +133,8 @@ pub fn expected_from_premium(premium: &[f64], elr: f64) -> Vec<f64> {
 /// expected-ultimate vector (e.g. `premium × ELR`).
 ///
 /// Performs no validation. Prefer [`BornhuetterFergusonEngine::project_from_expected_ultimate`]
-/// at external ingress boundaries.
+/// at external ingress boundaries. Never panics: origins lacking a CDF (short
+/// `ldfs`) or an expected ultimate (short `expected_ultimate`) receive `NaN`.
 pub fn project_unchecked(
     t: &TriangleView<'_>,
     ldfs: &[f64],
@@ -125,7 +142,6 @@ pub fn project_unchecked(
     expected_ultimate: &[f64],
 ) -> BornhuetterFergusonProjection {
     let n = t.n_origins.min(t.n_devs);
-    debug_assert_eq!(expected_ultimate.len(), n);
     let cdfs = cdf_from_ldf(ldfs, tail);
     let pct = pct_reported(&cdfs);
     let latest = latest_diagonal(t);
@@ -137,9 +153,10 @@ pub fn project_unchecked(
     for i in 0..n {
         let age = n - 1 - i;
         latest_dev[i] = age;
-        maturity[i] = pct[age];
-        let unreported = 1.0 - pct[age];
-        let r = unreported * expected_ultimate[i];
+        let pct_age = pct.get(age).copied().unwrap_or(f64::NAN);
+        maturity[i] = pct_age;
+        let unreported = 1.0 - pct_age;
+        let r = unreported * expected_ultimate.get(i).copied().unwrap_or(f64::NAN);
         reserve_values[i] = r;
         ultimates[i] = latest[i] + r;
     }
@@ -185,7 +202,7 @@ pub fn project_unchecked(
 ///     &[200.0, 235.0, 260.0],
 /// )?;
 /// assert!(bf.total_reserve > 0.0);
-/// # Ok::<(), ValidationError>(())
+/// # Ok::<(), ReservingError>(())
 /// ```
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BornhuetterFergusonEngine;
@@ -197,7 +214,7 @@ impl BornhuetterFergusonEngine {
         factors: &DevelopmentFactors,
         premium_or_exposure: &[f64],
         apriori: AprioriInput<'_>,
-    ) -> Result<BornhuetterFergusonProjection, ValidationError> {
+    ) -> Result<BornhuetterFergusonProjection, ReservingError> {
         let apriori_vector = build_apriori(premium_or_exposure, apriori)?;
         Self::project_from_expected_ultimate(cumulative, factors, &apriori_vector.expected_ultimate)
     }
@@ -208,13 +225,13 @@ impl BornhuetterFergusonEngine {
         factors: &DevelopmentFactors,
         earned_premium: &[f64],
         expected_loss_ratio: f64,
-    ) -> Result<BornhuetterFergusonProjection, ValidationError> {
+    ) -> Result<BornhuetterFergusonProjection, ReservingError> {
         validate_nonnegative_finite_vector(earned_premium, cumulative.n_origins)?;
         if !expected_loss_ratio.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if expected_loss_ratio < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
 
         let expected_ultimate = expected_from_premium(earned_premium, expected_loss_ratio);
@@ -228,7 +245,7 @@ impl BornhuetterFergusonEngine {
         cumulative: &TriangleView<'_>,
         factors: &DevelopmentFactors,
         expected_ultimate: &[f64],
-    ) -> Result<BornhuetterFergusonProjection, ValidationError> {
+    ) -> Result<BornhuetterFergusonProjection, ReservingError> {
         Self::project_from_expected_ultimate_with_policy(
             cumulative,
             factors,
@@ -244,8 +261,8 @@ impl BornhuetterFergusonEngine {
         factors: &DevelopmentFactors,
         expected_ultimate: &[f64],
         policy: MonotonicityPolicy,
-    ) -> Result<BornhuetterFergusonProjection, ValidationError> {
-        validate_bf_inputs_with_policy(cumulative, factors, policy)?;
+    ) -> Result<BornhuetterFergusonProjection, ReservingError> {
+        validate_cumulative_with_factors(cumulative, factors, policy, "BF factor")?;
         validate_nonnegative_finite_vector(expected_ultimate, cumulative.n_origins)?;
 
         let latest_maturity = latest_and_maturity(cumulative, factors)?;
@@ -256,7 +273,7 @@ impl BornhuetterFergusonEngine {
             expected_ultimate,
             &latest_maturity.maturity,
             &mut reserve_values,
-        );
+        )?;
         if policy == MonotonicityPolicy::Strict {
             validate_nonnegative_finite_slice(&reserve_values)?;
         } else {
@@ -264,7 +281,7 @@ impl BornhuetterFergusonEngine {
         }
 
         let mut ultimates = vec![0.0; cumulative.n_origins];
-        bf_ultimates(&latest_maturity.latest, &reserve_values, &mut ultimates);
+        bf_ultimates(&latest_maturity.latest, &reserve_values, &mut ultimates)?;
         if policy == MonotonicityPolicy::Strict {
             validate_nonnegative_finite_slice(&ultimates)?;
         } else {
@@ -281,7 +298,7 @@ impl BornhuetterFergusonEngine {
             || !total_reserve.is_finite()
             || !total_ultimate.is_finite()
         {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
 
         Ok(BornhuetterFergusonProjection {
@@ -304,12 +321,12 @@ impl BornhuetterFergusonEngine {
         factors: &DevelopmentFactors,
         earned_premium: &[f64],
         expected_loss_ratio: &[f64],
-    ) -> Result<BornhuetterFergusonProjection, ValidationError> {
+    ) -> Result<BornhuetterFergusonProjection, ReservingError> {
         validate_nonnegative_finite_vector(earned_premium, cumulative.n_origins)?;
         validate_nonnegative_finite_vector(expected_loss_ratio, cumulative.n_origins)?;
 
         let mut expected_ultimate = vec![0.0; cumulative.n_origins];
-        expected_ultimate_from_elr(earned_premium, expected_loss_ratio, &mut expected_ultimate);
+        expected_ultimate_from_elr(earned_premium, expected_loss_ratio, &mut expected_ultimate)?;
         validate_nonnegative_finite_slice(&expected_ultimate)?;
 
         Self::project_from_expected_ultimate(cumulative, factors, &expected_ultimate)
@@ -325,7 +342,7 @@ struct LatestMaturity {
 fn latest_and_maturity(
     cumulative: &TriangleView<'_>,
     factors: &DevelopmentFactors,
-) -> Result<LatestMaturity, ValidationError> {
+) -> Result<LatestMaturity, ReservingError> {
     let n = cumulative.n_origins;
     let mut latest = vec![0.0; n];
     let mut latest_dev = vec![0; n];
@@ -335,7 +352,7 @@ fn latest_and_maturity(
         cumulative.n_devs,
         &mut latest,
         &mut latest_dev,
-    );
+    )?;
     validate_latest_and_dev(&latest, &latest_dev, &factors.cdfs)?;
 
     let mut maturity = vec![0.0; n];
@@ -351,38 +368,20 @@ fn latest_and_maturity(
     })
 }
 
-fn validate_bf_inputs_with_policy(
-    cumulative: &TriangleView<'_>,
-    factors: &DevelopmentFactors,
-    policy: MonotonicityPolicy,
-) -> Result<(), ValidationError> {
-    validate_triangle(cumulative)?;
-    if policy == MonotonicityPolicy::Strict {
-        validate_monotone_cumulative(cumulative)?;
-    }
-    validate_development_factor_slices(
-        &factors.ldfs,
-        &factors.cdfs,
-        factors.tail,
-        cumulative.n_devs,
-        "BF factor",
-    )
-}
-
 fn validate_maturity_with_policy(
     maturity: &[f64],
     policy: MonotonicityPolicy,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     for (index, &value) in maturity.iter().enumerate() {
         if !value.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         let valid = match policy {
             MonotonicityPolicy::Strict => (0.0..=1.0).contains(&value),
             MonotonicityPolicy::AllowNegativeIncrements => value >= 0.0,
         };
         if !valid {
-            return Err(ValidationError::InvalidMaturity { index, value });
+            return Err(ReservingError::InvalidMaturity { index, value });
         }
     }
     Ok(())
@@ -422,7 +421,7 @@ mod tests {
         let elr = [0.6, 0.7, 0.8];
         let mut out = [0.0; 3];
 
-        expected_ultimate_from_elr(&premium, &elr, &mut out);
+        expected_ultimate_from_elr(&premium, &elr, &mut out).expect("expected");
 
         assert_eq!(out, [60.0, 140.0, 240.0]);
     }
@@ -433,7 +432,7 @@ mod tests {
         let maturity = [1.0, 1.0 / 1.2, 1.0 / 1.8];
         let mut out = [0.0; 3];
 
-        bf_reserves(&expected, &maturity, &mut out);
+        bf_reserves(&expected, &maturity, &mut out).expect("reserves");
 
         assert!(close(out[0], 0.0));
         assert!(close(out[1], 40.0));
@@ -446,7 +445,7 @@ mod tests {
         let reserves = [0.0, 40.0, 133.33333333333334];
         let mut out = [0.0; 3];
 
-        bf_ultimates(&latest, &reserves, &mut out);
+        bf_ultimates(&latest, &reserves, &mut out).expect("ultimates");
 
         assert!(close(out[0], 180.0));
         assert!(close(out[1], 220.0));
@@ -570,7 +569,7 @@ mod tests {
                 &factors(),
                 &[200.0, 240.0],
             ),
-            Err(ValidationError::ShapeMismatch)
+            Err(ReservingError::ShapeMismatch)
         );
     }
 
@@ -585,7 +584,7 @@ mod tests {
                 &[400.0, -300.0, 600.0],
                 &[0.5, 0.8, 0.5],
             ),
-            Err(ValidationError::Negative)
+            Err(ReservingError::Negative)
         );
     }
 
@@ -600,7 +599,7 @@ mod tests {
                 &[400.0, 300.0, 600.0],
                 &[0.5, -0.8, 0.5],
             ),
-            Err(ValidationError::Negative)
+            Err(ReservingError::Negative)
         );
     }
 
@@ -616,7 +615,7 @@ mod tests {
                 &bad_factors,
                 &[200.0, 240.0, 300.0],
             ),
-            Err(ValidationError::NotFinite)
+            Err(ReservingError::NotFinite)
         );
     }
 
@@ -635,7 +634,7 @@ mod tests {
                 &factors(),
                 &[200.0, 240.0, 300.0],
             ),
-            Err(ValidationError::NonMonotoneCumulative {
+            Err(ReservingError::NonMonotoneCumulative {
                 origin: 0,
                 dev: 1,
                 previous: 100.0,

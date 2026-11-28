@@ -47,6 +47,7 @@
 use crate::capital::reserve_distribution::{
     ReserveDistributionSummary, summarize_with_scratch, tvar_coherent, var_least,
 };
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::stochastic::bootstrap_odp::{
     DeterministicRng, FastIndexSampler, OdpBootstrapOptions, OdpBootstrapScratch,
@@ -55,7 +56,7 @@ use crate::stochastic::bootstrap_odp::{
 };
 use crate::stochastic::mack;
 use crate::types::TriangleView;
-use crate::validate::{MonotonicityPolicy, ValidationError, validate_tail};
+use crate::validate::{MonotonicityPolicy, validate_tail};
 
 // ===========================================================================
 // Reusable Closing-Valuation Roll-Forward Engine
@@ -101,7 +102,7 @@ impl ChainLadderRollForward {
         triangle: &TriangleView<'_>,
         opening_tail: f64,
         opening_origin_reserves: Vec<f64>,
-    ) -> Result<Self, ValidationError> {
+    ) -> Result<Self, ReservingError> {
         validate_tail(opening_tail)?;
         let n = triangle.n_origins;
         if n < 2
@@ -109,10 +110,10 @@ impl ChainLadderRollForward {
             || triangle.data.len() != n * triangle.n_devs
             || opening_origin_reserves.len() != n
         {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if opening_origin_reserves.iter().any(|v| !v.is_finite()) {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         let m = n - 1;
         let mut obs_den = vec![0.0; m];
@@ -178,10 +179,10 @@ impl ChainLadderRollForward {
         &self,
         next_cum_diag: &[f64],
         closing_tail: f64,
-    ) -> Result<RollForwardStep, ValidationError> {
+    ) -> Result<RollForwardStep, ReservingError> {
         validate_tail(closing_tail)?;
         if next_cum_diag.len() != self.n_origins {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         let n = self.n_origins;
         let m = n - 1;
@@ -202,7 +203,7 @@ impl ChainLadderRollForward {
                 &mut origin_adverse_development,
             )
         else {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         };
 
         Ok(RollForwardStep {
@@ -435,13 +436,13 @@ pub struct OneYearRunoffResult {
 impl OneYearRunoffResult {
     /// Empirical Value at Risk `VaR_p(L_{t+1})` (least quantile, CAS Monograph 15
     /// Algorithm 3.4.2) of aggregate one-year adverse development.
-    pub fn var_adverse_development(&self, p: f64) -> Result<f64, ValidationError> {
+    pub fn var_adverse_development(&self, p: f64) -> Result<f64, ReservingError> {
         var_least(&self.total_adverse_development, p)
     }
 
     /// Coherent Tail Value at Risk `TVaR_p(L_{t+1})` (exact integral, CAS
     /// Monograph 15 Algorithm 3.4.3) of aggregate one-year adverse development.
-    pub fn tvar_adverse_development(&self, p: f64) -> Result<f64, ValidationError> {
+    pub fn tvar_adverse_development(&self, p: f64) -> Result<f64, ReservingError> {
         tvar_coherent(&self.total_adverse_development, p)
     }
 
@@ -571,7 +572,7 @@ pub fn mack_one_year_runoff(
     triangle: &TriangleView<'_>,
     scenarios: usize,
     seed: u64,
-) -> Result<OneYearRunoffResult, ValidationError> {
+) -> Result<OneYearRunoffResult, ReservingError> {
     mack_one_year_runoff_with_options(triangle, 1.0, MackRunoffOptions::new(scenarios, seed))
 }
 
@@ -581,16 +582,16 @@ pub fn mack_one_year_runoff_with_options(
     triangle: &TriangleView<'_>,
     tail: f64,
     options: MackRunoffOptions,
-) -> Result<OneYearRunoffResult, ValidationError> {
+) -> Result<OneYearRunoffResult, ReservingError> {
     if options.scenarios == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
     validate_tail(tail)?;
 
     let opening_mack = mack::analyze_with_policy(triangle, tail, options.monotonicity_policy)?;
     let n = triangle.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "one-year re-reserving requires at least a 3x3 triangle",
         ));
     }
@@ -808,9 +809,9 @@ pub fn odp_one_year_runoff(
     triangle: &TriangleView<'_>,
     tail: f64,
     options: OdpBootstrapOptions,
-) -> Result<OneYearRunoffResult, ValidationError> {
+) -> Result<OneYearRunoffResult, ReservingError> {
     if options.iterations == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
     validate_tail(tail)?;
 
@@ -820,7 +821,7 @@ pub fn odp_one_year_runoff(
 
     let n = fit.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "one-year re-reserving requires at least a 3x3 triangle",
         ));
     }
@@ -980,9 +981,9 @@ fn finalize_runoff_result(
     origin_adverse_development: Vec<Vec<f64>>,
     lifetime_total_reserves: Vec<f64>,
     failed_iterations: usize,
-) -> Result<OneYearRunoffResult, ValidationError> {
+) -> Result<OneYearRunoffResult, ReservingError> {
     if total_adverse_development.is_empty() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let n = roll_forward.n_origins;
@@ -1241,11 +1242,11 @@ mod tests {
 
         assert_eq!(
             mack_one_year_runoff(&tri.view(), 0, 777),
-            Err(ValidationError::InvalidIterations)
+            Err(ReservingError::InvalidIterations)
         );
         assert_eq!(
             mack_one_year_runoff_with_options(&tri.view(), 0.9, MackRunoffOptions::new(10, 1)),
-            Err(ValidationError::InvalidTail { tail: 0.9 })
+            Err(ReservingError::InvalidTail { tail: 0.9 })
         );
     }
 }

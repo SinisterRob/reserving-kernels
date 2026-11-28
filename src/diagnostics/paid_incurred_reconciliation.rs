@@ -2,11 +2,13 @@
 
 use crate::deterministic::chain_ladder::{ChainLadderEngine, ChainLadderProjection};
 use crate::deterministic::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
+use crate::error::ReservingError;
 use crate::types::{Triangle, TriangleView};
-use crate::validate::{ValidationError, validate_triangle};
+use crate::validate::validate_triangle;
 
 /// Paid-versus-incurred reserve reconciliation by origin.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct PaidIncurredReconciliation {
     /// Latest paid cumulative values by origin.
     pub paid_latest: Vec<f64>,
@@ -29,11 +31,11 @@ pub struct PaidIncurredReconciliation {
 fn validate_compatible_triangles(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     validate_triangle(paid)?;
     validate_triangle(incurred)?;
     if paid.n_origins != incurred.n_origins || paid.n_devs != incurred.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     Ok(())
 }
@@ -42,7 +44,7 @@ fn validate_compatible_triangles(
 pub fn case_triangle(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
-) -> Result<Triangle, ValidationError> {
+) -> Result<Triangle, ReservingError> {
     validate_compatible_triangles(paid, incurred)?;
 
     let mut data = vec![f64::NAN; paid.n_origins * paid.n_devs];
@@ -65,7 +67,7 @@ pub fn case_triangle(
 pub fn paid_to_incurred_ratio_triangle(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
-) -> Result<Triangle, ValidationError> {
+) -> Result<Triangle, ReservingError> {
     validate_compatible_triangles(paid, incurred)?;
 
     let mut data = vec![f64::NAN; paid.n_origins * paid.n_devs];
@@ -129,7 +131,7 @@ pub fn reconcile_with_factors(
     incurred: &TriangleView<'_>,
     paid_factors: &DevelopmentFactors,
     incurred_factors: &DevelopmentFactors,
-) -> Result<PaidIncurredReconciliation, ValidationError> {
+) -> Result<PaidIncurredReconciliation, ReservingError> {
     validate_compatible_triangles(paid, incurred)?;
 
     let paid_projection = ChainLadderEngine::project(paid, paid_factors)?;
@@ -142,7 +144,7 @@ pub fn reconcile_volume_weighted(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
     tail: f64,
-) -> Result<PaidIncurredReconciliation, ValidationError> {
+) -> Result<PaidIncurredReconciliation, ReservingError> {
     validate_compatible_triangles(paid, incurred)?;
 
     let paid_factors = DevelopmentFactorEngine::volume_weighted(paid, tail)?;
@@ -232,7 +234,7 @@ mod tests {
 
         assert_eq!(
             reconcile_volume_weighted(&paid.view(), &incurred.view(), 1.0),
-            Err(ValidationError::ShapeMismatch)
+            Err(ReservingError::ShapeMismatch)
         );
     }
 }

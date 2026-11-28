@@ -3,20 +3,24 @@
 //!
 //! All routines operate on row-major `&[f64]` / `Vec<f64>` buffers with zero
 //! unsafe code and zero external linear-algebra dependencies, keeping the crate
-//! WASM-compatible and deterministic across platforms.
+//! WASM-compatible. Results are deterministic run-to-run on a given platform
+//! (fixed operation order, no threading); bit-for-bit reproducibility *across*
+//! platforms is not guaranteed because transcendental helpers such as
+//! `f64::hypot`, `sqrt`-adjacent libm calls and compiler FMA contraction may
+//! differ in the last ulp between targets.
 
-use crate::validate::ValidationError;
+use crate::error::ReservingError;
 
 /// Compute the lower-triangular Cholesky factor `L` of symmetric positive-definite
 /// `dim × dim` matrix `a` (`A = L L^T`).
-pub(crate) fn cholesky_lower(a: &[f64], dim: usize) -> Result<Vec<f64>, ValidationError> {
+pub(crate) fn cholesky_lower(a: &[f64], dim: usize) -> Result<Vec<f64>, ReservingError> {
     if a.len() != dim * dim || dim == 0 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for i in 0..dim {
         let d = a[i * dim + i];
         if !d.is_finite() || d <= 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "matrix is not positive definite",
             ));
         }
@@ -33,7 +37,7 @@ pub(crate) fn cholesky_lower(a: &[f64], dim: usize) -> Result<Vec<f64>, Validati
             }
             if i == j {
                 if !sum.is_finite() || sum <= row_tol {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "matrix is not positive definite",
                     ));
                 }
@@ -62,7 +66,7 @@ pub(crate) fn solve_lower_into(l: &[f64], dim: usize, b: &[f64], y: &mut [f64]) 
 ///
 /// Computes lower-triangular `L^{-1}` directly (O(dim^3 / 6) flops) and forms
 /// `A^{-1} = L^{-T} L^{-1}` with contiguous dot products.
-pub(crate) fn invert_spd(a: &[f64], dim: usize) -> Result<Vec<f64>, ValidationError> {
+pub(crate) fn invert_spd(a: &[f64], dim: usize) -> Result<Vec<f64>, ReservingError> {
     let l = cholesky_lower(a, dim)?;
     // Store L^{-1} column-major (`l_inv_cm[col * dim + row]` for `row >= col`) so
     // the final A^{-1}_{i, j} = sum_{k >= max(i, j)} L^{-1}_{k, i} L^{-1}_{k, j}
@@ -100,24 +104,24 @@ pub(crate) fn invert_spd(a: &[f64], dim: usize) -> Result<Vec<f64>, ValidationEr
 
 /// Solve a general `dim × dim` linear system `A x = b` via Gaussian elimination
 /// with partial pivoting.
-pub(crate) fn solve_general(a: &[f64], dim: usize, b: &[f64]) -> Result<Vec<f64>, ValidationError> {
+pub(crate) fn solve_general(a: &[f64], dim: usize, b: &[f64]) -> Result<Vec<f64>, ReservingError> {
     if dim == 0 || dim.checked_mul(dim) != Some(a.len()) || b.len() != dim {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if b.iter().any(|v| !v.is_finite()) {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     let mut row_scale = vec![0.0_f64; dim];
     for r in 0..dim {
         let mut r_max = 0.0_f64;
         for &v in &a[r * dim..(r + 1) * dim] {
             if !v.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             r_max = r_max.max(v.abs());
         }
         if r_max == 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "linear system is singular or rank-deficient",
             ));
         }
@@ -137,7 +141,7 @@ pub(crate) fn solve_general(a: &[f64], dim: usize, b: &[f64]) -> Result<Vec<f64>
             }
         }
         if !max_scaled.is_finite() || max_scaled <= 1e-14 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "linear system is singular or rank-deficient",
             ));
         }
@@ -167,7 +171,7 @@ pub(crate) fn solve_general(a: &[f64], dim: usize, b: &[f64]) -> Result<Vec<f64>
         }
         let diag = mat[row * dim + row];
         if !diag.is_finite() || diag.abs() <= 1e-14 * row_scale[row] {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "linear system is singular or rank-deficient",
             ));
         }
@@ -247,7 +251,7 @@ fn qr_factorize_a_cm_in_place(
     ws: &mut QrWorkspace,
     apply_rhs: bool,
     store_reflectors: bool,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     for k in 0..p {
         let len = n - k;
         let col_k_start = k * n + k;
@@ -260,7 +264,7 @@ fn qr_factorize_a_cm_in_place(
             max_abs = max_abs.max(val.abs());
         }
         if !max_abs.is_finite() || max_abs <= 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "design matrix is rank-deficient or collinear",
             ));
         }
@@ -272,7 +276,7 @@ fn qr_factorize_a_cm_in_place(
         }
         let norm = max_abs * scaled_norm_sq.sqrt();
         if !norm.is_finite() || norm <= 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "design matrix is rank-deficient or collinear",
             ));
         }
@@ -347,13 +351,13 @@ fn qr_factorize_a_cm_in_place(
     for k in 0..p {
         let d = ws.a_cm[k * n + k].abs();
         if !d.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         max_diag = max_diag.max(d);
         min_diag = min_diag.min(d);
     }
     if max_diag <= 0.0 || min_diag <= 1e-12 * max_diag {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "design matrix is rank-deficient or collinear",
         ));
     }
@@ -372,9 +376,9 @@ fn qr_factorize_weighted_into(
     n: usize,
     p: usize,
     ws: &mut QrWorkspace,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if n == 0 || p == 0 || p > n || x.len() != n * p || y.len() != n || weights.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     ws.ensure_dims(n, p);
@@ -383,7 +387,7 @@ fn qr_factorize_weighted_into(
         let w = weights[i];
         let yi = y[i];
         if !w.is_finite() || w < 0.0 || !yi.is_finite() {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "WLS requires finite non-negative weights and finite responses",
             ));
         }
@@ -394,7 +398,7 @@ fn qr_factorize_weighted_into(
         for j in 0..p {
             let xij = x_row[j];
             if !xij.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             ws.a_cm[j * n + i] = sw * xij;
         }
@@ -412,14 +416,14 @@ fn qr_factorize_weighted_cm_into(
     n: usize,
     p: usize,
     ws: &mut QrWorkspace,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if n == 0 || p == 0 || p > n || x_cm.len() != n * p || weights.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if let Some(yv) = y
         && yv.len() != n
     {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     ws.ensure_dims(n, p);
@@ -429,7 +433,7 @@ fn qr_factorize_weighted_cm_into(
             let w = weights[i];
             let yi = yv[i];
             if !w.is_finite() || w < 0.0 || !yi.is_finite() {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "WLS requires finite non-negative weights and finite responses",
                 ));
             }
@@ -441,7 +445,7 @@ fn qr_factorize_weighted_cm_into(
         for i in 0..n {
             let w = weights[i];
             if !w.is_finite() || w < 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "WLS requires finite non-negative weights",
                 ));
             }
@@ -469,9 +473,9 @@ pub(crate) fn qr_factorize_unit_cm_store_reflectors(
     n: usize,
     p: usize,
     ws: &mut QrWorkspace,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if n == 0 || p == 0 || p > n || x_cm.len() != n * p {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     ws.ensure_dims(n, p);
     ws.sqrt_w.fill(1.0);
@@ -487,13 +491,13 @@ pub(crate) fn qr_solve_stored_unit_into(
     p: usize,
     ws: &mut QrWorkspace,
     beta_out: &mut [f64],
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if y.len() != n || beta_out.len() != p {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for (dst, &yi) in ws.b[..n].iter_mut().zip(y.iter()) {
         if !yi.is_finite() {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "WLS requires finite responses",
             ));
         }
@@ -617,9 +621,9 @@ pub(crate) fn weighted_least_squares_qr_cm_beta_into(
     p: usize,
     ws: &mut QrWorkspace,
     beta_out: &mut [f64],
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if beta_out.len() != p {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     qr_factorize_weighted_cm_into(x_cm, Some(y), weights, n, p, ws)?;
     for i in (0..p).rev() {
@@ -641,7 +645,7 @@ pub(crate) fn weighted_least_squares_qr_cm_cov_and_leverages(
     n: usize,
     p: usize,
     ws: &mut QrWorkspace,
-) -> Result<(Vec<f64>, Vec<f64>), ValidationError> {
+) -> Result<(Vec<f64>, Vec<f64>), ReservingError> {
     qr_factorize_weighted_cm_into(x_cm, None, weights, n, p, ws)?;
     Ok(qr_cov_and_leverages_from_factored(x_row_major, n, p, ws))
 }
@@ -655,9 +659,9 @@ pub(crate) fn weighted_least_squares_qr_beta_into(
     p: usize,
     ws: &mut QrWorkspace,
     beta_out: &mut [f64],
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if beta_out.len() != p {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     qr_factorize_weighted_into(x, y, weights, n, p, ws)?;
     for i in (0..p).rev() {
@@ -678,7 +682,7 @@ pub(crate) fn weighted_least_squares_qr_beta_only(
     weights: &[f64],
     n: usize,
     p: usize,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     let mut ws = QrWorkspace::with_capacity(n, p);
     let mut beta = vec![0.0; p];
     weighted_least_squares_qr_beta_into(x, y, weights, n, p, &mut ws, &mut beta)?;
@@ -698,7 +702,7 @@ pub(crate) fn weighted_least_squares_qr(
     weights: &[f64],
     n: usize,
     p: usize,
-) -> Result<WlsQrSolution, ValidationError> {
+) -> Result<WlsQrSolution, ReservingError> {
     let mut ws = QrWorkspace::with_capacity(n, p);
     weighted_least_squares_qr_with_workspace(x, y, weights, n, p, &mut ws)
 }
@@ -711,7 +715,7 @@ pub(crate) fn weighted_least_squares_qr_with_workspace(
     n: usize,
     p: usize,
     ws: &mut QrWorkspace,
-) -> Result<WlsQrSolution, ValidationError> {
+) -> Result<WlsQrSolution, ReservingError> {
     qr_factorize_weighted_into(x, y, weights, n, p, ws)?;
 
     // Back-substitute R * beta = (Q^T b)[0..p].
@@ -760,17 +764,20 @@ pub(crate) fn quad_form(v: &[f64], m: &[f64], dim: usize) -> f64 {
 ///
 /// Returns `(eigenvalues, q)` where `q` is row-major `dim × dim` with column `k`
 /// (`q[row * dim + k]`) holding the unit eigenvector for `eigenvalues[k]`.
+/// Returns [`ReservingError::InvalidParameter`] if the off-diagonal mass does
+/// not fall below `1e-13 * max|a_ij|` within `64 * dim` sweeps (never returns
+/// an unconverged decomposition silently).
 pub(crate) fn jacobi_eigen_symmetric(
     a: &[f64],
     dim: usize,
-) -> Result<(Vec<f64>, Vec<f64>), ValidationError> {
+) -> Result<(Vec<f64>, Vec<f64>), ReservingError> {
     if dim == 0 || dim.checked_mul(dim) != Some(a.len()) {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let mut scale = 0.0_f64;
     for &v in a {
         if !v.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         scale = scale.max(v.abs());
     }
@@ -794,14 +801,19 @@ pub(crate) fn jacobi_eigen_symmetric(
     let off_tol = 1e-13 * scale;
     let pivot_tol = 1e-15 * scale;
     let max_sweeps = 64 * dim.max(1);
-    for _sweep in 0..max_sweeps {
+    let max_offdiag = |m: &[f64]| {
         let mut max_off = 0.0_f64;
         for p in 0..dim {
             for r in (p + 1)..dim {
-                max_off = max_off.max(mat[p * dim + r].abs());
+                max_off = max_off.max(m[p * dim + r].abs());
             }
         }
-        if max_off <= off_tol {
+        max_off
+    };
+    let mut converged = false;
+    for _sweep in 0..max_sweeps {
+        if max_offdiag(&mat) <= off_tol {
+            converged = true;
             break;
         }
         for p in 0..dim {
@@ -844,6 +856,12 @@ pub(crate) fn jacobi_eigen_symmetric(
                 }
             }
         }
+    }
+
+    if !converged && max_offdiag(&mat) > off_tol {
+        return Err(ReservingError::InvalidParameter(
+            "Jacobi eigen-decomposition did not converge within max_sweeps",
+        ));
     }
 
     let eigenvalues: Vec<f64> = (0..dim).map(|i| mat[i * dim + i]).collect();

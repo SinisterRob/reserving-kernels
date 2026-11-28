@@ -17,14 +17,25 @@
 //! 3. Accumulate projected incremental paid (plus any remaining terminal case
 //!    reserve if `include_terminal_case` is set) to obtain paid ultimates and
 //!    total unpaid reserves.
+//!
+//! ## Unestimable ratios
+//!
+//! A ratio at transition `j` is estimable only when at least one observed
+//! origin has a finite, strictly positive prior case reserve `O_{i,j-1}`.
+//! When a ratio is unestimable but some origin still carries a non-zero
+//! (projected) case reserve into that transition, the projection returns
+//! [`ReservingError::InvalidParameter`] instead of silently dropping the
+//! case reserve. Unestimable ratios that no projection needs are reported
+//! as `NaN`.
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ReservingError,
     preprocessing::triangle::{cumulative_to_incremental, latest_diagonal},
     types::TriangleView,
     validate::{
-        MonotonicityPolicy, ValidationError, validate_monotone_cumulative, validate_triangle,
+        MonotonicityPolicy, validate_finite_slice, validate_monotone_cumulative, validate_triangle,
     },
 };
 
@@ -67,9 +78,11 @@ impl Default for CaseOutstandingOptions {
 /// Output of the Case Outstanding reserving projection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaseOutstandingProjection {
-    /// Selected paid-to-prior-case ratios for development transitions `j = 1..n_devs`.
+    /// Selected paid-to-prior-case ratios for development transitions `j = 1..n_devs`
+    /// (`NaN` where unestimable and not required by any projection).
     pub paid_to_case_ratios: Vec<f64>,
-    /// Selected case-to-prior-case ratios for development transitions `j = 1..n_devs`.
+    /// Selected case-to-prior-case ratios for development transitions `j = 1..n_devs`
+    /// (`NaN` where unestimable and not required by any projection).
     pub case_to_case_ratios: Vec<f64>,
     /// Full completed cumulative paid triangle (row-major `n_origins × n_devs`).
     pub completed_paid: Vec<f64>,
@@ -87,12 +100,16 @@ pub struct CaseOutstandingProjection {
     pub total_ibnr: f64,
 }
 
+/// Select a ratio from observed `(numerator, prior-case)` pairs.
+///
+/// Returns `None` when no pair has a finite, strictly positive denominator
+/// (the ratio is unestimable).
 fn select_ratio(
     numerators: &[f64],
     denominators: &[f64],
     average: CaseRatioAverage,
     last_n: Option<usize>,
-) -> f64 {
+) -> Option<f64> {
     let pairs: Vec<(f64, f64)> = numerators
         .iter()
         .zip(denominators.iter())
@@ -100,27 +117,25 @@ fn select_ratio(
         .map(|(&num, &den)| (num, den))
         .collect();
     if pairs.is_empty() {
-        return 0.0;
+        return None;
     }
     let slice = match last_n {
         Some(k) if k > 0 && k < pairs.len() => &pairs[pairs.len() - k..],
         _ => &pairs[..],
     };
-    match average {
+    let ratio = match average {
         CaseRatioAverage::VolumeWeighted => {
             let num_sum: f64 = slice.iter().map(|(n, _)| *n).sum();
+            // Every retained denominator is > 0, so `den_sum > 0`.
             let den_sum: f64 = slice.iter().map(|(_, d)| *d).sum();
-            if den_sum > 0.0 {
-                num_sum / den_sum
-            } else {
-                0.0
-            }
+            num_sum / den_sum
         }
         CaseRatioAverage::Simple => {
             let ratio_sum: f64 = slice.iter().map(|(n, d)| *n / *d).sum();
             ratio_sum / slice.len() as f64
         }
-    }
+    };
+    ratio.is_finite().then_some(ratio)
 }
 
 /// Project ultimates and reserves using the Case Outstanding method from
@@ -129,7 +144,7 @@ pub fn project_case_outstanding(
     paid: &TriangleView<'_>,
     case_outstanding: &TriangleView<'_>,
     options: &CaseOutstandingOptions,
-) -> Result<CaseOutstandingProjection, ValidationError> {
+) -> Result<CaseOutstandingProjection, ReservingError> {
     validate_triangle(paid)?;
     if options.paid_policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(paid)?;
@@ -138,17 +153,17 @@ pub fn project_case_outstanding(
         || paid.n_devs != case_outstanding.n_devs
         || case_outstanding.data.len() != case_outstanding.n_origins * case_outstanding.n_devs
     {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let n_origins = paid.n_origins;
     let n_devs = paid.n_devs;
     if n_origins < 2 || n_devs < 2 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for i in 0..n_origins {
         for j in 0..(n_origins - i) {
             if !case_outstanding.get(i, j).is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
         }
     }
@@ -193,8 +208,20 @@ pub fn project_case_outstanding(
             let idx = i * n_devs + j;
             let prev_paid = completed_paid[i * n_devs + (j - 1)];
             let prev_case = completed_case[i * n_devs + (j - 1)];
-            let r_p = paid_to_case_ratios[j - 1];
-            let r_c = case_to_case_ratios[j - 1];
+            if prev_case == 0.0 {
+                // No case reserve to develop: the ratios are irrelevant here.
+                completed_paid[idx] = prev_paid;
+                completed_case[idx] = 0.0;
+                continue;
+            }
+            let (Some(r_p), Some(r_c)) = (paid_to_case_ratios[j - 1], case_to_case_ratios[j - 1])
+            else {
+                return Err(ReservingError::InvalidParameter(
+                    "case outstanding ratio unestimable (no observed origin with positive prior \
+                     case reserve) at a development age where a non-zero case reserve must be \
+                     projected",
+                ));
+            };
             completed_paid[idx] = prev_paid + prev_case * r_p;
             completed_case[idx] = prev_case * r_c;
         }
@@ -214,24 +241,27 @@ pub fn project_case_outstanding(
         } else {
             end_paid
         };
-        let lp = if latest_paid[i].is_finite() {
-            latest_paid[i]
-        } else {
-            0.0
-        };
-        let lc = if latest_case[i].is_finite() {
-            latest_case[i]
-        } else {
-            0.0
-        };
-        let res = ult - lp;
+        // Latest diagonal cells are observed and were validated finite above.
+        let res = ult - latest_paid[i];
         ultimate.push(ult);
         reserve.push(res);
-        ibnr.push(res - lc);
+        ibnr.push(res - latest_case[i]);
     }
 
-    let total_reserve = reserve.iter().sum();
-    let total_ibnr = ibnr.iter().sum();
+    let total_reserve: f64 = reserve.iter().sum();
+    let total_ibnr: f64 = ibnr.iter().sum();
+    if !total_reserve.is_finite() || !total_ibnr.is_finite() {
+        return Err(ReservingError::NotFinite);
+    }
+    validate_finite_slice(&ultimate)?;
+    let paid_to_case_ratios: Vec<f64> = paid_to_case_ratios
+        .into_iter()
+        .map(|r| r.unwrap_or(f64::NAN))
+        .collect();
+    let case_to_case_ratios: Vec<f64> = case_to_case_ratios
+        .into_iter()
+        .map(|r| r.unwrap_or(f64::NAN))
+        .collect();
 
     Ok(CaseOutstandingProjection {
         paid_to_case_ratios,
@@ -252,11 +282,11 @@ pub fn project_from_paid_incurred(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
     options: &CaseOutstandingOptions,
-) -> Result<CaseOutstandingProjection, ValidationError> {
+) -> Result<CaseOutstandingProjection, ReservingError> {
     validate_triangle(paid)?;
     validate_triangle(incurred)?;
     if paid.n_origins != incurred.n_origins || paid.n_devs != incurred.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let case_data: Vec<f64> = incurred
         .data
@@ -313,5 +343,20 @@ mod tests {
             assert!((rc - 0.4).abs() < 1e-12, "rc={rc}");
         }
         assert!(res.total_reserve > 0.0);
+    }
+
+    #[test]
+    fn select_ratio_is_none_without_positive_denominators() {
+        let avg = CaseRatioAverage::VolumeWeighted;
+        assert_eq!(select_ratio(&[], &[], avg, None), None);
+        assert_eq!(select_ratio(&[5.0, 3.0], &[0.0, -2.0], avg, None), None);
+        assert_eq!(
+            select_ratio(&[5.0, f64::NAN], &[10.0, 4.0], avg, None),
+            Some(0.5)
+        );
+        assert_eq!(
+            select_ratio(&[1.0, 6.0], &[2.0, 4.0], CaseRatioAverage::Simple, Some(1)),
+            Some(1.5)
+        );
     }
 }

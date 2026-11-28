@@ -2,7 +2,7 @@
 //! and numerical-stability invariants across the crate.
 
 use reserving_kernels::{
-    Triangle, TriangleView,
+    ReservingError, Triangle, TriangleView,
     capital::{
         aggregate_loss::{FrequencyDistribution, fft_aggregate_loss},
         capital_allocation::{euler_rvar_allocation, euler_tvar_allocation},
@@ -37,7 +37,7 @@ use reserving_kernels::{
         ClarkExactAgeOptions, asymmetric_age_grid, calendar_diagonal_index, clark_mle_exact_age,
         interp_swimon, subannual_product_parity,
     },
-    validate::{MonotonicityPolicy, ValidationError},
+    validate::MonotonicityPolicy,
 };
 
 #[test]
@@ -207,17 +207,17 @@ fn numerical_stability_identities_crps_student_t_rvar_and_fft() {
     // Capital allocation invalid probability returns InvalidProbability.
     assert_eq!(
         euler_tvar_allocation(&[&vals], 1.5),
-        Err(ValidationError::InvalidProbability { value: 1.5 })
+        Err(ReservingError::InvalidProbability { value: 1.5 })
     );
     assert_eq!(
         euler_rvar_allocation(&[&vals], -0.1, 0.9),
-        Err(ValidationError::InvalidProbability { value: -0.1 })
+        Err(ReservingError::InvalidProbability { value: -0.1 })
     );
 
     // apply_copula_reordering rejects NaN uniforms.
     assert_eq!(
         apply_copula_reordering(&[&[1.0, 2.0]], &[vec![0.5, f64::NAN]]),
-        Err(ValidationError::NotFinite)
+        Err(ReservingError::NotFinite)
     );
 
     // FFT aggregate loss handles extreme NB parameters without panicking.
@@ -253,7 +253,7 @@ fn meyers_bivariate_ccl_propagates_parameter_and_correlation_uncertainty() {
             data2[i * n + j] = g.get(i, j) * 1.15 * jitter;
         }
     }
-    let line2 = Triangle::new(n, n, data2);
+    let line2 = Triangle::try_new(n, n, data2).expect("valid triangle");
     let opts = MeyersOptions {
         model: MeyersModel::Ccl,
         n_samples: 400,
@@ -284,7 +284,7 @@ fn general_gmcl_exact_sandwich_msep_is_finite_and_positive() {
             data2[i * n + j] = g.get(i, j) * factor;
         }
     }
-    let line2 = Triangle::new(n, n, data2);
+    let line2 = Triangle::try_new(n, n, data2).expect("valid triangle");
     let gmcl = analyze_multivariate_cl(
         &[g.view(), line2.view()],
         &MultivariateClOptions {
@@ -482,7 +482,11 @@ fn neumaier_compensated_summary_and_truncated_var_tvar_coherence() {
     assert!(agg.var(0.999).is_err());
     assert!(agg.tvar(0.999).is_err());
     let v50 = agg.var(0.50).expect("var 50");
-    let tv50 = agg.tvar(0.50).expect("tvar 50");
+    // ~11% of the mass lies beyond the grid: the default 1%-of-tail budget rejects
+    // TVaR instead of silently renormalizing; an explicit loose budget yields a
+    // lower bound that still dominates VaR.
+    assert!(agg.tvar(0.50).is_err());
+    let tv50 = agg.tvar_with_tolerance(0.50, 1.0).expect("tvar 50");
     assert!(tv50 >= v50 - 1e-12);
 }
 

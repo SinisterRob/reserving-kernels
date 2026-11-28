@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::Triangle;
 
+// Invariant for every `Triangle::new` call in this module: each dataset is a
+// fixed-size `n × n` literal (shape asserted below in `tests`), observed cells
+// are finite and non-negative, so it would pass `Triangle::try_new`. The
+// unchecked crate-internal constructor is used only to keep these accessors
+// infallible; `tests::datasets_pass_try_new_validation` enforces the contract.
+
 const NAN: f64 = f64::NAN;
 
 /// Paired cumulative paid and incurred triangles (e.g., Quarg & Mack 2004).
@@ -134,5 +140,28 @@ pub fn friedland_us_industry_auto() -> FriedlandAutoDataset {
         paid: Triangle::new(10, 10, paid),
         reported: Triangle::new(10, 10, reported),
         earned_premium,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn revalidate(t: &Triangle) {
+        let checked = Triangle::try_new(t.n_origins(), t.n_devs(), t.data().to_vec());
+        assert_eq!(checked.as_ref(), Ok(t));
+    }
+
+    #[test]
+    fn datasets_pass_try_new_validation() {
+        revalidate(&raa());
+        revalidate(&genins());
+        let qm = quarg_mack_2004();
+        revalidate(&qm.paid);
+        revalidate(&qm.incurred);
+        let fr = friedland_us_industry_auto();
+        revalidate(&fr.paid);
+        revalidate(&fr.reported);
+        assert_eq!(fr.earned_premium.len(), fr.paid.n_origins());
     }
 }

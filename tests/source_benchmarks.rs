@@ -71,7 +71,7 @@ fn raa_triangle() -> Triangle {
         3133.0,  5395.0,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,
         2063.0,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,
     ];
-    Triangle::new(10, 10, data)
+    Triangle::try_new(10, 10, data).expect("valid triangle")
 }
 
 /// Taylor & Ashe (1983) / England & Verrall (1999, 2002) `GenIns` 10x10 cumulative paid triangle.
@@ -89,7 +89,7 @@ fn genins_triangle() -> Triangle {
         376686.0, 1363294.0,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,
         344014.0,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,
     ];
-    Triangle::new(10, 10, data)
+    Triangle::try_new(10, 10, data).expect("valid triangle")
 }
 
 /// Friedland (2010), *Estimating Unpaid Claims Using Basic Techniques* (CAS),
@@ -126,8 +126,8 @@ fn friedland_us_industry_auto() -> (Triangle, Triangle, Vec<f64>) {
         94115312.0, 95272279.0, 95176240.0,
     ];
     (
-        Triangle::new(10, 10, paid),
-        Triangle::new(10, 10, reported),
+        Triangle::try_new(10, 10, paid).expect("valid triangle"),
+        Triangle::try_new(10, 10, reported).expect("valid triangle"),
         earned_premium,
     )
 }
@@ -153,7 +153,10 @@ fn deterministic_odp_golden_triangle() -> (Triangle, f64) {
             }
         }
     }
-    (Triangle::new(n, n, data), true_reserve)
+    (
+        Triangle::try_new(n, n, data).expect("valid triangle"),
+        true_reserve,
+    )
 }
 
 // ===========================================================================
@@ -634,10 +637,10 @@ fn berquist_sherman_1977_operational_benchmark() {
             rep_data[idx] = p + open * avg_case;
         }
     }
-    let paid_t = Triangle::new(n, n, paid_data);
-    let rep_t = Triangle::new(n, n, rep_data);
-    let open_t = Triangle::new(n, n, open_data);
-    let closed_t = Triangle::new(n, n, closed_data);
+    let paid_t = Triangle::try_new(n, n, paid_data).expect("valid triangle");
+    let rep_t = Triangle::try_new(n, n, rep_data).expect("valid triangle");
+    let open_t = Triangle::try_new(n, n, open_data).expect("valid triangle");
+    let closed_t = Triangle::try_new(n, n, closed_data).expect("valid triangle");
 
     let bs_case = adjust_case_reserves(
         &rep_t.view(),
@@ -1317,7 +1320,13 @@ fn pure_reserving_extension_kernels_benchmarks() {
         1e-12
     ));
 
-    let br_gen = brosius::project(&genins.view(), 1.0).unwrap();
+    let br_gen = brosius::project_with_fit_rule(
+        &genins.view(),
+        1.0,
+        MonotonicityPolicy::Strict,
+        brosius::BrosiusFitRule::RawOls,
+    )
+    .unwrap();
     let mu_br =
         murphy::analyze(&genins.view(), murphy::MurphyOptions::brosius_equivalent()).unwrap();
     for i in 0..10 {
@@ -1413,8 +1422,12 @@ fn pure_reserving_extension_kernels_benchmarks() {
         }
     }
     let sc = schnieper::analyze(
-        &Triangle::new(10, 10, n_data).view(),
-        &Triangle::new(10, 10, d_data).view(),
+        &Triangle::try_new(10, 10, n_data)
+            .expect("valid triangle")
+            .view(),
+        &Triangle::try_new(10, 10, d_data)
+            .expect("valid triangle")
+            .view(),
         &[1000.0; 10],
     )
     .unwrap();

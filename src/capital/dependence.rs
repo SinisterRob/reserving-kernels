@@ -18,38 +18,29 @@
 //!   per iteration across aligned lines of business so empirical calendar/
 //!   residual cross-line dependence is preserved during parameter resampling.
 
-use std::f64::consts::PI;
-
+use crate::capital::correlation::{
+    PreparedCorrelation, correlation_matrix, prepare_latent_correlation, rank_match_reorder,
+    validate_and_convert_correlation_matrix,
+};
 use crate::capital::reserve_distribution::{ReserveDistributionSummary, summarize_with_scratch};
+use crate::error::ReservingError;
 use crate::stochastic::bootstrap_odp::{
     DeterministicRng, OdpBootstrapOptions, OdpBootstrapScratch, OdpFit, ResidualAdjustment,
     build_adjusted_residual_pool, cholesky_lower, fit_odp, run_odp_iteration_with_scratch,
 };
 use crate::types::TriangleView;
-use crate::validate::ValidationError;
 
 pub use crate::capital::copulas::{
     CopulaSampleResult, GumbelHac, GumbelHacCluster, apply_copula_reordering,
     clayton_copula_sample, clayton_lower_tail_dependence, clayton_theta_from_tau,
-    gumbel_copula_sample, gumbel_theta_from_tau, gumbel_upper_tail_dependence,
-    repair_correlation_matrix, student_t_cdf, student_t_copula_sample, student_t_tail_dependence,
+    gumbel_copula_sample, gumbel_theta_from_tau, gumbel_upper_tail_dependence, student_t_cdf,
+    student_t_copula_sample, student_t_copula_sample_with_repair, student_t_tail_dependence,
 };
-
-/// Semantic interpretation of the supplied target correlation matrix for
-/// [`iman_conover`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum CorrelationType {
-    /// Target matrix is directly the Pearson correlation of latent Gaussian
-    /// van der Waerden reference scores (Mildenhall 2006, §3).
-    #[default]
-    LatentGaussian,
-    /// Target matrix specifies Spearman rank correlations `ρ_S`, converted via
-    /// the continuous Gaussian copula relation `ρ = 2 · sin(π · ρ_S / 6)`.
-    SpearmanTarget,
-    /// Target matrix specifies Kendall's tau `τ`, converted via the continuous
-    /// Gaussian copula relation `ρ = sin(π · τ / 2)`.
-    KendallTarget,
-}
+pub use crate::capital::correlation::{
+    CorrelationRepair, CorrelationType, HighamOptions, NearestCorrelationResult,
+    nearest_correlation_matrix, pearson_correlation, repair_correlation_matrix,
+    spearman_correlation,
+};
 
 /// Output of [`iman_conover`] batch rank reordering.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -69,6 +60,10 @@ pub struct ImanConoverResult {
     pub achieved_spearman: Vec<f64>,
     /// Row-major `K × K` achieved empirical monetary Pearson correlation matrix.
     pub achieved_pearson: Vec<f64>,
+    /// Frobenius distance `‖S_repaired − S_target‖_F` when the latent target was
+    /// repaired under [`CorrelationRepair::Higham`]; `None` when no repair was applied.
+    #[serde(default)]
+    pub repair_frobenius_distance: Option<f64>,
 }
 
 /// Output of [`synchronized_odp_bootstrap`] across `K` aligned lines of business.
@@ -149,126 +144,6 @@ pub(crate) fn inv_normal_cdf(p: f64) -> f64 {
     }
 }
 
-// ===========================================================================
-// Correlation Matrix Helpers (Pearson & Tie-Adjusted Spearman)
-// ===========================================================================
-
-/// Compute tie-adjusted average ranks (1-based midranks) for a slice.
-pub(crate) fn average_ranks(values: &[f64]) -> Vec<f64> {
-    let n = values.len();
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_unstable_by(|&a, &b| values[a].total_cmp(&values[b]));
-
-    let mut ranks = vec![0.0; n];
-    let mut i = 0;
-    while i < n {
-        let mut j = i + 1;
-        while j < n && values[order[j]] == values[order[i]] {
-            j += 1;
-        }
-        // 1-based midrank for indices i..j is (i + 1 + j) / 2.
-        let avg_rank = f64::midpoint((i + 1) as f64, j as f64);
-        for &idx in &order[i..j] {
-            ranks[idx] = avg_rank;
-        }
-        i = j;
-    }
-    ranks
-}
-
-/// Sample Pearson correlation between two equal-length slices.
-pub fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
-    let n = x.len();
-    if n < 2 || n != y.len() {
-        return f64::NAN;
-    }
-    let nf = n as f64;
-    let mx = x.iter().sum::<f64>() / nf;
-    let my = y.iter().sum::<f64>() / nf;
-    let mut sxx = 0.0;
-    let mut syy = 0.0;
-    let mut sxy = 0.0;
-    for (&a, &b) in x.iter().zip(y.iter()) {
-        let dx = a - mx;
-        let dy = b - my;
-        sxx += dx * dx;
-        syy += dy * dy;
-        sxy += dx * dy;
-    }
-    let denom = (sxx * syy).sqrt();
-    if denom > 0.0 {
-        (sxy / denom).clamp(-1.0, 1.0)
-    } else {
-        f64::NAN
-    }
-}
-
-/// Tie-adjusted Spearman rank correlation between two equal-length slices.
-pub fn spearman_correlation(x: &[f64], y: &[f64]) -> f64 {
-    if x.len() < 2 || x.len() != y.len() {
-        return f64::NAN;
-    }
-    if x.iter().any(|v| v.is_nan()) || y.iter().any(|v| v.is_nan()) {
-        return f64::NAN;
-    }
-    let rx = average_ranks(x);
-    let ry = average_ranks(y);
-    pearson_correlation(&rx, &ry)
-}
-
-fn correlation_matrix(columns: &[Vec<f64>], spearman: bool) -> Vec<f64> {
-    let k = columns.len();
-    let mut out = vec![0.0; k * k];
-    let ranked: Vec<Vec<f64>> = if spearman {
-        columns.iter().map(|c| average_ranks(c)).collect()
-    } else {
-        Vec::new()
-    };
-    let slice_at = |idx: usize| -> &[f64] {
-        if spearman {
-            &ranked[idx]
-        } else {
-            &columns[idx]
-        }
-    };
-
-    // Precompute column means and inverse norms once so each pair is a single dot product.
-    let mut means = vec![0.0; k];
-    let mut inv_norms = vec![0.0; k];
-    for i in 0..k {
-        let col = slice_at(i);
-        let nf = col.len() as f64;
-        let m = col.iter().sum::<f64>() / nf;
-        means[i] = m;
-        let ss: f64 = col.iter().map(|&v| (v - m) * (v - m)).sum();
-        inv_norms[i] = if ss > 0.0 { 1.0 / ss.sqrt() } else { f64::NAN };
-    }
-
-    for i in 0..k {
-        out[i * k + i] = 1.0;
-        let ci = slice_at(i);
-        let mi = means[i];
-        let ni = inv_norms[i];
-        for j in (i + 1)..k {
-            let cj = slice_at(j);
-            let mj = means[j];
-            let nj = inv_norms[j];
-            let r = if ni.is_finite() && nj.is_finite() {
-                let mut sxy = 0.0;
-                for (&a, &b) in ci.iter().zip(cj.iter()) {
-                    sxy += (a - mi) * (b - mj);
-                }
-                (sxy * ni * nj).clamp(-1.0, 1.0)
-            } else {
-                f64::NAN
-            };
-            out[i * k + j] = r;
-            out[j * k + i] = r;
-        }
-    }
-    out
-}
-
 /// Solve `U * x = b` where `U` is upper-triangular (represented as `L^T` from
 /// lower-triangular `l` of size `dim × dim`).
 fn solve_upper_from_lower_transpose(l: &[f64], dim: usize, b: &[f64]) -> Vec<f64> {
@@ -284,51 +159,6 @@ fn solve_upper_from_lower_transpose(l: &[f64], dim: usize, b: &[f64]) -> Vec<f64
     x
 }
 
-pub(crate) fn validate_and_convert_correlation_matrix(
-    target_corr: &[f64],
-    k: usize,
-    corr_type: CorrelationType,
-) -> Result<Vec<f64>, ValidationError> {
-    if target_corr.len() != k * k {
-        return Err(ValidationError::ShapeMismatch);
-    }
-    let mut s = vec![0.0; k * k];
-    for i in 0..k {
-        for j in 0..k {
-            let v = target_corr[i * k + j];
-            if !v.is_finite() {
-                return Err(ValidationError::NotFinite);
-            }
-            if i == j {
-                if (v - 1.0).abs() > 1e-10 {
-                    return Err(ValidationError::InvalidParameter(
-                        "correlation matrix diagonal entries must equal 1.0",
-                    ));
-                }
-                s[i * k + j] = 1.0;
-            } else {
-                let sym = target_corr[j * k + i];
-                if (v - sym).abs() > 1e-10 {
-                    return Err(ValidationError::InvalidParameter(
-                        "correlation matrix must be symmetric",
-                    ));
-                }
-                if !(-1.0..=1.0).contains(&v) {
-                    return Err(ValidationError::InvalidParameter(
-                        "correlation matrix entries must lie in [-1, 1]",
-                    ));
-                }
-                s[i * k + j] = match corr_type {
-                    CorrelationType::LatentGaussian => v,
-                    CorrelationType::SpearmanTarget => 2.0 * (PI * v / 6.0).sin(),
-                    CorrelationType::KendallTarget => (PI * v / 2.0).sin(),
-                };
-            }
-        }
-    }
-    Ok(s)
-}
-
 // ===========================================================================
 // Iman–Conover (1982) / Mildenhall (2006) Batch Rank Permutation
 // ===========================================================================
@@ -342,36 +172,64 @@ pub(crate) fn validate_and_convert_correlation_matrix(
 ///   explicitly inverting triangular Cholesky factors (`F · A = C`).
 /// * Returns whole-scenario [`ImanConoverResult::permutations`] so callers can
 ///   move full multi-origin / multi-layer scenario structures coherently.
+/// * Rejects non-positive-definite targets (equivalent to
+///   [`iman_conover_with_repair`] with [`CorrelationRepair::Reject`]).
 pub fn iman_conover(
     columns: &[&[f64]],
     target_corr: &[f64],
     corr_type: CorrelationType,
     seed: u64,
-) -> Result<ImanConoverResult, ValidationError> {
+) -> Result<ImanConoverResult, ReservingError> {
+    iman_conover_with_repair(
+        columns,
+        target_corr,
+        corr_type,
+        seed,
+        CorrelationRepair::Reject,
+    )
+}
+
+/// [`iman_conover`] with an explicit [`CorrelationRepair`] policy for
+/// non-positive-definite latent targets. Under [`CorrelationRepair::Higham`]
+/// the repair magnitude is reported in
+/// [`ImanConoverResult::repair_frobenius_distance`].
+///
+/// Ties within each marginal column are broken with the seeded RNG (see
+/// [`crate::capital::correlation`] rank-matching tie policy) because the
+/// returned whole-scenario permutations expose which tied source row fills
+/// each slot.
+pub fn iman_conover_with_repair(
+    columns: &[&[f64]],
+    target_corr: &[f64],
+    corr_type: CorrelationType,
+    seed: u64,
+    repair: CorrelationRepair,
+) -> Result<ImanConoverResult, ReservingError> {
     let k = columns.len();
     if k < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Iman-Conover requires at least 2 variables",
         ));
     }
     let n = columns[0].len();
     if n <= k {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Iman-Conover requires more scenarios than variables (N > K)",
         ));
     }
     for col in columns {
         if col.len() != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if col.iter().any(|v| !v.is_finite()) {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
     }
 
-    let s = validate_and_convert_correlation_matrix(target_corr, k, corr_type)?;
+    let latent = validate_and_convert_correlation_matrix(target_corr, k, corr_type)?;
     // S = L_S * L_S^T => upper-triangular C = L_S^T satisfies S = C^T * C.
-    let l_s = cholesky_lower(&s, k)?;
+    let (s, l_s, repair_frobenius_distance): PreparedCorrelation =
+        prepare_latent_correlation(latent, k, repair)?;
 
     // Build centered, unit-variance van der Waerden normal scores.
     let mut base_scores: Vec<f64> = (0..n)
@@ -409,7 +267,7 @@ pub fn iman_conover(
             break;
         }
     }
-    let l_e = l_e_opt.ok_or(ValidationError::InvalidParameter(
+    let l_e = l_e_opt.ok_or(ReservingError::InvalidParameter(
         "failed to generate full-rank normal score matrix E",
     ))?;
 
@@ -429,8 +287,6 @@ pub fn iman_conover(
     let mut permutations = Vec::with_capacity(k);
     let mut reordered_columns = Vec::with_capacity(k);
     let mut t_col = vec![0.0; n];
-    let mut t_order: Vec<usize> = (0..n).collect();
-    let mut val_order: Vec<usize> = (0..n).collect();
 
     for col_j in 0..k {
         let a_col = &a_cols[col_j];
@@ -443,42 +299,7 @@ pub fn iman_conover(
                 }
             }
         }
-
-        for (idx, slot) in t_order.iter_mut().enumerate() {
-            *slot = idx;
-        }
-        t_order.sort_unstable_by(|&a, &b| t_col[a].total_cmp(&t_col[b]));
-
-        let col_vals = columns[col_j];
-        for (idx, slot) in val_order.iter_mut().enumerate() {
-            *slot = idx;
-        }
-        val_order.sort_unstable_by(|&a, &b| col_vals[a].total_cmp(&col_vals[b]));
-        // Randomly break ties within equal-value runs to avoid inheriting original row order.
-        let mut tie_start = 0usize;
-        while tie_start < n {
-            let v0 = col_vals[val_order[tie_start]];
-            let mut tie_end = tie_start + 1;
-            while tie_end < n && col_vals[val_order[tie_end]] == v0 {
-                tie_end += 1;
-            }
-            if tie_end - tie_start > 1 {
-                for m in (tie_start + 1..tie_end).rev() {
-                    let swap_idx = tie_start + rng.next_index(m - tie_start + 1);
-                    val_order.swap(m, swap_idx);
-                }
-            }
-            tie_start = tie_end;
-        }
-
-        let mut perm = vec![0usize; n];
-        let mut reordered = vec![0.0; n];
-        for rank_idx in 0..n {
-            let dst_row = t_order[rank_idx];
-            let src_row = val_order[rank_idx];
-            perm[dst_row] = src_row;
-            reordered[dst_row] = col_vals[src_row];
-        }
+        let (perm, reordered) = rank_match_reorder(columns[col_j], &t_col, Some(&mut rng));
         permutations.push(perm);
         reordered_columns.push(reordered);
     }
@@ -494,6 +315,7 @@ pub fn iman_conover(
         effective_latent_correlation: s,
         achieved_spearman,
         achieved_pearson,
+        repair_frobenius_distance,
     })
 }
 
@@ -513,21 +335,21 @@ pub fn synchronized_odp_bootstrap(
     triangles: &[TriangleView<'_>],
     tails: &[f64],
     options: OdpBootstrapOptions,
-) -> Result<SynchronizedBootstrapResult, ValidationError> {
+) -> Result<SynchronizedBootstrapResult, ReservingError> {
     let k = triangles.len();
     if k < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "synchronized ODP bootstrap requires at least 2 triangles",
         ));
     }
     if tails.len() != k || options.iterations == 0 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     let n0 = triangles[0].n_origins;
     for t in triangles {
         if t.n_origins != n0 || t.n_devs != n0 {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
     }
 
@@ -550,7 +372,7 @@ pub fn synchronized_odp_bootstrap(
         };
         if let Some(ref expected) = coord_signature {
             if &coords != expected {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "synchronized bootstrap requires identical eligible residual coordinates across lines",
                 ));
             }
@@ -625,7 +447,7 @@ pub fn synchronized_odp_bootstrap(
     }
 
     if aggregate_totals.is_empty() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let mut summary_buf = Vec::with_capacity(aggregate_totals.len());
@@ -737,7 +559,7 @@ mod tests {
         ];
         assert!(matches!(
             iman_conover(&[&a, &b, &c], &bad, CorrelationType::LatentGaussian, 1),
-            Err(ValidationError::InvalidParameter(_))
+            Err(ReservingError::InvalidParameter(_))
         ));
     }
 

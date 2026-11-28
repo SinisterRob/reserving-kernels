@@ -1,9 +1,11 @@
 //! Reserve roll-forward kernels.
 
-use crate::validate::{ValidationError, validate_nonnegative_finite_vector};
+use crate::error::ReservingError;
+use crate::validate::validate_nonnegative_finite_vector;
 
 /// Basic reserve movement decomposition.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ReserveRollForward {
     /// Prior ultimate indication.
     pub old_ultimate: f64,
@@ -25,12 +27,12 @@ pub struct ReserveRollForward {
     pub change_in_reserve: f64,
 }
 
-fn validate_scalar(value: f64) -> Result<(), ValidationError> {
+fn validate_scalar(value: f64) -> Result<(), ReservingError> {
     if !value.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if value < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     Ok(())
 }
@@ -66,7 +68,7 @@ pub fn rollforward(
     new_ultimate: f64,
     old_latest: f64,
     new_latest: f64,
-) -> Result<ReserveRollForward, ValidationError> {
+) -> Result<ReserveRollForward, ReservingError> {
     validate_scalar(old_ultimate)?;
     validate_scalar(new_ultimate)?;
     validate_scalar(old_latest)?;
@@ -85,7 +87,7 @@ pub fn rollforward_by_origin(
     new_ultimate: &[f64],
     old_latest: &[f64],
     new_latest: &[f64],
-) -> Result<Vec<ReserveRollForward>, ValidationError> {
+) -> Result<Vec<ReserveRollForward>, ReservingError> {
     let n = old_ultimate.len();
     validate_nonnegative_finite_vector(old_ultimate, n)?;
     validate_nonnegative_finite_vector(new_ultimate, n)?;
@@ -107,7 +109,7 @@ pub fn rollforward_by_origin(
 /// Aggregate many origin-level roll-forwards into one total movement row.
 pub fn aggregate_rollforward(
     rows: &[ReserveRollForward],
-) -> Result<ReserveRollForward, ValidationError> {
+) -> Result<ReserveRollForward, ReservingError> {
     let mut old_ultimate = 0.0;
     let mut new_ultimate = 0.0;
     let mut old_latest = 0.0;
@@ -128,7 +130,7 @@ pub fn aggregate_rollforward(
         || !old_latest.is_finite()
         || !new_latest.is_finite()
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(build_one(
@@ -181,7 +183,7 @@ mod tests {
     fn rollforward_rejects_shape_mismatch() {
         assert_eq!(
             rollforward_by_origin(&[1.0, 2.0], &[1.0], &[1.0, 2.0], &[1.0, 2.0]),
-            Err(ValidationError::ShapeMismatch)
+            Err(ReservingError::ShapeMismatch)
         );
     }
 }

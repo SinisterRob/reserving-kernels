@@ -1,5 +1,6 @@
 //! Deterministic loss development, point estimators, and operational reserving adjustments.
 
+pub(crate) mod averaging;
 pub mod benktander;
 pub mod berquist_sherman;
 pub mod bf;

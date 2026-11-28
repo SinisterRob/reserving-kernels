@@ -33,11 +33,11 @@
 //! * When $N = 1$ or all cross-covariances are zero, the aggregate MSEP
 //!   reduces identically to [`crate::stochastic::mack`].
 
+use crate::error::ReservingError;
 use crate::stochastic::mack::{self, Mack};
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_monotone_cumulative, validate_tail,
-    validate_triangle,
+    MonotonicityPolicy, validate_monotone_cumulative, validate_tail, validate_triangle,
 };
 
 /// Result of Braun (2004) / Merz & Wüthrich (2008) multivariate chain-ladder MSEP.
@@ -99,7 +99,7 @@ impl std::fmt::Display for MultivariateMackResult {
 pub fn analyze(
     triangles: &[TriangleView<'_>],
     tail: f64,
-) -> Result<MultivariateMackResult, ValidationError> {
+) -> Result<MultivariateMackResult, ReservingError> {
     analyze_with_policy(triangles, tail, MonotonicityPolicy::Strict)
 }
 
@@ -109,9 +109,9 @@ pub fn analyze_with_policy(
     triangles: &[TriangleView<'_>],
     tail: f64,
     policy: MonotonicityPolicy,
-) -> Result<MultivariateMackResult, ValidationError> {
+) -> Result<MultivariateMackResult, ReservingError> {
     if triangles.is_empty() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "at least one triangle is required",
         ));
     }
@@ -121,7 +121,7 @@ pub fn analyze_with_policy(
     for t in triangles {
         validate_triangle(t)?;
         if t.n_origins != n || t.n_devs != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if matches!(policy, MonotonicityPolicy::Strict) {
             validate_monotone_cumulative(t)?;

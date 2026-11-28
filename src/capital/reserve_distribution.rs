@@ -18,7 +18,8 @@
 //!   Transform, and Winkler interval score for evaluating forecast draws
 //!   against realized outcomes.
 
-use crate::validate::{ValidationError, validate_finite_slice};
+use crate::error::ReservingError;
+use crate::validate::validate_finite_slice;
 
 /// Summary statistics for a reserve sample distribution.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -41,19 +42,19 @@ pub struct ReserveDistributionSummary {
     pub p99: f64,
 }
 
-fn validate_prob(p: f64) -> Result<(), ValidationError> {
+fn validate_prob(p: f64) -> Result<(), ReservingError> {
     if !p.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if !(0.0..=1.0).contains(&p) {
-        return Err(ValidationError::InvalidProbability { value: p });
+        return Err(ReservingError::InvalidProbability { value: p });
     }
     Ok(())
 }
 
-fn sorted(values: &[f64]) -> Result<Vec<f64>, ValidationError> {
+fn sorted(values: &[f64]) -> Result<Vec<f64>, ReservingError> {
     if values.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_finite_slice(values)?;
     let mut out = values.to_vec();
@@ -89,16 +90,16 @@ fn select_quantile_in_place(buf: &mut [f64], p: f64) -> f64 {
 }
 
 /// Arithmetic mean of a reserve sample (`O(n)` without sorting).
-pub fn mean(values: &[f64]) -> Result<f64, ValidationError> {
+pub fn mean(values: &[f64]) -> Result<f64, ReservingError> {
     if values.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_finite_slice(values)?;
     Ok(values.iter().sum::<f64>() / values.len() as f64)
 }
 
 /// Sample variance of a reserve sample.
-pub fn variance(values: &[f64]) -> Result<f64, ValidationError> {
+pub fn variance(values: &[f64]) -> Result<f64, ReservingError> {
     let avg = mean(values)?;
     if values.len() <= 1 {
         return Ok(0.0);
@@ -111,15 +112,15 @@ pub fn variance(values: &[f64]) -> Result<f64, ValidationError> {
 }
 
 /// Sample standard deviation of a reserve sample.
-pub fn std_dev(values: &[f64]) -> Result<f64, ValidationError> {
+pub fn std_dev(values: &[f64]) -> Result<f64, ReservingError> {
     Ok(variance(values)?.sqrt())
 }
 
 /// Empirical quantile with upper-rank selection (`ceil(p * N) - 1`) in `O(n)`.
-pub fn quantile(values: &[f64], p: f64) -> Result<f64, ValidationError> {
+pub fn quantile(values: &[f64], p: f64) -> Result<f64, ReservingError> {
     validate_prob(p)?;
     if values.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_finite_slice(values)?;
     let mut buf = values.to_vec();
@@ -129,7 +130,7 @@ pub fn quantile(values: &[f64], p: f64) -> Result<f64, ValidationError> {
 /// Discrete least-quantile Value at Risk `VaR_p(X) = F^-(p) = inf { x : F(x) >= p }`
 /// (CAS Monograph No. 15, Algorithm 3.4.2): returns `ordered[ceil(p * N) - 1]`
 /// with IEEE-754 near-integer boundary snapping in `O(n)`.
-pub fn var_least(values: &[f64], p: f64) -> Result<f64, ValidationError> {
+pub fn var_least(values: &[f64], p: f64) -> Result<f64, ReservingError> {
     quantile(values, p)
 }
 
@@ -138,7 +139,7 @@ pub fn var_least(values: &[f64], p: f64) -> Result<f64, ValidationError> {
 /// Note: on discrete distributions with ties or non-integer `(1 - p) * N`,
 /// this TCE convention can differ from the exact subadditive integral TVaR.
 /// Use [`tvar_coherent`] for the CAS Monograph No. 15 coherent TVaR.
-pub fn tvar(values: &[f64], p: f64) -> Result<f64, ValidationError> {
+pub fn tvar(values: &[f64], p: f64) -> Result<f64, ReservingError> {
     let threshold = quantile(values, p)?;
     let mut sum = 0.0;
     let mut count = 0usize;
@@ -159,10 +160,10 @@ pub fn tvar(values: &[f64], p: f64) -> Result<f64, ValidationError> {
 ///
 /// Guaranteed subadditive on all finite discrete distributions, including
 /// distributions with ties or non-integer tail counts `N · (1 - p)`.
-pub fn tvar_coherent(values: &[f64], p: f64) -> Result<f64, ValidationError> {
+pub fn tvar_coherent(values: &[f64], p: f64) -> Result<f64, ReservingError> {
     validate_prob(p)?;
     if values.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_finite_slice(values)?;
     let n_len = values.len();
@@ -189,17 +190,17 @@ pub fn tvar_coherent(values: &[f64], p: f64) -> Result<f64, ValidationError> {
 /// Range Value at Risk `RVaR_{p_low, p_high}(X)` (Cont et al. 2010; CAS
 /// Monograph No. 15, §3.3): exact average of the quantile function `F^-(s)`
 /// between `p_low` and `p_high` (`0 <= p_low < p_high <= 1`).
-pub fn rvar(values: &[f64], p_low: f64, p_high: f64) -> Result<f64, ValidationError> {
+pub fn rvar(values: &[f64], p_low: f64, p_high: f64) -> Result<f64, ReservingError> {
     validate_prob(p_low)?;
     validate_prob(p_high)?;
     if !(p_low < p_high) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "rvar requires p_low < p_high",
         ));
     }
     validate_finite_slice(values)?;
     if values.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let n_len = values.len();
     let n = n_len as f64;
@@ -236,13 +237,13 @@ pub fn rvar(values: &[f64], p_low: f64, p_high: f64) -> Result<f64, ValidationEr
 }
 
 /// Empirical probability that reserve exceeds `threshold`.
-pub fn probability_exceeding(values: &[f64], threshold: f64) -> Result<f64, ValidationError> {
+pub fn probability_exceeding(values: &[f64], threshold: f64) -> Result<f64, ReservingError> {
     if !threshold.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     validate_finite_slice(values)?;
     if values.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let count = values.iter().filter(|value| **value > threshold).count();
     Ok(count as f64 / values.len() as f64)
@@ -250,7 +251,7 @@ pub fn probability_exceeding(values: &[f64], threshold: f64) -> Result<f64, Vali
 
 /// Build a standard reserve-distribution summary bundle in `O(n)` via cascading
 /// partial selection (no full `O(n log n)` sort required).
-pub fn summarize(values: &[f64]) -> Result<ReserveDistributionSummary, ValidationError> {
+pub fn summarize(values: &[f64]) -> Result<ReserveDistributionSummary, ReservingError> {
     let mut scratch = Vec::with_capacity(values.len());
     summarize_with_scratch(values, &mut scratch, false)
 }
@@ -263,9 +264,9 @@ pub(crate) fn summarize_with_scratch(
     values: &[f64],
     buf: &mut Vec<f64>,
     already_finite: bool,
-) -> Result<ReserveDistributionSummary, ValidationError> {
+) -> Result<ReserveDistributionSummary, ReservingError> {
     if values.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let len = values.len();
     let first = values[0];
@@ -322,7 +323,7 @@ pub(crate) fn summarize_with_scratch(
     }
     let total_sum = ((s0 + c0) + (s1 + c1)) + ((s2 + c2) + (s3 + c3));
     if !already_finite && !total_sum.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let n = len as f64;
@@ -421,9 +422,9 @@ pub(crate) fn summarize_with_scratch(
 /// Computed in `O(N log N)` via the sorted order-statistic identity
 /// `sum_{i,j} |x_i - x_j| = 2 sum_{k=0}^{N-1} (2k - N + 1) x_{(k)}`.
 /// Lower is better; reduces to `|x - y|` for a degenerate point forecast.
-pub fn crps_empirical(draws: &[f64], observed: f64) -> Result<f64, ValidationError> {
+pub fn crps_empirical(draws: &[f64], observed: f64) -> Result<f64, ReservingError> {
     if !observed.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     let xs = sorted(draws)?;
     let n = xs.len() as f64;
@@ -440,12 +441,12 @@ pub fn crps_empirical(draws: &[f64], observed: f64) -> Result<f64, ValidationErr
 
 /// Empirical Probability Integral Transform `F_hat(observed) = (1 / N) #{x_i <= observed}`
 /// in `[0, 1]` for evaluating predictive calibration of `draws` against `observed`.
-pub fn pit_empirical(draws: &[f64], observed: f64) -> Result<f64, ValidationError> {
+pub fn pit_empirical(draws: &[f64], observed: f64) -> Result<f64, ReservingError> {
     if !observed.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if draws.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_finite_slice(draws)?;
     let count = draws.iter().filter(|&&x| x <= observed).count();
@@ -460,16 +461,16 @@ pub fn pit_empirical(draws: &[f64], observed: f64) -> Result<f64, ValidationErro
 /// ```
 ///
 /// Requires `0 < alpha < 1`. Lower is better.
-pub fn interval_score(draws: &[f64], observed: f64, alpha: f64) -> Result<f64, ValidationError> {
+pub fn interval_score(draws: &[f64], observed: f64, alpha: f64) -> Result<f64, ReservingError> {
     if !observed.is_finite() || !alpha.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if alpha <= 0.0 || alpha >= 1.0 {
-        return Err(ValidationError::InvalidProbability { value: alpha });
+        return Err(ReservingError::InvalidProbability { value: alpha });
     }
     validate_finite_slice(draws)?;
     if draws.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let n = draws.len();
     let idx_lo = quantile_rank_index(n, 0.5 * alpha);
@@ -552,7 +553,7 @@ mod tests {
         let values = [1.0, 2.0, 3.0];
         assert_eq!(
             quantile(&values, 1.1),
-            Err(ValidationError::InvalidProbability { value: 1.1 })
+            Err(ReservingError::InvalidProbability { value: 1.1 })
         );
     }
 
@@ -590,7 +591,7 @@ mod tests {
         ));
         assert_eq!(
             interval_score(&draws, 11.0, 0.0),
-            Err(ValidationError::InvalidProbability { value: 0.0 })
+            Err(ReservingError::InvalidProbability { value: 0.0 })
         );
     }
 }

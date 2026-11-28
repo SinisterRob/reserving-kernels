@@ -1,12 +1,13 @@
 //! Mack variance decomposition diagnostics.
 
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::stochastic::mack::{self, Mack};
 use crate::types::TriangleView;
-use crate::validate::ValidationError;
 
 /// Per-origin Mack reserve variance decomposition.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct MackOriginVariance {
     /// Origin row index.
     pub origin: usize,
@@ -24,6 +25,7 @@ pub struct MackOriginVariance {
 
 /// Full Mack diagnostic bundle.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct MackDiagnostics {
     /// Mack sigma-squared by development age.
     pub sigma_by_age: Vec<f64>,
@@ -119,12 +121,12 @@ fn decompose_origin_variance(t: &TriangleView<'_>, mack: &Mack) -> Vec<MackOrigi
 }
 
 /// Mack sigma-squared by development age.
-pub fn mack_sigma_by_age(t: &TriangleView<'_>, tail: f64) -> Result<Vec<f64>, ValidationError> {
+pub fn mack_sigma_by_age(t: &TriangleView<'_>, tail: f64) -> Result<Vec<f64>, ReservingError> {
     Ok(mack::analyze(t, tail)?.sigma_sq)
 }
 
 /// Per-origin Mack process variance.
-pub fn mack_process_variance(t: &TriangleView<'_>, tail: f64) -> Result<Vec<f64>, ValidationError> {
+pub fn mack_process_variance(t: &TriangleView<'_>, tail: f64) -> Result<Vec<f64>, ReservingError> {
     let diagnostics = diagnose(t, tail)?;
     Ok(diagnostics
         .origin_variance
@@ -137,7 +139,7 @@ pub fn mack_process_variance(t: &TriangleView<'_>, tail: f64) -> Result<Vec<f64>
 pub fn mack_parameter_variance(
     t: &TriangleView<'_>,
     tail: f64,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     let diagnostics = diagnose(t, tail)?;
     Ok(diagnostics
         .origin_variance
@@ -147,7 +149,7 @@ pub fn mack_parameter_variance(
 }
 
 /// Per-origin Mack total variance.
-pub fn mack_total_variance(t: &TriangleView<'_>, tail: f64) -> Result<Vec<f64>, ValidationError> {
+pub fn mack_total_variance(t: &TriangleView<'_>, tail: f64) -> Result<Vec<f64>, ReservingError> {
     let diagnostics = diagnose(t, tail)?;
     Ok(diagnostics
         .origin_variance
@@ -157,12 +159,12 @@ pub fn mack_total_variance(t: &TriangleView<'_>, tail: f64) -> Result<Vec<f64>, 
 }
 
 /// Per-origin Mack reserve coefficient of variation.
-pub fn mack_reserve_cv(t: &TriangleView<'_>, tail: f64) -> Result<Vec<f64>, ValidationError> {
+pub fn mack_reserve_cv(t: &TriangleView<'_>, tail: f64) -> Result<Vec<f64>, ReservingError> {
     Ok(mack::analyze(t, tail)?.cv)
 }
 
 /// Full Mack variance decomposition diagnostics.
-pub fn diagnose(t: &TriangleView<'_>, tail: f64) -> Result<MackDiagnostics, ValidationError> {
+pub fn diagnose(t: &TriangleView<'_>, tail: f64) -> Result<MackDiagnostics, ReservingError> {
     let result = mack::analyze(t, tail)?;
     let origin_variance = decompose_origin_variance(t, &result);
     let total_process_variance = origin_variance.iter().map(|row| row.process_variance).sum();

@@ -11,10 +11,10 @@
 //! ```
 
 use reserving_kernels::{
-    deterministic::bf, deterministic::brosius, deterministic::cape_cod,
+    ReservingError, deterministic::bf, deterministic::brosius, deterministic::cape_cod,
     deterministic::cape_cod::CapeCodEngine, deterministic::chain_ladder, deterministic::ldf,
     deterministic::ldf::DevelopmentFactorEngine, preprocessing::triangle, stochastic::mack,
-    types::Triangle, validate::ValidationError,
+    types::Triangle,
 };
 
 const NAN: f64 = f64::NAN;
@@ -27,7 +27,7 @@ fn test_triangle() -> Triangle {
         1500.0, 2100.0,    NAN,    NAN,
         1800.0,    NAN,    NAN,    NAN,
     ];
-    Triangle::new(4, 4, data)
+    Triangle::try_new(4, 4, data).expect("valid triangle")
 }
 
 fn close(a: f64, b: f64, eps: f64) -> bool {
@@ -235,7 +235,7 @@ fn cape_cod_engine_rejects_zero_premium() {
 
     assert_eq!(
         CapeCodEngine::project(&t.view(), &factors, &premium),
-        Err(ValidationError::NonPositive("premium"))
+        Err(ReservingError::NonPositive("premium"))
     );
 }
 
@@ -292,12 +292,13 @@ fn mack_standard_errors_are_non_negative_and_finite() {
 #[test]
 fn mack_checked_rejects_non_cumulative_triangle_under_strict_policy() {
     #[rustfmt::skip]
-    let t = Triangle::new(4, 4, vec![
+    let t = Triangle::try_new(4, 4, vec![
         1000.0, 1500.0, 1700.0, 1800.0,
         1200.0, 1100.0, 2000.0,    NAN,
         1500.0, 2100.0,    NAN,    NAN,
         1800.0,    NAN,    NAN,    NAN,
-    ]);
+    ])
+.expect("valid triangle");
 
     let result = mack::analyze_with_policy(
         &t.view(),
@@ -306,7 +307,7 @@ fn mack_checked_rejects_non_cumulative_triangle_under_strict_policy() {
     );
     assert!(matches!(
         result,
-        Err(ValidationError::NonMonotoneCumulative {
+        Err(ReservingError::NonMonotoneCumulative {
             origin: 1,
             dev: 1,
             previous: 1200.0,
@@ -334,7 +335,7 @@ fn mack_and_mw_accept_raa_by_default_and_reject_2x2() {
     let tiny = Triangle::try_from_upper_rows(&[&[100.0, 150.0], &[120.0]]).expect("2x2");
     assert!(matches!(
         tiny.mack(1.0),
-        Err(ValidationError::InvalidParameter(_))
+        Err(ReservingError::InvalidParameter(_))
     ));
     let unchecked = mack::analyze_unchecked(&tiny.view(), 1.0);
     assert!(unchecked.sigma_sq[0].is_nan());
@@ -348,7 +349,7 @@ fn panjer_rejects_defective_pmf_and_bootstrap_rejects_zero_iterations() {
     let freq = FrequencyDistribution::Poisson { lambda: 3.0 };
     assert!(matches!(
         panjer_recursion(freq, &[0.0, 0.5, 0.3], 100.0, 64),
-        Err(ValidationError::InvalidParameter(_))
+        Err(ReservingError::InvalidParameter(_))
     ));
 
     let t = test_triangle();
@@ -358,7 +359,7 @@ fn panjer_rejects_defective_pmf_and_bootstrap_rejects_zero_iterations() {
     };
     assert_eq!(
         bootstrap_odp(&t.view(), 1.0, opts),
-        Err(ValidationError::InvalidIterations)
+        Err(ReservingError::InvalidIterations)
     );
 }
 
@@ -386,7 +387,7 @@ fn larger_triangle_chain_ladder_consistency() {
         200.0, 350.0,   NAN,   NAN,   NAN,   NAN,
         220.0,   NAN,   NAN,   NAN,   NAN,   NAN,
     ];
-    let t = Triangle::new(6, 6, data);
+    let t = Triangle::try_new(6, 6, data).expect("valid triangle");
     let f = ldf::volume_weighted(&t.view());
     let cl = chain_ladder::project_unchecked(&t.view(), &f, 1.0);
     let latest = triangle::latest_diagonal(&t.view());
@@ -550,15 +551,15 @@ fn regression_severity_overflow_cancellation_and_excess_layers() {
 
 #[test]
 fn regression_mack_zero_cell_and_mack_bf_unbiased_process_variance() {
+    use reserving_kernels::ReservingError;
     use reserving_kernels::stochastic::mack_bf::{self, BfPayoutEstimator, MackBfOptions};
-    use reserving_kernels::validate::ValidationError;
 
     // Mack must return DivideByZero when c_k == 0 && c_{k+1} > 0 instead of masking NaN SE to 0.
     let zero_tri = Triangle::try_from_upper_rows(&[&[0.0, 50.0, 100.0], &[100.0, 150.0], &[120.0]])
         .expect("tri");
     assert!(matches!(
         zero_tri.mack(1.0),
-        Err(ValidationError::DivideByZero(_))
+        Err(ReservingError::DivideByZero(_))
     ));
 
     // Noiseless proportional triangle with 1.2x biased prior must still yield s_sq == 0.0.
@@ -586,6 +587,7 @@ fn regression_mack_zero_cell_and_mack_bf_unbiased_process_variance() {
 
 #[test]
 fn regression_ldf_tail_onlevel_dependence_and_diagnostics() {
+    use reserving_kernels::ReservingError;
     use reserving_kernels::capital::aggregate_loss::{FrequencyDistribution, panjer_recursion};
     use reserving_kernels::capital::dependence::spearman_correlation;
     use reserving_kernels::deterministic::ldf::{DevelopmentFactorEngine, ex_hi_lo};
@@ -593,7 +595,6 @@ fn regression_ldf_tail_onlevel_dependence_and_diagnostics() {
     use reserving_kernels::diagnostics::{calendar_effect, triangle_diagnostics};
     use reserving_kernels::preprocessing::onlevel::parallelogram_onlevel_factor;
     use reserving_kernels::types::TriangleView;
-    use reserving_kernels::validate::ValidationError;
 
     // Malformed view must return ShapeMismatch, not panic OOB.
     let bad = TriangleView {
@@ -603,7 +604,7 @@ fn regression_ldf_tail_onlevel_dependence_and_diagnostics() {
     };
     assert_eq!(
         DevelopmentFactorEngine::simple_average(&bad, 1.0),
-        Err(ValidationError::ShapeMismatch)
+        Err(ReservingError::ShapeMismatch)
     );
 
     // ex_hi_lo must neutralize an extreme 1e16 outlier without catastrophic cancellation.
@@ -646,9 +647,14 @@ fn regression_ldf_tail_onlevel_dependence_and_diagnostics() {
     let cal = calendar_effect::diagnose(&empty, &[]);
     assert!(cal.strongest_calendar.is_none());
 
-    let rect = Triangle::new(3, 5, vec![100.0; 15]);
+    let rect_data = vec![100.0; 15];
+    let rect = TriangleView {
+        n_origins: 3,
+        n_devs: 5,
+        data: &rect_data,
+    };
     assert_eq!(
-        triangle_diagnostics::negative_increment_flags(&rect.view()),
+        triangle_diagnostics::negative_increment_flags(&rect),
         Vec::new()
     );
 }

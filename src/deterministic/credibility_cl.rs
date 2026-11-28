@@ -28,12 +28,12 @@
 //! * $\tau_k^2 \to 0$ ($\alpha_k \to 0$): reduces to the known external prior
 //!   $f_k^{(0)}$ with zero parameter estimation error (pure process variance).
 
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::stochastic::mack;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_monotone_cumulative, validate_tail,
-    validate_triangle,
+    MonotonicityPolicy, validate_monotone_cumulative, validate_tail, validate_triangle,
 };
 
 /// Prior specification for Gisler & Wüthrich (2008) credibility chain ladder.
@@ -67,6 +67,7 @@ pub struct CollectiveCredibilityParams {
 
 /// Full Gisler & Wüthrich (2008) credibility chain-ladder result.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct CredibilityClResult {
     /// Empirical volume-weighted LDFs $\hat{f}_k^{\text{CL}}$, length $n - 1$.
     pub empirical_ldf: Vec<f64>,
@@ -117,7 +118,7 @@ impl std::fmt::Display for CredibilityClResult {
 pub fn analyze(
     t: &TriangleView<'_>,
     prior: &CredibilityClPrior,
-) -> Result<CredibilityClResult, ValidationError> {
+) -> Result<CredibilityClResult, ReservingError> {
     validate_triangle(t)?;
     validate_tail(prior.tail)?;
     if matches!(prior.policy, MonotonicityPolicy::Strict) {
@@ -127,18 +128,18 @@ pub fn analyze(
     let n = t.n_origins;
     let n_links = n.saturating_sub(1);
     if prior.prior_ldf.len() != n_links || prior.tau_sq.len() != n_links {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for &f0 in &prior.prior_ldf {
         if !f0.is_finite() || f0 <= 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "prior_ldf entries must be finite and positive",
             ));
         }
     }
     for &t2 in &prior.tau_sq {
         if t2.is_nan() || t2 < 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "tau_sq entries must be non-negative (or +inf)",
             ));
         }
@@ -147,11 +148,11 @@ pub fn analyze(
     let base_mack = mack::analyze_with_policy(t, prior.tail, prior.policy)?;
     let sigma_sq = if let Some(ref ov) = prior.sigma_sq_override {
         if ov.len() != n_links {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         for &s2 in ov {
             if !s2.is_finite() || s2 < 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "sigma_sq_override entries must be finite and non-negative",
                 ));
             }
@@ -300,9 +301,9 @@ pub fn analyze(
 pub fn estimate_collective_parameters(
     triangles: &[TriangleView<'_>],
     policy: MonotonicityPolicy,
-) -> Result<CollectiveCredibilityParams, ValidationError> {
+) -> Result<CollectiveCredibilityParams, ReservingError> {
     if triangles.len() < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "at least 2 triangles are required to estimate collective credibility parameters",
         ));
     }
@@ -310,7 +311,7 @@ pub fn estimate_collective_parameters(
     for t in triangles {
         validate_triangle(t)?;
         if t.n_origins != n || t.n_devs != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if matches!(policy, MonotonicityPolicy::Strict) {
             validate_monotone_cumulative(t)?;
@@ -340,7 +341,7 @@ pub fn estimate_collective_parameters(
         }
         let total_vol: f64 = vols.iter().sum();
         if total_vol <= 0.0 {
-            return Err(ValidationError::DivideByZero("collective volume"));
+            return Err(ReservingError::DivideByZero("collective volume"));
         }
 
         // Volume-weighted collective LDF f_k^{(0)}.

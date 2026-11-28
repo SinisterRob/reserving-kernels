@@ -15,13 +15,16 @@
 //!   interpolation designed to eliminate sawtooth oscillations in expected IBNR runoff.
 //! * [`interp_spliced_weibull`] — Robbin (2018) piecewise Weibull curve spliced
 //!   across annual knots.
-//! * [`interp_ivf12`] — Robbin (2018) Interpolated Volume Factor (12-month basis)
-//!   method preserving exact 12-month factor parity with smooth emergence.
+//! * [`interp_ivf12`] — Robbin (2018)-style Interpolated Volume Factor
+//!   (12-month basis): monotone-cubic interpolation of the log 12-month factor
+//!   function in age, chained to reconstruct a `C¹` CDF that preserves knots.
 
-use crate::validate::{ValidationError, validate_positive_finite_slice};
+use crate::error::ReservingError;
+use crate::validate::validate_positive_finite_slice;
 
 /// Sub-annual CDF/LDF interpolation method selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum SubannualInterpMethod {
     /// Piecewise-linear interpolation of CDFs.
     LinearCdf,
@@ -35,12 +38,14 @@ pub enum SubannualInterpMethod {
     Swimon,
     /// Robbin (2018) piecewise Weibull spliced across annual knots.
     SplicedWeibull,
-    /// Robbin (2018) Interpolated Volume Factor (12-month basis).
+    /// Robbin (2018)-style Interpolated Volume Factor (12-month basis): PCHIP
+    /// interpolation of the log 12-month factor, chained to a `C¹` CDF.
     Ivf12,
 }
 
 /// Interpolated sub-annual development pattern evaluated at `target_ages`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct InterpolatedPattern {
     /// Interpolation method used.
     pub method: SubannualInterpMethod,
@@ -57,6 +62,7 @@ pub struct InterpolatedPattern {
 /// Result of Sherman (1984) inverse-power sub-annual interpolation, including
 /// the fitted curve parameters `f(t) - 1 = a · t^{-b}`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct InversePowerInterpResult {
     /// Evaluated sub-annual pattern (`cdfs`, `pct_reported`, `ldfs`).
     pub pattern: InterpolatedPattern,
@@ -74,7 +80,7 @@ pub fn interpolate_pattern(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     match method {
         SubannualInterpMethod::LinearCdf => {
             interp_linear_cdf(anchor_ages, anchor_cdfs, target_ages)
@@ -100,16 +106,16 @@ fn validate_anchors_and_targets(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if anchor_ages.len() < 2 || anchor_ages.len() != anchor_cdfs.len() || target_ages.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(anchor_ages, "anchor_ages")?;
     validate_positive_finite_slice(anchor_cdfs, "anchor_cdfs")?;
     validate_positive_finite_slice(target_ages, "target_ages")?;
     for k in 1..anchor_ages.len() {
         if anchor_ages[k] <= anchor_ages[k - 1] {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "anchor_ages must be strictly increasing",
             ));
         }
@@ -165,7 +171,7 @@ pub fn interp_linear_cdf(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_min = anchor_ages[0];
     let t_max = anchor_ages[anchor_ages.len() - 1];
@@ -174,7 +180,7 @@ pub fn interp_linear_cdf(
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t < t_min - tol || t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age outside [anchor_ages[0], anchor_ages[last]] for linear CDF interpolation",
             ));
         }
@@ -183,7 +189,7 @@ pub fn interp_linear_cdf(
         let w = (tc - anchor_ages[k]) / (anchor_ages[k + 1] - anchor_ages[k]);
         let cdf = (1.0 - w) * anchor_cdfs[k] + w * anchor_cdfs[k + 1];
         if !cdf.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         cdfs.push(cdf);
     }
@@ -207,7 +213,7 @@ pub fn interp_linear_pct_reported(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_max = anchor_ages[anchor_ages.len() - 1];
     let tol = 1e-9 * t_max;
@@ -215,7 +221,7 @@ pub fn interp_linear_pct_reported(
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age exceeds maximum anchor age",
             ));
         }
@@ -230,7 +236,7 @@ pub fn interp_linear_pct_reported(
             (1.0 - w) * p0 + w * p1
         };
         if !(p > 0.0) || !p.is_finite() {
-            return Err(ValidationError::DivideByZero("percent reported"));
+            return Err(ReservingError::DivideByZero("percent reported"));
         }
         cdfs.push(1.0 / p);
     }
@@ -254,7 +260,7 @@ pub fn interp_exponential(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_min = anchor_ages[0];
     let t_max = anchor_ages[anchor_ages.len() - 1];
@@ -263,7 +269,7 @@ pub fn interp_exponential(
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t < t_min - tol || t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age outside [anchor_ages[0], anchor_ages[last]] for exponential interpolation",
             ));
         }
@@ -335,7 +341,7 @@ pub fn interp_inverse_power(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InversePowerInterpResult, ValidationError> {
+) -> Result<InversePowerInterpResult, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
 
     // Collect (ln t_k, ln(f_k - 1)) for annual links where f_k = CDF_k / CDF_{k+1} > 1.
@@ -349,7 +355,7 @@ pub fn interp_inverse_power(
         }
     }
     if xs.len() < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "interp_inverse_power requires at least two anchor links with LDF > 1.0",
         ));
     }
@@ -368,7 +374,7 @@ pub fn interp_inverse_power(
         syy += dy * dy;
     }
     if sxx <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "degenerate anchor ages in inverse power fit",
         ));
     }
@@ -377,7 +383,7 @@ pub fn interp_inverse_power(
     let b = -slope;
     let a = intercept.exp();
     if !(a > 0.0) || !a.is_finite() || !(b > 0.0) || !b.is_finite() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "inverse power fit requires decaying development factors (b > 0)",
         ));
     }
@@ -413,7 +419,7 @@ pub fn interp_inverse_power(
             ((1.0 - w) * anchor_cdfs[k].ln() + w * anchor_cdfs[k + 1].ln()).exp()
         };
         if !cdf.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         cdfs.push(cdf);
     }
@@ -463,7 +469,7 @@ pub fn interp_swimon(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_max = anchor_ages[anchor_ages.len() - 1];
     let tol = 1e-9 * t_max;
@@ -579,7 +585,7 @@ pub fn interp_swimon(
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age exceeds maximum anchor age for SWIMON interpolation",
             ));
         }
@@ -587,7 +593,7 @@ pub fn interp_swimon(
         let k = find_bracket(&xs, tc);
         let p = eval_cubic_hermite(xs[k], xs[k + 1], ys[k], ys[k + 1], m[k], m[k + 1], tc);
         if !(p > 0.0) || !p.is_finite() {
-            return Err(ValidationError::DivideByZero("SWIMON percent reported"));
+            return Err(ReservingError::DivideByZero("SWIMON percent reported"));
         }
         cdfs.push(1.0 / p);
     }
@@ -616,7 +622,7 @@ pub fn interp_spliced_weibull(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_max = anchor_ages[anchor_ages.len() - 1];
     let tol = 1e-9 * t_max;
@@ -645,7 +651,7 @@ pub fn interp_spliced_weibull(
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age exceeds maximum anchor age for spliced Weibull interpolation",
             ));
         }
@@ -669,7 +675,7 @@ pub fn interp_spliced_weibull(
             }
         };
         if !(p > 0.0) || !p.is_finite() {
-            return Err(ValidationError::DivideByZero("Weibull percent reported"));
+            return Err(ReservingError::DivideByZero("Weibull percent reported"));
         }
         cdfs.push(1.0 / p);
     }
@@ -685,29 +691,120 @@ pub fn interp_spliced_weibull(
 // 7. IVF12 — Interpolated Volume Factor, 12-Month Basis (Robbin 2018)
 // ===========================================================================
 
-/// Robbin (2018) Interpolated Volume Factor (12-month basis) method.
+/// Monotone (Fritsch–Carlson / PCHIP) tangents for the log 12-month factor
+/// knots `phi[k]` on an equally spaced grid with step `h`, with the final
+/// tangent pinned to `0` so that `phi` joins the zero-development region beyond
+/// the last knot with a continuous first derivative.
+fn ivf12_pchip_tangents(phi: &[f64], h: f64) -> Vec<f64> {
+    let m = phi.len();
+    let n_seg = m - 1;
+    let delta: Vec<f64> = phi.windows(2).map(|w| (w[1] - w[0]) / h).collect();
+    let mut tan = vec![0.0; m];
+
+    // Interior: harmonic mean of adjacent secants (zero at local extrema).
+    for k in 1..n_seg {
+        let (a, b) = (delta[k - 1], delta[k]);
+        tan[k] = if a * b <= 0.0 {
+            0.0
+        } else {
+            2.0 / (1.0 / a + 1.0 / b)
+        };
+    }
+
+    // Left end: shape-preserving non-centred 3-point formula (Moler 2004
+    // `pchip`); for a single segment use the quadratic that meets the zero
+    // right-end slope (`tan[0] = 2 * delta[0]`).
+    tan[0] = if n_seg == 1 {
+        2.0 * delta[0]
+    } else {
+        let d = 0.5 * (3.0 * delta[0] - delta[1]);
+        if d * delta[0] <= 0.0 {
+            0.0
+        } else if delta[0] * delta[1] <= 0.0 && d.abs() > 3.0 * delta[0].abs() {
+            3.0 * delta[0]
+        } else {
+            d
+        }
+    };
+
+    // Right end: pinned to zero (smooth hand-off to "no further development").
+    tan[m - 1] = 0.0;
+
+    // Fritsch–Carlson sufficient monotonicity condition alpha^2 + beta^2 <= 9.
+    for k in 0..n_seg {
+        if delta[k] == 0.0 {
+            tan[k] = 0.0;
+            tan[k + 1] = 0.0;
+            continue;
+        }
+        let alpha = tan[k] / delta[k];
+        let beta = tan[k + 1] / delta[k];
+        let r2 = alpha * alpha + beta * beta;
+        if r2 > 9.0 {
+            let tau = 3.0 / r2.sqrt();
+            tan[k] = tau * alpha * delta[k];
+            tan[k + 1] = tau * beta * delta[k];
+        }
+    }
+    tan
+}
+
+/// Robbin (2018)-style Interpolated Volume Factor (12-month basis) method.
 ///
-/// Computes the 12-month development factor `F_12(t_k) = CDF(t_k) / CDF(t_k + 12)`
-/// at each annual knot, smoothly interpolates `F_12(t)` geometrically across
-/// intermediate sub-annual ages, and recursively constructs
-/// `CDF(t) = F_12(t) * CDF(t + 12)` backward from the final 12-month window.
+/// The method interpolates the **12-month incremental development factor
+/// function** in age rather than the CDF itself:
 ///
-/// Preserves every annual anchor CDF identically and guarantees exact 12-month
-/// multiplicative product parity across every annual window.
+/// 1. At every anchor knot `t_k` compute the log 12-month factor
+///    `phi_k = ln(CDF(t_k) / CDF(t_{k+1}))` for `k = 0..m-2`, and append the knot
+///    `phi_{m-1} = 0` at the last anchor (no development is modelled beyond the
+///    final knot; any tail is carried by `CDF(t_{m-1})`).
+/// 2. Interpolate `phi(t)` with a shape-preserving monotone cubic Hermite
+///    spline (Fritsch–Carlson / PCHIP tangents, final tangent pinned to `0`),
+///    and set `phi(t) = 0` for `t >= t_{m-1}`.
+/// 3. Reconstruct the CDF by chaining 12-month factors forward to the last knot:
 ///
-/// Requires equally spaced annual anchor ages (12-month spacing, e.g. `12, 24, 36, ...`).
+///    ```text
+///    ln CDF(t) = ln CDF(t_{m-1}) + sum_{n >= 0, t + n*h < t_{m-1}} phi(t + n*h)
+///    ```
+///
+///    where `h` is the anchor spacing (12 months on an annual basis).
+///
+/// Properties:
+///
+/// * **Knots preserved exactly**: at `t = t_k` the sum telescopes to `ln CDF(t_k)`.
+/// * **Exact 12-month factor identity**: `CDF(t) / CDF(t + h) = exp(phi(t))` for
+///   every `t` with `t + h <= t_{m-1}`, i.e. every rolling 12-month window
+///   reproduces the smoothly interpolated 12-month factor.
+/// * **Smooth emergence**: `ln CDF` is `C¹` on `[t_0, t_{m-1}]` (the zero
+///   final tangent removes the derivative kink where a chained age reaches the
+///   last knot). This differs from [`interp_exponential`] off the knots;
+///   interpolating `phi` *linearly* would collapse this method onto the
+///   exponential interpolator exactly, because `ln CDF` would then be
+///   piecewise linear.
+/// * **Monotone, `CDF >= 1`**: when the anchor LDFs are all `>= 1` and
+///   non-increasing in age, every `phi_k >= 0` and the PCHIP interpolant is
+///   non-negative and non-increasing, so `CDF(t)` is non-increasing and
+///   bounded below by `CDF(t_{m-1})` (`>= 1` whenever the final anchor is `>= 1`).
+///
+/// This is an honest reconstruction of the "interpolate the 12-month factor,
+/// then chain" idea; the specific spline (PCHIP with a zero right-end slope)
+/// is this crate's choice and is not claimed to reproduce any particular
+/// worksheet in Robbin (2018) digit for digit.
+///
+/// Requires equally spaced anchor ages (e.g. `12, 24, 36, ...`) and targets in
+/// `[anchor_ages[0], anchor_ages[last]]`.
 pub fn interp_ivf12(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
 
     let m = anchor_ages.len();
     let step = anchor_ages[1] - anchor_ages[0];
     for k in 1..m {
         if ((anchor_ages[k] - anchor_ages[k - 1]) - step).abs() > 1e-6 * step {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "interp_ivf12 requires equally spaced anchor ages (e.g. 12, 24, 36, ...)",
             ));
         }
@@ -718,49 +815,57 @@ pub fn interp_ivf12(
     let tol = 1e-9 * t_max;
     let step_tol = tol.min(1e-6 * step);
 
-    // 12-month volume factors at each knot: F(t_k) = CDF(t_k) / CDF(t_{k+1}),
-    // with F(t_{m-1}) = 1.0 (beyond the final knot, incremental annual development is 1.0).
-    let mut f12 = Vec::with_capacity(m);
+    // Log 12-month factors at each knot, with phi = 0 at (and beyond) the last knot.
+    let mut phi = Vec::with_capacity(m);
     for k in 0..(m - 1) {
-        f12.push(anchor_cdfs[k] / anchor_cdfs[k + 1]);
+        phi.push((anchor_cdfs[k] / anchor_cdfs[k + 1]).ln());
     }
-    f12.push(1.0);
+    phi.push(0.0);
+    if phi.iter().any(|v| !v.is_finite()) {
+        return Err(ReservingError::NotFinite);
+    }
+    let tan = ivf12_pchip_tangents(&phi, step);
 
-    // Evaluate F_12(t) via log-linear interpolation between adjacent knots.
-    let eval_f12 = |t: f64| -> f64 {
-        if t >= t_max {
-            return 1.0;
+    let eval_phi = |t: f64| -> f64 {
+        if t >= t_max - step_tol {
+            return 0.0;
         }
         let tc = t.max(t_min);
         let k = find_bracket(anchor_ages, tc);
-        let w = (tc - anchor_ages[k]) / (anchor_ages[k + 1] - anchor_ages[k]);
-        ((1.0 - w) * f12[k].ln() + w * f12[k + 1].ln()).exp()
+        eval_cubic_hermite(
+            anchor_ages[k],
+            anchor_ages[k + 1],
+            phi[k],
+            phi[k + 1],
+            tan[k],
+            tan[k + 1],
+            tc,
+        )
     };
 
-    // Evaluate CDF(t) by stepping forward in `step` (12m) increments until landing
-    // inside the final window `[t_{m-2}, t_{m-1}]`, where CDF is anchored cleanly.
-    let eval_cdf = |t: f64| -> f64 {
-        let mut prod = 1.0;
-        let mut cur = t;
-        let last_window_start = anchor_ages[m - 2];
-        while cur < last_window_start - step_tol {
-            prod *= eval_f12(cur);
-            cur += step;
-        }
-        // Now cur is in [t_{m-2}, t_{m-1}]: geometric anchor inside the final window.
-        let w = ((cur - last_window_start) / step).clamp(0.0, 1.0);
-        let tail_cdf = ((1.0 - w) * anchor_cdfs[m - 2].ln() + w * anchor_cdfs[m - 1].ln()).exp();
-        prod * tail_cdf
-    };
-
+    let ln_last = anchor_cdfs[m - 1].ln();
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t < t_min - tol || t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age outside [anchor_ages[0], anchor_ages[last]] for IVF12 interpolation",
             ));
         }
-        cdfs.push(eval_cdf(t.clamp(t_min, t_max)));
+        let mut ln_cdf = ln_last;
+        let mut cur = t.clamp(t_min, t_max);
+        // At most m - 1 chained 12-month steps reach the final knot.
+        for _ in 0..m {
+            if cur >= t_max - step_tol {
+                break;
+            }
+            ln_cdf += eval_phi(cur);
+            cur += step;
+        }
+        let cdf = ln_cdf.exp();
+        if !cdf.is_finite() {
+            return Err(ReservingError::NotFinite);
+        }
+        cdfs.push(cdf);
     }
 
     Ok(build_pattern(

@@ -7,11 +7,12 @@
 //! `cargo test --test stochastic_regressions -- --include-ignored`.
 
 use reserving_kernels::{
+    ReservingError,
     stochastic::mack::{self, MackOptions},
     stochastic::mack_bf::{self, BfPayoutEstimator, MackBfOptions},
     stochastic::merz_wuthrich,
     types::Triangle,
-    validate::{MonotonicityPolicy, ValidationError},
+    validate::MonotonicityPolicy,
 };
 
 const NAN: f64 = f64::NAN;
@@ -35,7 +36,7 @@ fn raa_triangle() -> Triangle {
         3133.0,  5395.0,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,
         2063.0,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,     NAN,
     ];
-    Triangle::new(10, 10, data)
+    Triangle::try_new(10, 10, data).expect("triangle")
 }
 
 /// Taylor & Ashe (1983) `GenIns` 10x10 cumulative paid triangle.
@@ -53,7 +54,7 @@ fn genins_triangle() -> Triangle {
         376686.0, 1363294.0,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,
         344014.0,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,       NAN,
     ];
-    Triangle::new(10, 10, data)
+    Triangle::try_new(10, 10, data).expect("triangle")
 }
 
 fn upper_counts(n: usize) -> Vec<usize> {
@@ -136,7 +137,7 @@ fn mack_observed_counts_default_allows_negative_increments_on_raa() {
     );
     assert!(matches!(
         strict,
-        Err(ValidationError::NonMonotoneCumulative { .. })
+        Err(ReservingError::NonMonotoneCumulative { .. })
     ));
 }
 

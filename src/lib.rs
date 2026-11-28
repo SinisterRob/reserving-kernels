@@ -10,9 +10,11 @@ pub mod capital;
 pub mod datasets;
 pub mod deterministic;
 pub mod diagnostics;
+pub mod error;
 pub mod excess;
 pub(crate) mod linalg;
 pub mod preprocessing;
+pub(crate) mod special;
 pub mod stochastic;
 pub mod subannual;
 mod triangle_ops;
@@ -23,12 +25,13 @@ pub mod validate;
 #[doc(hidden)]
 pub mod wasm_exports;
 
+pub use error::{ReservingError, Result};
 pub use types::{Triangle, TriangleView};
 
 /// Declarative constructor for a validated square cumulative [`Triangle`] from
 /// upper-triangle rows (coercing integer or float literals to `f64`).
 ///
-/// Returns `Result<Triangle, ValidationError>`.
+/// Returns `Result<Triangle, ReservingError>`.
 ///
 /// # Example
 /// ```rust
@@ -42,7 +45,7 @@ pub use types::{Triangle, TriangleView};
 /// ]?;
 /// assert_eq!(tri.n(), 4);
 /// assert_eq!(tri.latest_diagonal(), vec![205.0, 232.0, 218.0, 150.0]);
-/// # Ok::<(), ValidationError>(())
+/// # Ok::<(), ReservingError>(())
 /// ```
 #[macro_export]
 macro_rules! triangle {
@@ -107,6 +110,7 @@ pub mod prelude {
         InflationProjection, SeparationMethod, SeparationResult,
     };
     pub use crate::diagnostics::triangle_diagnostics::TriangleDiagnostics;
+    pub use crate::error::ReservingError;
     pub use crate::excess::excess_development::{
         ExcessDevelopmentFactors, ExcessProjection, LayerDevelopmentFactors,
     };
@@ -160,5 +164,5 @@ pub mod prelude {
         stub_power_ratio, subannual_product_parity,
     };
     pub use crate::types::{Triangle, TriangleView};
-    pub use crate::validate::{MonotonicityPolicy, ValidationError};
+    pub use crate::validate::MonotonicityPolicy;
 }

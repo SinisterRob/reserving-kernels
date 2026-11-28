@@ -14,13 +14,13 @@
 //!   exhibit systematic high/low clustering using exact binomial moments of
 //!   `Z_d = min(S_d, L_d)`.
 
-use crate::capital::dependence::spearman_correlation;
-use crate::excess::severity::normal_cdf_exact;
 use crate::preprocessing::triangle::age_to_age;
+use crate::special::{ln_gamma, normal_cdf, spearman_correlation, two_sided_normal_p_value};
 use crate::types::TriangleView;
 
 /// Spearman rank-correlation record for one adjacent development-link pair `(k, k + 1)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct AdjacentLinkCorrelation {
     /// Leading development link index `k` (correlating link `k -> k+1` with `k+1 -> k+2`).
     pub link: usize,
@@ -34,6 +34,7 @@ pub struct AdjacentLinkCorrelation {
 
 /// Result of Mack (1994, Appendix G) adjacent development-factor correlation test.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct MackCorrelationTest {
     /// Per-pair Spearman rank correlation records.
     pub by_link: Vec<AdjacentLinkCorrelation>,
@@ -53,6 +54,7 @@ pub struct MackCorrelationTest {
 
 /// Per-calendar-diagonal counts and binomial moments for Mack (1994, Appendix H).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct CalendarDiagonalTestRow {
     /// Calendar diagonal index `d = origin + dev + 1` (target cell calendar period).
     pub calendar_diagonal: usize,
@@ -70,6 +72,7 @@ pub struct CalendarDiagonalTestRow {
 
 /// Result of Mack (1994, Appendix H) calendar-year effect test.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct MackCalendarYearTest {
     /// Per-diagonal Small/Large counts and exact binomial moments.
     pub diagonals: Vec<CalendarDiagonalTestRow>,
@@ -142,7 +145,7 @@ pub fn adjacent_factor_correlation_test(t: &TriangleView<'_>) -> MackCorrelation
     let null_variance = 1.0 / total_weight;
     let sd = null_variance.sqrt();
     let z_score = statistic_t / sd;
-    let two_sided_p_value = (2.0 * normal_cdf_exact(-z_score.abs())).clamp(0.0, 1.0);
+    let two_sided_p_value = two_sided_normal_p_value(z_score);
 
     MackCorrelationTest {
         by_link,
@@ -164,9 +167,7 @@ fn exact_min_binomial_moments(n: usize) -> (f64, f64) {
     let nf = n as f64;
     let m = (n - 1) / 2;
     // Compute C(n - 1, m) / 2^n safely in log space to avoid overflow for large triangles.
-    let log_comb = crate::stochastic::bootstrap_odp::ln_gamma(nf)
-        - crate::stochastic::bootstrap_odp::ln_gamma((m + 1) as f64)
-        - crate::stochastic::bootstrap_odp::ln_gamma((n - m) as f64);
+    let log_comb = ln_gamma(nf) - ln_gamma((m + 1) as f64) - ln_gamma((n - m) as f64);
     let comb_over_2n = (log_comb - nf * std::f64::consts::LN_2).exp();
     let d = comb_over_2n * nf;
     let expected = 0.5 * nf - d;
@@ -264,8 +265,8 @@ pub fn calendar_year_effect_test(t: &TriangleView<'_>) -> MackCalendarYearTest {
     }
 
     let z_score = (statistic_z - expected_z) / variance_z.sqrt();
-    let lower_tail_p_value = normal_cdf_exact(z_score).clamp(0.0, 1.0);
-    let two_sided_p_value = (2.0 * normal_cdf_exact(-z_score.abs())).clamp(0.0, 1.0);
+    let lower_tail_p_value = normal_cdf(z_score).clamp(0.0, 1.0);
+    let two_sided_p_value = two_sided_normal_p_value(z_score);
 
     MackCalendarYearTest {
         diagonals,

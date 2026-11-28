@@ -24,6 +24,31 @@
 //! * `rk_sig_ptr`  — Mack output: σ² per development link, length `N_MAX`.
 //! * `rk_int_ptr`  — Brosius output: intercept per link.
 //! * `rk_slp_ptr`  — Brosius output: slope per link.
+//!
+//! # Status convention
+//!
+//! `n` is the triangle dimension and must satisfy `1 ≤ n ≤ rk_n_max()`.
+//! Out-of-range `n` is **rejected**, never silently truncated:
+//!
+//! * `rk_ldf_*` return `i32`: the number of LDFs written (`n − 1`, so `0` is a
+//!   valid result for `n = 1`), or [`RK_STATUS_ERR`] (`-1`) on invalid input.
+//! * Other count-returning exports (`rk_cdf_compute`, `rk_chain_ladder`,
+//!   `rk_bf`, `rk_bf_expected_from_premium`, `rk_brosius`) return `u32`: the
+//!   count written (always `≥ 1` on success) or `0` on invalid input.
+//! * Scalar exports (`rk_cape_cod_elr`, `rk_cape_cod`, `rk_mack`) return
+//!   `NaN` on invalid input.
+//!
+//! On invalid input the affected output buffers are cleared to `NaN` so stale
+//! results from an earlier call cannot be mistaken for fresh output.
+//!
+//! # Panics
+//!
+//! Each export wraps its body in [`std::panic::catch_unwind`] and maps a caught
+//! panic to the error status above. This only takes effect on unwinding
+//! targets (native test builds and Miri). On `wasm32-unknown-unknown` the
+//! standard library is built with `panic = "abort"`, so a panic traps the
+//! WebAssembly instance (a JavaScript `WebAssembly.RuntimeError`) instead of
+//! returning a status; hosts should re-instantiate the module after a trap.
 
 #![allow(unsafe_code)]
 #![allow(missing_docs)]
@@ -35,6 +60,9 @@ use crate::{
 };
 
 const N_MAX: usize = 20;
+
+/// Error status returned by the `i32`-valued `rk_ldf_*` exports.
+pub const RK_STATUS_ERR: i32 = -1;
 const TRI_CAP: usize = N_MAX * N_MAX;
 
 static mut TRI: [f64; TRI_CAP] = [0.0; TRI_CAP];
@@ -67,8 +95,33 @@ fn with_wasm_guard<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-fn clamp_n(n: u32) -> usize {
-    (n as usize).min(N_MAX)
+/// Validate the caller-supplied triangle dimension: `Some(n)` iff
+/// `1 <= n <= N_MAX`. Out-of-range values are rejected rather than clamped so
+/// the host never receives results for a silently truncated triangle.
+fn checked_n(n: u32) -> Option<usize> {
+    let n = usize::try_from(n).ok()?;
+    (1..=N_MAX).contains(&n).then_some(n)
+}
+
+/// Shared body of the `rk_ldf_*` exports: validate `n`, compute LDFs from the
+/// packed triangle, write them to `LDF`, and return the count or
+/// [`RK_STATUS_ERR`].
+fn ldf_export(n: u32, select: impl Fn(&TriangleView<'_>) -> Vec<f64>) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        with_wasm_guard(|| {
+            let Some(n) = checked_n(n) else {
+                // SAFETY: Guarded exclusive write; clears stale LDF output on invalid input.
+                unsafe { write_ldf(&[]) };
+                return RK_STATUS_ERR;
+            };
+            let packed = tri_packed(n);
+            let v = select(&view_of(&packed, n));
+            // SAFETY: Guarded exclusive access to static output buffer `LDF`.
+            unsafe { write_ldf(&v) }
+            i32::try_from(v.len()).unwrap_or(RK_STATUS_ERR)
+        })
+    }))
+    .unwrap_or(RK_STATUS_ERR)
 }
 
 unsafe fn read_buf(ptr: *const f64, len: usize) -> Vec<f64> {
@@ -105,7 +158,7 @@ fn tri_packed(n: usize) -> Vec<f64> {
     let mut out = vec![0.0; n * n];
     let tri_ptr: *const f64 = core::ptr::addr_of!(TRI).cast();
     // SAFETY: WASM execution is single-threaded with no concurrent mutable alias to `TRI`;
-    // callers pass `n <= N_MAX` (via `clamp_n`), so `i * N_MAX + j < TRI_CAP`.
+    // callers pass `n <= N_MAX` (via `checked_n`), so `i * N_MAX + j < TRI_CAP`.
     unsafe {
         for i in 0..n {
             for j in 0..n {
@@ -206,78 +259,28 @@ unsafe fn write_res(src: &[f64]) {
 // ---- LDF selection methods ------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rk_ldf_volume_weighted(n: u32) -> u32 {
-    std::panic::catch_unwind(|| {
-        with_wasm_guard(|| {
-            let n = clamp_n(n);
-            let packed = tri_packed(n);
-            let v = ldf::volume_weighted(&view_of(&packed, n));
-            // SAFETY: Guarded exclusive access to static output buffer `LDF`.
-            unsafe { write_ldf(&v) }
-            v.len() as u32
-        })
-    })
-    .unwrap_or(0)
+pub extern "C" fn rk_ldf_volume_weighted(n: u32) -> i32 {
+    ldf_export(n, ldf::volume_weighted)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rk_ldf_simple_average(n: u32) -> u32 {
-    std::panic::catch_unwind(|| {
-        with_wasm_guard(|| {
-            let n = clamp_n(n);
-            let packed = tri_packed(n);
-            let v = ldf::simple_average(&view_of(&packed, n));
-            // SAFETY: Guarded exclusive access to static output buffer `LDF`.
-            unsafe { write_ldf(&v) }
-            v.len() as u32
-        })
-    })
-    .unwrap_or(0)
+pub extern "C" fn rk_ldf_simple_average(n: u32) -> i32 {
+    ldf_export(n, ldf::simple_average)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rk_ldf_ex_hi_lo(n: u32) -> u32 {
-    std::panic::catch_unwind(|| {
-        with_wasm_guard(|| {
-            let n = clamp_n(n);
-            let packed = tri_packed(n);
-            let v = ldf::ex_hi_lo(&view_of(&packed, n));
-            // SAFETY: Guarded exclusive access to static output buffer `LDF`.
-            unsafe { write_ldf(&v) }
-            v.len() as u32
-        })
-    })
-    .unwrap_or(0)
+pub extern "C" fn rk_ldf_ex_hi_lo(n: u32) -> i32 {
+    ldf_export(n, ldf::ex_hi_lo)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rk_ldf_volume_weighted_last_n(n: u32, last_n: u32) -> u32 {
-    std::panic::catch_unwind(|| {
-        with_wasm_guard(|| {
-            let n = clamp_n(n);
-            let packed = tri_packed(n);
-            let v = ldf::volume_weighted_last_n(&view_of(&packed, n), last_n as usize);
-            // SAFETY: Guarded exclusive access to static output buffer `LDF`.
-            unsafe { write_ldf(&v) }
-            v.len() as u32
-        })
-    })
-    .unwrap_or(0)
+pub extern "C" fn rk_ldf_volume_weighted_last_n(n: u32, last_n: u32) -> i32 {
+    ldf_export(n, |t| ldf::volume_weighted_last_n(t, last_n as usize))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rk_ldf_simple_average_last_n(n: u32, last_n: u32) -> u32 {
-    std::panic::catch_unwind(|| {
-        with_wasm_guard(|| {
-            let n = clamp_n(n);
-            let packed = tri_packed(n);
-            let v = ldf::simple_average_last_n(&view_of(&packed, n), last_n as usize);
-            // SAFETY: Guarded exclusive access to static output buffer `LDF`.
-            unsafe { write_ldf(&v) }
-            v.len() as u32
-        })
-    })
-    .unwrap_or(0)
+pub extern "C" fn rk_ldf_simple_average_last_n(n: u32, last_n: u32) -> i32 {
+    ldf_export(n, |t| ldf::simple_average_last_n(t, last_n as usize))
 }
 
 /// Compute CDFs from the currently-loaded LDF buffer. Writes into the CDF
@@ -286,12 +289,11 @@ pub extern "C" fn rk_ldf_simple_average_last_n(n: u32, last_n: u32) -> u32 {
 pub extern "C" fn rk_cdf_compute(n: u32, tail: f64) -> u32 {
     std::panic::catch_unwind(|| {
         with_wasm_guard(|| {
-            let n = clamp_n(n);
-            if n == 0 || !valid_tail(tail) {
+            let Some(n) = checked_n(n).filter(|_| valid_tail(tail)) else {
                 // SAFETY: Guarded exclusive write; clears stale CDF output on invalid input.
                 unsafe { write_cdf(&[]) };
                 return 0;
-            }
+            };
             if n < 2 {
                 // SAFETY: Guarded exclusive access to static output buffer `CDF`.
                 unsafe { write_cdf(&[tail]) };
@@ -314,8 +316,7 @@ pub extern "C" fn rk_cdf_compute(n: u32, tail: f64) -> u32 {
 pub extern "C" fn rk_chain_ladder(n: u32, tail: f64) -> u32 {
     std::panic::catch_unwind(|| {
         with_wasm_guard(|| {
-            let n = clamp_n(n);
-            if n == 0 || !valid_tail(tail) {
+            let Some(n) = checked_n(n).filter(|_| valid_tail(tail)) else {
                 // SAFETY: Guarded exclusive write; clears stale outputs on invalid input.
                 unsafe {
                     write_ult(&[]);
@@ -323,7 +324,7 @@ pub extern "C" fn rk_chain_ladder(n: u32, tail: f64) -> u32 {
                     write_cdf(&[]);
                 }
                 return 0;
-            }
+            };
             let ldf_slice: Vec<f64> = if n >= 2 {
                 // SAFETY: `LDF` has length `N_MAX` and `n - 1 < N_MAX`.
                 unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
@@ -351,8 +352,7 @@ pub extern "C" fn rk_chain_ladder(n: u32, tail: f64) -> u32 {
 pub extern "C" fn rk_bf(n: u32, tail: f64) -> u32 {
     std::panic::catch_unwind(|| {
         with_wasm_guard(|| {
-            let n = clamp_n(n);
-            if n == 0 || !valid_tail(tail) {
+            let Some(n) = checked_n(n).filter(|_| valid_tail(tail)) else {
                 // SAFETY: Guarded exclusive write; clears stale outputs on invalid input.
                 unsafe {
                     write_ult(&[]);
@@ -360,7 +360,7 @@ pub extern "C" fn rk_bf(n: u32, tail: f64) -> u32 {
                     write_cdf(&[]);
                 }
                 return 0;
-            }
+            };
             let ldf_slice: Vec<f64> = if n >= 2 {
                 // SAFETY: `LDF` has length `N_MAX` and `n - 1 < N_MAX`.
                 unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
@@ -389,12 +389,11 @@ pub extern "C" fn rk_bf(n: u32, tail: f64) -> u32 {
 pub extern "C" fn rk_bf_expected_from_premium(n: u32, elr: f64) -> u32 {
     std::panic::catch_unwind(|| {
         with_wasm_guard(|| {
-            let n = clamp_n(n);
-            if !elr.is_finite() || elr < 0.0 {
+            let Some(n) = checked_n(n).filter(|_| elr.is_finite() && elr >= 0.0) else {
                 // SAFETY: Guarded exclusive write; clears stale EXP output on invalid input.
                 unsafe { write_buf(core::ptr::addr_of_mut!(EXP).cast(), &[]) };
                 return 0;
-            }
+            };
             // SAFETY: `PREM` has length `N_MAX` and `n <= N_MAX`.
             let prem = unsafe { read_buf(core::ptr::addr_of!(PREM).cast(), n) };
             let exp: Vec<f64> = prem.into_iter().map(|p| p * elr).collect();
@@ -412,10 +411,9 @@ pub extern "C" fn rk_bf_expected_from_premium(n: u32, elr: f64) -> u32 {
 pub extern "C" fn rk_cape_cod_elr(n: u32, tail: f64) -> f64 {
     std::panic::catch_unwind(|| {
         with_wasm_guard(|| {
-            let n = clamp_n(n);
-            if n == 0 || !valid_tail(tail) {
+            let Some(n) = checked_n(n).filter(|_| valid_tail(tail)) else {
                 return f64::NAN;
-            }
+            };
             let ldf_slice: Vec<f64> = if n >= 2 {
                 // SAFETY: `LDF` has length `N_MAX` and `n - 1 < N_MAX`.
                 unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
@@ -435,8 +433,7 @@ pub extern "C" fn rk_cape_cod_elr(n: u32, tail: f64) -> f64 {
 pub extern "C" fn rk_cape_cod(n: u32, tail: f64) -> f64 {
     std::panic::catch_unwind(|| {
         with_wasm_guard(|| {
-            let n = clamp_n(n);
-            if n == 0 || !valid_tail(tail) {
+            let Some(n) = checked_n(n).filter(|_| valid_tail(tail)) else {
                 // SAFETY: Guarded exclusive write; clears stale outputs on invalid input.
                 unsafe {
                     write_ult(&[]);
@@ -445,7 +442,7 @@ pub extern "C" fn rk_cape_cod(n: u32, tail: f64) -> f64 {
                     write_buf(core::ptr::addr_of_mut!(EXP).cast(), &[]);
                 }
                 return f64::NAN;
-            }
+            };
             let ldf_slice: Vec<f64> = if n >= 2 {
                 // SAFETY: `LDF` has length `N_MAX` and `n - 1 < N_MAX`.
                 unsafe { read_buf(core::ptr::addr_of!(LDF).cast(), n - 1) }
@@ -477,8 +474,7 @@ pub extern "C" fn rk_cape_cod(n: u32, tail: f64) -> f64 {
 pub extern "C" fn rk_brosius(n: u32, tail: f64) -> u32 {
     std::panic::catch_unwind(|| {
         with_wasm_guard(|| {
-            let n = clamp_n(n);
-            if n == 0 || !valid_tail(tail) {
+            let Some(n) = checked_n(n).filter(|_| valid_tail(tail)) else {
                 // SAFETY: Guarded exclusive write; clears stale outputs on invalid input.
                 unsafe {
                     write_buf(core::ptr::addr_of_mut!(INT).cast(), &[]);
@@ -487,7 +483,7 @@ pub extern "C" fn rk_brosius(n: u32, tail: f64) -> u32 {
                     write_res(&[]);
                 }
                 return 0;
-            }
+            };
             let packed = tri_packed(n);
             let r = brosius::project_unchecked(&view_of(&packed, n), tail);
             // SAFETY: Guarded exclusive access to static output buffers.
@@ -511,8 +507,7 @@ pub extern "C" fn rk_brosius(n: u32, tail: f64) -> u32 {
 pub extern "C" fn rk_mack(n: u32, tail: f64) -> f64 {
     std::panic::catch_unwind(|| {
         with_wasm_guard(|| {
-            let n = clamp_n(n);
-            if n == 0 || !valid_tail(tail) {
+            let Some(n) = checked_n(n).filter(|_| valid_tail(tail)) else {
                 // SAFETY: Guarded exclusive write; clears stale outputs on invalid input.
                 unsafe {
                     write_ldf(&[]);
@@ -524,7 +519,7 @@ pub extern "C" fn rk_mack(n: u32, tail: f64) -> f64 {
                     *core::ptr::addr_of_mut!(MACK_TOTAL_RESERVE) = f64::NAN;
                 }
                 return f64::NAN;
-            }
+            };
             let packed = tri_packed(n);
             let r = mack::analyze_unchecked(&view_of(&packed, n), tail);
             // SAFETY: Guarded exclusive access to static output buffers and scalar.

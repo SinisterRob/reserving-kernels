@@ -21,14 +21,14 @@
 
 use crate::deterministic::chain_ladder::ChainLadderEngine;
 use crate::deterministic::ldf::DevelopmentFactorEngine;
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::{cumulative_to_incremental, latest_diagonal};
 use crate::types::TriangleView;
-use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_monotone_cumulative, validate_triangle,
-};
+use crate::validate::{MonotonicityPolicy, validate_monotone_cumulative, validate_triangle};
 
 /// Result of Martínez-Miranda, Nielsen & Verrall (2012) Double Chain Ladder.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct DoubleChainLadderResult {
     /// Ultimate reported claim counts $\hat{\alpha}_i$ from count CL, length $n$.
     pub count_ultimate: Vec<f64>,
@@ -103,7 +103,7 @@ fn delay_proportions_from_cdfs(cdfs: &[f64]) -> Vec<f64> {
 pub fn analyze(
     paid_cumulative: &TriangleView<'_>,
     counts_cumulative: &TriangleView<'_>,
-) -> Result<DoubleChainLadderResult, ValidationError> {
+) -> Result<DoubleChainLadderResult, ReservingError> {
     analyze_with_policy(
         paid_cumulative,
         counts_cumulative,
@@ -118,7 +118,7 @@ pub fn analyze_with_policy(
     paid_cumulative: &TriangleView<'_>,
     counts_cumulative: &TriangleView<'_>,
     policy: MonotonicityPolicy,
-) -> Result<DoubleChainLadderResult, ValidationError> {
+) -> Result<DoubleChainLadderResult, ReservingError> {
     analyze_with_inflation(paid_cumulative, counts_cumulative, None, policy)
 }
 
@@ -129,17 +129,17 @@ pub fn analyze_with_inflation(
     counts_cumulative: &TriangleView<'_>,
     custom_severity: Option<&[f64]>,
     policy: MonotonicityPolicy,
-) -> Result<DoubleChainLadderResult, ValidationError> {
+) -> Result<DoubleChainLadderResult, ReservingError> {
     validate_triangle(paid_cumulative)?;
     validate_triangle(counts_cumulative)?;
     let n = paid_cumulative.n_origins;
     if n < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "triangles must be at least 2x2",
         ));
     }
     if counts_cumulative.n_origins != n || counts_cumulative.n_devs != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if matches!(policy, MonotonicityPolicy::Strict) {
         validate_monotone_cumulative(paid_cumulative)?;
@@ -158,7 +158,7 @@ pub fn analyze_with_inflation(
     let paid_delay = delay_proportions_from_cdfs(&paid_factors.cdfs);
 
     if !reporting_delay[0].is_finite() || reporting_delay[0] <= 0.0 {
-        return Err(ValidationError::DivideByZero(
+        return Err(ReservingError::DivideByZero(
             "initial reporting delay proportion beta_0",
         ));
     }
@@ -176,11 +176,11 @@ pub fn analyze_with_inflation(
     // Severity inflation gamma_i = paid_cl_ultimate[i] / count_ultimate[i].
     let severity_inflation = if let Some(custom) = custom_severity {
         if custom.len() != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         for &g in custom {
             if !g.is_finite() || g < 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "custom severity inflation entries must be finite and non-negative",
                 ));
             }
@@ -191,7 +191,7 @@ pub fn analyze_with_inflation(
         for i in 0..n {
             let alpha_i = count_cl.ultimates[i];
             if alpha_i <= 0.0 {
-                return Err(ValidationError::DivideByZero("ultimate reported count"));
+                return Err(ReservingError::DivideByZero("ultimate reported count"));
             }
             gamma.push(paid_cl.ultimates[i] / alpha_i);
         }

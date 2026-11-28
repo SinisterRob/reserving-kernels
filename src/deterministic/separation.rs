@@ -19,10 +19,11 @@
 //!   log-linear OLS via Householder QR ($\ln S_{i,j} = \alpha_j + \beta_{i+j}$)
 //!   normalized to $\sum_j r_j = 1$, matching Taylor (1977) §3.
 
+use crate::error::ReservingError;
 use crate::linalg::weighted_least_squares_qr_beta_only;
 use crate::preprocessing::triangle::{cumulative_to_incremental, latest_diagonal};
 use crate::types::TriangleView;
-use crate::validate::{ValidationError, validate_positive_finite_slice, validate_triangle};
+use crate::validate::{validate_positive_finite_slice, validate_triangle};
 
 /// Variant of Taylor's (1977) Separation Method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -49,6 +50,7 @@ pub enum InflationProjection {
 
 /// Result of Taylor's (1977) Separation Method.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SeparationResult {
     /// Separation variant used.
     pub method: SeparationMethod,
@@ -87,16 +89,16 @@ pub fn analyze(
     exposures: &[f64],
     method: SeparationMethod,
     projection: &InflationProjection,
-) -> Result<SeparationResult, ValidationError> {
+) -> Result<SeparationResult, ReservingError> {
     validate_triangle(cumulative)?;
     let n = cumulative.n_origins;
     if n < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "triangle must be at least 2x2",
         ));
     }
     if exposures.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(exposures, "exposures")?;
 
@@ -106,7 +108,7 @@ pub fn analyze(
         for j in 0..(n - i) {
             let x = inc[i * n + j];
             if !x.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             s[i * n + j] = x / exposures[i];
         }
@@ -131,7 +133,7 @@ pub fn analyze(
     let future_calendar_indices = match projection {
         InflationProjection::ConstantRate(rate) => {
             if !rate.is_finite() || *rate <= -1.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "inflation rate must be finite and > -1.0",
                 ));
             }
@@ -142,7 +144,7 @@ pub fn analyze(
             let first = calendar_indices[0];
             let last = calendar_indices[n - 1];
             if first <= 0.0 || last <= 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "geometric mean inflation requires positive first and last calendar indices",
                 ));
             }
@@ -151,11 +153,11 @@ pub fn analyze(
         }
         InflationProjection::ExplicitFutureIndices(indices) => {
             if indices.len() != n - 1 {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             for &v in indices {
                 if !v.is_finite() || v < 0.0 {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "future calendar indices must be finite and non-negative",
                     ));
                 }
@@ -192,7 +194,7 @@ pub fn analyze(
     })
 }
 
-fn fit_arithmetic(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), ValidationError> {
+fn fit_arithmetic(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), ReservingError> {
     let mut diag_sums = vec![0.0; n];
     let mut col_sums = vec![0.0; n];
 
@@ -213,14 +215,14 @@ fn fit_arithmetic(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), Validatio
     for k in (0..n).rev() {
         let rem_r = 1.0_f64 - sum_r_tail;
         if rem_r.abs() <= 1e-14 {
-            return Err(ValidationError::DivideByZero(
+            return Err(ReservingError::DivideByZero(
                 "arithmetic separation remaining delay proportion",
             ));
         }
         lam[k] = diag_sums[k] / rem_r;
         sum_lam_tail += lam[k];
         if sum_lam_tail.abs() <= 1e-14 {
-            return Err(ValidationError::DivideByZero(
+            return Err(ReservingError::DivideByZero(
                 "arithmetic separation cumulative calendar index",
             ));
         }
@@ -231,7 +233,7 @@ fn fit_arithmetic(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), Validatio
     Ok((r, lam))
 }
 
-fn fit_geometric(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), ValidationError> {
+fn fit_geometric(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), ReservingError> {
     // Log-linear OLS: ln(S_{i,j}) = alpha_j + beta_{i+j}, with beta_{n-1} = 0.
     // Parameters: [alpha_0..alpha_{n-1}, beta_0..beta_{n-2}] (length 2n - 1).
     let p = 2 * n - 1;
@@ -244,7 +246,7 @@ fn fit_geometric(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), Validation
         for j in 0..(n - i) {
             let v = s[i * n + j];
             if v <= 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "geometric separation requires strictly positive incremental losses",
                 ));
             }
@@ -265,7 +267,7 @@ fn fit_geometric(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), Validation
     let raw_r: Vec<f64> = (0..n).map(|j| beta[j].exp()).collect();
     let sum_r: f64 = raw_r.iter().sum();
     if !sum_r.is_finite() || sum_r <= 0.0 {
-        return Err(ValidationError::DivideByZero(
+        return Err(ReservingError::DivideByZero(
             "geometric separation delay normalization",
         ));
     }
@@ -275,7 +277,7 @@ fn fit_geometric(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), Validation
     for k in 0..(n - 1) {
         let l = beta[n + k].exp() * sum_r;
         if !l.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         lam.push(l);
     }

@@ -43,9 +43,9 @@ Run Mack's chain-ladder directly on the built-in RAA benchmark triangle (with un
 
 ```rust
 use reserving_kernels::datasets;
-use reserving_kernels::validate::ValidationError;
+use reserving_kernels::ReservingError;
 
-fn main() -> Result<(), ValidationError> {
+fn main() -> Result<(), ReservingError> {
     let raa = datasets::raa();
     let mack = raa.mack(1.0)?;
 

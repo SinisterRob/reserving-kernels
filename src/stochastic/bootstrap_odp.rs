@@ -40,12 +40,12 @@ use std::f64::consts::TAU;
 
 use crate::capital::reserve_distribution::{ReserveDistributionSummary, summarize_with_scratch};
 use crate::deterministic::ldf::{cdfs_from_ldfs, volume_weighted_ldfs};
+use crate::error::ReservingError;
 use crate::linalg::{invert_spd, solve_lower_into};
 use crate::preprocessing::triangle::{cumulative_to_incremental, latest_diagonal};
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_monotone_cumulative, validate_tail,
-    validate_triangle,
+    MonotonicityPolicy, validate_monotone_cumulative, validate_tail, validate_triangle,
 };
 
 // Re-export the crate's Cholesky helper for `crate::capital::dependence`.
@@ -54,24 +54,6 @@ pub(crate) use crate::linalg::cholesky_lower;
 // ===========================================================================
 // Public Configuration & Result Types
 // ===========================================================================
-
-/// Compact bootstrap configuration for the legacy [`bootstrap`] entry point.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct BootstrapConfig {
-    /// Number of bootstrap iterations.
-    pub iterations: usize,
-    /// Deterministic seed for reproducible resampling.
-    pub seed: u64,
-}
-
-impl Default for BootstrapConfig {
-    fn default() -> Self {
-        Self {
-            iterations: 1000,
-            seed: 0xC0DE5EED,
-        }
-    }
-}
 
 /// Residual degrees-of-freedom / leverage adjustment convention.
 ///
@@ -1447,7 +1429,7 @@ fn solve_odp_general(
     fitted_cumulative: &[f64],
     fitted_incremental: &[f64],
     observed_incremental: &[f64],
-) -> Result<OdpSolvedDiagnostics, ValidationError> {
+) -> Result<OdpSolvedDiagnostics, ReservingError> {
     let mut active_origins = vec![false; n];
     let mut active_devs = vec![false; n];
     let mut active_cells: Vec<(usize, usize)> = Vec::with_capacity(n * (n + 1) / 2);
@@ -1490,7 +1472,7 @@ fn solve_odp_general(
 
     let n_observed = active_cells.len();
     if n_observed <= param_count {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "ODP model has non-positive residual degrees of freedom",
         ));
     }
@@ -1633,7 +1615,7 @@ pub fn fit_odp(
     triangle: &TriangleView<'_>,
     tail: f64,
     policy: MonotonicityPolicy,
-) -> Result<OdpFit, ValidationError> {
+) -> Result<OdpFit, ReservingError> {
     validate_triangle(triangle)?;
     if policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(triangle)?;
@@ -1642,7 +1624,7 @@ pub fn fit_odp(
 
     let n = triangle.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "ODP model requires at least a 3x3 triangle for positive degrees of freedom",
         ));
     }
@@ -1652,13 +1634,13 @@ pub fn fit_odp(
     volume_weighted_ldfs(triangle.data, n, n, &mut ldfs);
     for &f in &ldfs {
         if !f.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if f <= 0.0 {
-            return Err(ValidationError::DivideByZero("development denominator"));
+            return Err(ReservingError::DivideByZero("development denominator"));
         }
         if f < 1.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "ODP GLM requires non-negative fitted expectations (all volume-weighted LDFs >= 1.0)",
             ));
         }
@@ -1739,7 +1721,7 @@ pub(crate) fn build_adjusted_residual_pool(
     fit: &OdpFit,
     adjustment: ResidualAdjustment,
     center: bool,
-) -> Result<(Vec<f64>, f64), ValidationError> {
+) -> Result<(Vec<f64>, f64), ReservingError> {
     let mut pool = Vec::with_capacity(fit.residuals.len());
     match adjustment {
         ResidualAdjustment::DegreesOfFreedom => {
@@ -1757,7 +1739,7 @@ pub(crate) fn build_adjusted_residual_pool(
         }
     }
     if pool.is_empty() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "no eligible residuals available for ODP bootstrap resampling",
         ));
     }
@@ -2733,15 +2715,15 @@ fn run_odp_bootstrap_x4(
 /// let boot = bootstrap_odp(&tri.view(), 1.0, opts)?;
 /// assert_eq!(boot.simulated_totals.len(), 200);
 /// assert!(boot.base_total_reserve > 0.0);
-/// # Ok::<(), ValidationError>(())
+/// # Ok::<(), ReservingError>(())
 /// ```
 pub fn bootstrap_odp(
     triangle: &TriangleView<'_>,
     tail: f64,
     options: OdpBootstrapOptions,
-) -> Result<OdpBootstrapResult, ValidationError> {
+) -> Result<OdpBootstrapResult, ReservingError> {
     if options.iterations == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
 
     let fit = fit_odp(triangle, tail, options.monotonicity_policy)?;
@@ -2809,7 +2791,7 @@ pub fn bootstrap_odp(
     }
 
     if simulated_totals.is_empty() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     // Reuse a single scratch buffer across portfolio + all n origin summaries
@@ -2834,23 +2816,21 @@ pub fn bootstrap_odp(
     })
 }
 
-/// Run a deterministic ODP bootstrap using the classic England & Verrall
-/// (1999, 2002) specification (`DegreesOfFreedom` scaling + Gamma process variance).
+/// Run a compact deterministic ODP bootstrap returning portfolio totals only.
 ///
-/// Because this compact entry point only returns portfolio totals, it skips
+/// Because this entry point only returns portfolio totals, it skips
 /// allocating per-origin simulation series (`O(B)` space instead of `O(n B)`),
 /// skips `n` per-origin summaries, and collapses process variance to 1–2 exact
-/// Gamma draws per iteration.
+/// draws per iteration.
 pub fn bootstrap(
     triangle: &TriangleView<'_>,
     tail: f64,
-    config: BootstrapConfig,
-) -> Result<BootstrapResult, ValidationError> {
-    if config.iterations == 0 {
-        return Err(ValidationError::ShapeMismatch);
+    options: OdpBootstrapOptions,
+) -> Result<BootstrapResult, ReservingError> {
+    if options.iterations == 0 {
+        return Err(ReservingError::InvalidIterations);
     }
 
-    let options = OdpBootstrapOptions::england_verrall(config.iterations, config.seed);
     let fit = fit_odp(triangle, tail, options.monotonicity_policy)?;
     let (pool, _) =
         build_adjusted_residual_pool(&fit, options.residual_adjustment, options.center_residuals)?;
@@ -2862,9 +2842,9 @@ pub fn bootstrap(
     let mut scratch = OdpBootstrapScratch::for_fit(&fit);
     let inv_phi = scratch.inv_phi;
     let tail_inc = fit.tail - 1.0;
-    let mut simulated_totals = Vec::with_capacity(config.iterations);
+    let mut simulated_totals = Vec::with_capacity(options.iterations);
 
-    for _ in 0..config.iterations {
+    for _ in 0..options.iterations {
         let outcome = refit_pseudo_ldfs_from_pool(&pool, &mut sampler, &mut rng, &mut scratch);
         if !outcome.valid {
             continue;
@@ -3001,7 +2981,7 @@ pub fn bootstrap(
     }
 
     if simulated_totals.is_empty() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let mut summary_buf = Vec::with_capacity(simulated_totals.len());
@@ -3017,9 +2997,9 @@ pub fn bootstrap(
 pub fn bootstrap_summary(
     triangle: &TriangleView<'_>,
     tail: f64,
-    config: BootstrapConfig,
-) -> Result<BootstrapSummary, ValidationError> {
-    Ok(bootstrap(triangle, tail, config)?.summary)
+    options: OdpBootstrapOptions,
+) -> Result<BootstrapSummary, ReservingError> {
+    Ok(bootstrap(triangle, tail, options)?.summary)
 }
 
 /// Output of the 1-year Solvency II Claims Development Result (CDR)
@@ -3060,9 +3040,9 @@ pub fn bootstrap_odp_cdr(
     triangle: &TriangleView<'_>,
     tail: f64,
     options: OdpBootstrapOptions,
-) -> Result<OdpCdrBootstrapResult, ValidationError> {
+) -> Result<OdpCdrBootstrapResult, ReservingError> {
     if options.iterations == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
 
     let fit = fit_odp(triangle, tail, options.monotonicity_policy)?;
@@ -3183,7 +3163,7 @@ pub fn bootstrap_odp_cdr(
     }
 
     if simulated_total_cdr.is_empty() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let mut summary_buf = Vec::with_capacity(simulated_total_cdr.len());
@@ -3226,13 +3206,10 @@ mod tests {
     #[test]
     fn bootstrap_is_deterministic_for_same_seed() {
         let triangle = triangle_4x4();
-        let config = BootstrapConfig {
-            iterations: 50,
-            seed: 42,
-        };
+        let options = OdpBootstrapOptions::england_verrall(50, 42);
 
-        let first = bootstrap(&triangle.view(), 1.0, config).expect("bootstrap");
-        let second = bootstrap(&triangle.view(), 1.0, config).expect("bootstrap");
+        let first = bootstrap(&triangle.view(), 1.0, options).expect("bootstrap");
+        let second = bootstrap(&triangle.view(), 1.0, options).expect("bootstrap");
 
         assert_eq!(first.simulated_totals, second.simulated_totals);
         assert_eq!(first.summary, second.summary);
@@ -3244,10 +3221,7 @@ mod tests {
         let summary = bootstrap_summary(
             &triangle.view(),
             1.0,
-            BootstrapConfig {
-                iterations: 100,
-                seed: 7,
-            },
+            OdpBootstrapOptions::england_verrall(100, 7),
         )
         .expect("summary");
 
@@ -3266,12 +3240,9 @@ mod tests {
             bootstrap(
                 &triangle.view(),
                 1.0,
-                BootstrapConfig {
-                    iterations: 0,
-                    seed: 1
-                }
+                OdpBootstrapOptions::england_verrall(0, 1),
             ),
-            Err(ValidationError::ShapeMismatch)
+            Err(ReservingError::InvalidIterations)
         );
     }
 
@@ -3281,10 +3252,7 @@ mod tests {
         let result = bootstrap(
             &triangle.view(),
             1.0,
-            BootstrapConfig {
-                iterations: 10,
-                seed: 9,
-            },
+            OdpBootstrapOptions::england_verrall(10, 9),
         )
         .expect("bootstrap");
 

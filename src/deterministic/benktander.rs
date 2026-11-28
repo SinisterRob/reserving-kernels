@@ -29,11 +29,12 @@
 
 use crate::deterministic::chain_ladder::latest_observed_by_origin;
 use crate::deterministic::ldf::DevelopmentFactors;
+use crate::error::ReservingError;
 use crate::preprocessing::apriori::{AprioriInput, build_apriori};
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_development_factor_slices,
-    validate_latest_and_dev, validate_monotone_cumulative, validate_nonnegative_finite_slice,
+    MonotonicityPolicy, validate_development_factor_slices_with_policy, validate_latest_and_dev,
+    validate_monotone_cumulative, validate_nonnegative_finite_slice,
     validate_nonnegative_finite_vector, validate_triangle,
 };
 
@@ -89,18 +90,18 @@ pub struct BenktanderProjection {
 pub fn mack_optimal_credibility(
     maturity: f64,
     variance_ratio_t: f64,
-) -> Result<f64, ValidationError> {
+) -> Result<f64, ReservingError> {
     if !maturity.is_finite() || !variance_ratio_t.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if !(0.0..=1.0).contains(&maturity) {
-        return Err(ValidationError::InvalidMaturity {
+        return Err(ReservingError::InvalidMaturity {
             index: 0,
             value: maturity,
         });
     }
     if variance_ratio_t < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     let denom = maturity + variance_ratio_t;
     if denom <= 0.0 {
@@ -128,7 +129,7 @@ pub fn mack_optimal_credibility(
 pub fn mack_optimal_ultimate_credibility(
     maturity: f64,
     variance_ratio_t: f64,
-) -> Result<f64, ValidationError> {
+) -> Result<f64, ReservingError> {
     let c_star = mack_optimal_credibility(maturity, variance_ratio_t)?;
     Ok(maturity + (1.0 - maturity) * c_star)
 }
@@ -145,7 +146,7 @@ impl BenktanderEngine {
         factors: &DevelopmentFactors,
         expected_ultimate: &[f64],
         iterations: usize,
-    ) -> Result<BenktanderProjection, ValidationError> {
+    ) -> Result<BenktanderProjection, ReservingError> {
         Self::project_with_policy(
             cumulative,
             factors,
@@ -162,17 +163,18 @@ impl BenktanderEngine {
         expected_ultimate: &[f64],
         iterations: usize,
         policy: MonotonicityPolicy,
-    ) -> Result<BenktanderProjection, ValidationError> {
+    ) -> Result<BenktanderProjection, ReservingError> {
         validate_triangle(cumulative)?;
         if policy == MonotonicityPolicy::Strict {
             validate_monotone_cumulative(cumulative)?;
         }
-        validate_development_factor_slices(
+        validate_development_factor_slices_with_policy(
             &factors.ldfs,
             &factors.cdfs,
             factors.tail,
             cumulative.n_devs,
             "Benktander factor",
+            policy,
         )?;
         validate_nonnegative_finite_vector(expected_ultimate, cumulative.n_origins)?;
 
@@ -185,7 +187,7 @@ impl BenktanderEngine {
             cumulative.n_devs,
             &mut latest,
             &mut latest_dev,
-        );
+        )?;
         validate_latest_and_dev(&latest, &latest_dev, &factors.cdfs)?;
 
         let mut maturity = vec![0.0; n];
@@ -203,7 +205,7 @@ impl BenktanderEngine {
                 }
             };
             if !valid_p {
-                return Err(ValidationError::InvalidMaturity { index: i, value: p });
+                return Err(ReservingError::InvalidMaturity { index: i, value: p });
             }
             let q = 1.0 - p;
             let q_pow = q.powi(iterations.min(i32::MAX as usize) as i32);
@@ -234,7 +236,7 @@ impl BenktanderEngine {
             || !total_reserve.is_finite()
             || !total_ultimate.is_finite()
         {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
 
         Ok(BenktanderProjection {
@@ -260,7 +262,7 @@ impl BenktanderEngine {
         premium_or_exposure: &[f64],
         apriori: AprioriInput<'_>,
         iterations: usize,
-    ) -> Result<BenktanderProjection, ValidationError> {
+    ) -> Result<BenktanderProjection, ReservingError> {
         let apriori_vec = build_apriori(premium_or_exposure, apriori)?;
         Self::project_from_expected_ultimate(
             cumulative,
@@ -277,7 +279,7 @@ impl BenktanderEngine {
         earned_premium: &[f64],
         expected_loss_ratio: f64,
         iterations: usize,
-    ) -> Result<BenktanderProjection, ValidationError> {
+    ) -> Result<BenktanderProjection, ReservingError> {
         Self::project_from_apriori(
             cumulative,
             factors,

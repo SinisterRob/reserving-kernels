@@ -20,11 +20,10 @@
 //! covariance, and skewed quantiles without Monte Carlo simulation.
 
 use crate::capital::dependence::inv_normal_cdf;
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
-use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_monotone_cumulative, validate_triangle,
-};
+use crate::validate::{MonotonicityPolicy, validate_monotone_cumulative, validate_triangle};
 
 /// Options for Hertig (1985) log-normal link-ratio reserving.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -83,12 +82,12 @@ pub struct HertigResult {
 
 impl HertigResult {
     /// Exact closed-form reserve quantile at probability `p` in `(0, 1)` for origin `origin`.
-    pub fn origin_reserve_quantile(&self, origin: usize, p: f64) -> Result<f64, ValidationError> {
+    pub fn origin_reserve_quantile(&self, origin: usize, p: f64) -> Result<f64, ReservingError> {
         if origin >= self.latest.len() {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if !p.is_finite() || p <= 0.0 || p >= 1.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "quantile probability must be strictly in (0, 1)",
             ));
         }
@@ -100,9 +99,9 @@ impl HertigResult {
 
     /// Fenton–Wilkinson moment-matched log-normal approximation to the aggregate
     /// total reserve quantile at probability `p` in `(0, 1)`.
-    pub fn aggregate_reserve_quantile(&self, p: f64) -> Result<f64, ValidationError> {
+    pub fn aggregate_reserve_quantile(&self, p: f64) -> Result<f64, ReservingError> {
         if !p.is_finite() || p <= 0.0 || p >= 1.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "quantile probability must be strictly in (0, 1)",
             ));
         }
@@ -135,7 +134,7 @@ impl std::fmt::Display for HertigResult {
 pub fn analyze(
     t: &TriangleView<'_>,
     options: HertigOptions,
-) -> Result<HertigResult, ValidationError> {
+) -> Result<HertigResult, ReservingError> {
     validate_triangle(t)?;
     if matches!(options.policy, MonotonicityPolicy::Strict) {
         validate_monotone_cumulative(t)?;
@@ -143,7 +142,7 @@ pub fn analyze(
 
     let n = t.n_origins;
     if n < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "triangle must be at least 2x2",
         ));
     }
@@ -160,7 +159,7 @@ pub fn analyze(
             let c0 = t.get(i, k);
             let c1 = t.get(i, k + 1);
             if c0 <= 0.0 || c1 <= 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Hertig log-normal model requires strictly positive cumulative cells",
                 ));
             }

@@ -2,11 +2,12 @@
 
 use crate::deterministic::cape_cod::{CapeCodEngine, CapeCodProjection};
 use crate::deterministic::ldf::DevelopmentFactors;
+use crate::error::ReservingError;
 use crate::types::TriangleView;
-use crate::validate::ValidationError;
 
 /// Diagnostic decomposition of a Cape Cod ELR fit.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct CapeCodDiagnostics {
     /// Fitted Cape Cod ELR using all origins.
     pub elr: f64,
@@ -61,21 +62,21 @@ fn sample_std_dev(values: &[f64], mean_value: f64) -> f64 {
 pub fn used_up_premium(
     premium: &[f64],
     reported_percentage: &[f64],
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     if premium.len() != reported_percentage.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     let mut out = Vec::with_capacity(premium.len());
     for (&premium_value, &reported) in premium.iter().zip(reported_percentage.iter()) {
         if !premium_value.is_finite() || !reported.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if premium_value <= 0.0 {
-            return Err(ValidationError::NonPositive("premium"));
+            return Err(ReservingError::NonPositive("premium"));
         }
         if !(0.0..=1.0).contains(&reported) {
-            return Err(ValidationError::InvalidMaturity {
+            return Err(ReservingError::InvalidMaturity {
                 index: out.len(),
                 value: reported,
             });
@@ -89,18 +90,18 @@ pub fn used_up_premium(
 pub fn cape_cod_elr_by_origin(
     latest: &[f64],
     used_premium: &[f64],
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     if latest.len() != used_premium.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     let mut out = Vec::with_capacity(latest.len());
     for (&latest_value, &used) in latest.iter().zip(used_premium.iter()) {
         if !latest_value.is_finite() || !used.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if used <= 0.0 {
-            return Err(ValidationError::DivideByZero("Cape Cod used premium"));
+            return Err(ReservingError::DivideByZero("Cape Cod used premium"));
         }
         out.push(latest_value / used);
     }
@@ -111,16 +112,16 @@ pub fn cape_cod_elr_by_origin(
 pub fn cape_cod_elr_leave_one_out(
     latest: &[f64],
     used_premium: &[f64],
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     if latest.len() != used_premium.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for (&latest_value, &used) in latest.iter().zip(used_premium.iter()) {
         if !latest_value.is_finite() || !used.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if used < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
     }
 
@@ -136,7 +137,7 @@ pub fn cape_cod_elr_leave_one_out(
             }
         }
         if leave_den <= 0.0 {
-            return Err(ValidationError::DivideByZero("Cape Cod used premium"));
+            return Err(ReservingError::DivideByZero("Cape Cod used premium"));
         }
         out.push(leave_num / leave_den);
     }
@@ -147,18 +148,18 @@ pub fn cape_cod_elr_leave_one_out(
 pub fn cape_cod_elr_stability_score(
     elr: f64,
     leave_one_out_elr: &[f64],
-) -> Result<f64, ValidationError> {
+) -> Result<f64, ReservingError> {
     if !elr.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if elr < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     if leave_one_out_elr.is_empty() {
         return Ok(1.0);
     }
     if leave_one_out_elr.iter().any(|value| !value.is_finite()) {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let mean_value = mean(leave_one_out_elr);
@@ -175,12 +176,12 @@ pub fn cape_cod_elr_stability_score(
 pub fn cape_cod_elr_credibility_score(
     used_premium: &[f64],
     stability_score: f64,
-) -> Result<f64, ValidationError> {
+) -> Result<f64, ReservingError> {
     if !stability_score.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if !(0.0..=1.0).contains(&stability_score) {
-        return Err(ValidationError::InvalidMaturity {
+        return Err(ReservingError::InvalidMaturity {
             index: 0,
             value: stability_score,
         });
@@ -190,16 +191,16 @@ pub fn cape_cod_elr_credibility_score(
     }
     for &value in used_premium {
         if !value.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if value < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
     }
 
     let total_used: f64 = used_premium.iter().sum();
     if total_used <= 0.0 {
-        return Err(ValidationError::DivideByZero("Cape Cod used premium"));
+        return Err(ReservingError::DivideByZero("Cape Cod used premium"));
     }
 
     let herfindahl: f64 = used_premium
@@ -217,7 +218,7 @@ pub fn cape_cod_elr_credibility_score(
     Ok(stability_score * concentration_score.clamp(0.0, 1.0))
 }
 
-fn from_projection(projection: CapeCodProjection) -> Result<CapeCodDiagnostics, ValidationError> {
+fn from_projection(projection: CapeCodProjection) -> Result<CapeCodDiagnostics, ReservingError> {
     let elr_by_origin = cape_cod_elr_by_origin(&projection.latest, &projection.used_premium)?;
     let leave_one_out_elr =
         cape_cod_elr_leave_one_out(&projection.latest, &projection.used_premium)?;
@@ -265,7 +266,7 @@ pub fn diagnose(
     cumulative: &TriangleView<'_>,
     factors: &DevelopmentFactors,
     premium: &[f64],
-) -> Result<CapeCodDiagnostics, ValidationError> {
+) -> Result<CapeCodDiagnostics, ReservingError> {
     let projection = CapeCodEngine::project(cumulative, factors, premium)?;
     from_projection(projection)
 }
@@ -361,7 +362,7 @@ mod tests {
 
         assert_eq!(
             used_up_premium(&premium, &reported),
-            Err(ValidationError::InvalidMaturity {
+            Err(ReservingError::InvalidMaturity {
                 index: 0,
                 value: 1.2
             })

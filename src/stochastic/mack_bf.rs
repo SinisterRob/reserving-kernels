@@ -39,12 +39,13 @@
 //!                          + (1 - z_{d_i})(1 - z_{d_j}) · Cov(E_i, E_j)`.
 
 use crate::deterministic::ldf::{DevelopmentFactorEngine, pct_reported};
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::{cumulative_to_incremental, latest_diagonal};
 use crate::stochastic::mack;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_monotone_cumulative,
-    validate_nonnegative_finite_vector, validate_positive_finite_slice, validate_triangle,
+    MonotonicityPolicy, validate_monotone_cumulative, validate_nonnegative_finite_vector,
+    validate_positive_finite_slice, validate_triangle,
 };
 
 /// How the cumulative payout pattern `z_k` is estimated from the triangle in
@@ -169,7 +170,7 @@ pub fn analyze_from_components(
     payout_se: &[f64],
     process_sigma_sq: &[f64],
     prior_correlation: f64,
-) -> Result<MackBfResult, ValidationError> {
+) -> Result<MackBfResult, ReservingError> {
     let n = latest.len();
     if n < 2
         || prior_ultimate.len() != n
@@ -178,7 +179,7 @@ pub fn analyze_from_components(
         || payout_se.len() != n
         || process_sigma_sq.len() != n
     {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_nonnegative_finite_vector(latest, n)?;
     validate_positive_finite_slice(prior_ultimate, "prior_ultimate")?;
@@ -187,17 +188,17 @@ pub fn analyze_from_components(
     validate_nonnegative_finite_vector(process_sigma_sq, n)?;
     for (idx, &z) in payout_z.iter().enumerate() {
         if !z.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if !(0.0..=1.0).contains(&z) {
-            return Err(ValidationError::InvalidMaturity {
+            return Err(ReservingError::InvalidMaturity {
                 index: idx,
                 value: z,
             });
         }
     }
     if !prior_correlation.is_finite() || !(0.0..=1.0).contains(&prior_correlation) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "prior_correlation must lie in [0, 1]",
         ));
     }
@@ -348,7 +349,7 @@ fn chain_ladder_payout_se(
     triangle: &TriangleView<'_>,
     payout_z: &[f64],
     policy: MonotonicityPolicy,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     let n = triangle.n_origins;
     let mack_fit = mack::analyze_with_policy(triangle, 1.0, policy)?;
     let mut out = vec![0.0; n];
@@ -371,19 +372,19 @@ pub fn analyze_from_triangle(
     prior_ultimate: &[f64],
     prior_se: &[f64],
     options: MackBfOptions,
-) -> Result<MackBfResult, ValidationError> {
+) -> Result<MackBfResult, ReservingError> {
     validate_triangle(triangle)?;
     if options.monotonicity_policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(triangle)?;
     }
     let n = triangle.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Mack BF triangle estimation requires at least a 3x3 triangle",
         ));
     }
     if prior_ultimate.len() != n || prior_se.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(prior_ultimate, "prior_ultimate")?;
     validate_nonnegative_finite_vector(prior_se, n)?;

@@ -45,13 +45,14 @@
 //!   deviance-monotone step-halving (reusing stored Householder reflectors across
 //!   iterations for constant-weight Gamma).
 
+use crate::error::ReservingError;
 use crate::linalg::{
     QrWorkspace, qr_cov_and_leverages_from_factored, qr_factorize_unit_cm_store_reflectors,
     qr_solve_stored_unit_into, quad_form, weighted_least_squares_qr_cm_beta_into,
     weighted_least_squares_qr_cm_cov_and_leverages,
 };
 use crate::types::TriangleView;
-use crate::validate::{MonotonicityPolicy, ValidationError, validate_positive_finite_slice};
+use crate::validate::{MonotonicityPolicy, validate_positive_finite_slice};
 
 /// Exponential-dispersion GLM family for [`fit_glm`].
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -307,7 +308,7 @@ impl<const CAP: usize> SmallBuf<CAP> {
 pub fn fit_glm(
     triangle: &TriangleView<'_>,
     options: &GlmOptions,
-) -> Result<GlmReservingResult, ValidationError> {
+) -> Result<GlmReservingResult, ReservingError> {
     let strict = options.monotonicity_policy == MonotonicityPolicy::Strict;
     let is_cross = matches!(options.design, GlmDesign::CrossClassified);
     let is_odp_family = match options.family {
@@ -317,10 +318,10 @@ pub fn fit_glm(
     };
 
     if triangle.data.len() != triangle.n_origins * triangle.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if triangle.n_origins != triangle.n_devs {
-        return Err(ValidationError::NotSquare);
+        return Err(ReservingError::NotSquare);
     }
     let n = triangle.n_origins;
     let mut latest_buf = SmallBuf::<16>::zeroed(n);
@@ -338,25 +339,25 @@ pub fn fit_glm(
         },
     )?;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "GLM reserving requires at least a 3x3 triangle",
         ));
     }
     if let GlmFamily::Tweedie { power } = options.family
         && (!power.is_finite() || !(1.0..=2.0).contains(&power))
     {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Tweedie variance power must lie in [1.0, 2.0]",
         ));
     }
     if let Some(exp) = &options.exposure {
         if exp.len() != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         validate_positive_finite_slice(exp, "exposure")?;
     }
     if options.max_iterations == 0 || !options.tolerance.is_finite() || options.tolerance <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "invalid IRLS convergence settings",
         ));
     }
@@ -395,15 +396,15 @@ fn validate_triangle_single_pass_into(
     strict: bool,
     latest_out: &mut [f64],
     mut col_sum_out: Option<&mut [f64]>,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if t.data.len() != t.n_origins * t.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if t.n_origins != t.n_devs {
-        return Err(ValidationError::NotSquare);
+        return Err(ReservingError::NotSquare);
     }
     let n = t.n_origins;
-    let mut first_non_monotone: Option<ValidationError> = None;
+    let mut first_non_monotone: Option<ReservingError> = None;
 
     for i in 0..n {
         let row_len = n - i;
@@ -413,13 +414,13 @@ fn validate_triangle_single_pass_into(
             for j in 0..row_len {
                 let v = row[j];
                 if !v.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if v < 0.0 {
-                    return Err(ValidationError::Negative);
+                    return Err(ReservingError::Negative);
                 }
                 if strict && j > 0 && v < prev && first_non_monotone.is_none() {
-                    first_non_monotone = Some(ValidationError::NonMonotoneCumulative {
+                    first_non_monotone = Some(ReservingError::NonMonotoneCumulative {
                         origin: i,
                         dev: j,
                         previous: prev,
@@ -433,13 +434,13 @@ fn validate_triangle_single_pass_into(
             for j in 0..row_len {
                 let v = row[j];
                 if !v.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if v < 0.0 {
-                    return Err(ValidationError::Negative);
+                    return Err(ReservingError::Negative);
                 }
                 if strict && j > 0 && v < prev && first_non_monotone.is_none() {
-                    first_non_monotone = Some(ValidationError::NonMonotoneCumulative {
+                    first_non_monotone = Some(ReservingError::NonMonotoneCumulative {
                         origin: i,
                         dev: j,
                         previous: prev,
@@ -463,26 +464,26 @@ fn validate_observed_increment(
     y: f64,
     family: GlmFamily,
     policy: MonotonicityPolicy,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if !y.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     match family {
         GlmFamily::Gamma | GlmFamily::LogNormal => {
             if y <= 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Gamma and LogNormal GLMs require strictly positive observed increments",
                 ));
             }
         }
         GlmFamily::Tweedie { power } if power > 1.0 => {
             if y < 0.0 {
-                return Err(ValidationError::Negative);
+                return Err(ReservingError::Negative);
             }
         }
         _ => {
             if y < 0.0 && policy == MonotonicityPolicy::Strict {
-                return Err(ValidationError::Negative);
+                return Err(ReservingError::Negative);
             }
         }
     }
@@ -1263,7 +1264,7 @@ fn try_fit_cross_classified_tweedie(
     triangle: &TriangleView<'_>,
     options: &GlmOptions,
     latest: &[f64],
-) -> Result<Option<GlmReservingResult>, ValidationError> {
+) -> Result<Option<GlmReservingResult>, ReservingError> {
     let n = triangle.n_origins;
     let q = 2 * n - 1;
     let n_obs = n * (n + 1) / 2;
@@ -1785,7 +1786,7 @@ fn try_fit_cross_classified_log_normal(
     triangle: &TriangleView<'_>,
     options: &GlmOptions,
     latest: &[f64],
-) -> Result<Option<GlmReservingResult>, ValidationError> {
+) -> Result<Option<GlmReservingResult>, ReservingError> {
     let n = triangle.n_origins;
     let m = n - 1;
     let q = 2 * n - 1;
@@ -1885,7 +1886,7 @@ fn try_fit_cross_classified_log_normal(
         for j in 0..n {
             let mu = (ui_off + v[j]).exp();
             if !mu.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             fitted_incremental[i * n + j] = mu;
             if i + j >= n {
@@ -2026,13 +2027,13 @@ fn fit_glm_general_qr(
     triangle: &TriangleView<'_>,
     options: &GlmOptions,
     latest: &[f64],
-) -> Result<GlmReservingResult, ValidationError> {
+) -> Result<GlmReservingResult, ReservingError> {
     let n = triangle.n_origins;
     let schema = GlmDesignSchema::build(n, &options.design)?;
     let q = schema.param_names.len();
     let n_obs = n * (n + 1) / 2;
     if n_obs <= q {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "GLM model has non-positive residual degrees of freedom",
         ));
     }
@@ -2091,7 +2092,7 @@ fn fit_glm_general_qr(
     let power = options
         .family
         .tweedie_power()
-        .ok_or(ValidationError::InvalidParameter(
+        .ok_or(ReservingError::InvalidParameter(
             "expected Tweedie GLM family",
         ))?;
     let is_odp = (power - 1.0).abs() < 1e-12;
@@ -2421,9 +2422,9 @@ pub fn select_tweedie_power(
     triangle: &TriangleView<'_>,
     design: GlmDesign,
     p_grid: &[f64],
-) -> Result<TweediePowerSelection, ValidationError> {
+) -> Result<TweediePowerSelection, ReservingError> {
     if p_grid.is_empty() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "p_grid must contain at least one power in [1, 2]",
         ));
     }
@@ -2443,18 +2444,18 @@ pub fn select_tweedie_power(
         }
     }
     if n_pos == 0 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     let mut candidates = Vec::with_capacity(p_grid.len());
     let mut best_score = f64::INFINITY;
     let mut best_power = f64::NAN;
     let mut best_fit: Option<GlmReservingResult> = None;
-    let mut first_err: Option<ValidationError> = None;
+    let mut first_err: Option<ReservingError> = None;
 
     for &p in p_grid {
         if !p.is_finite() || !(1.0..=2.0).contains(&p) {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "Tweedie power must lie in [1.0, 2.0]",
             ));
         }
@@ -2488,7 +2489,7 @@ pub fn select_tweedie_power(
         }
     }
 
-    let best_fit = best_fit.ok_or(first_err.unwrap_or(ValidationError::NotFinite))?;
+    let best_fit = best_fit.ok_or(first_err.unwrap_or(ReservingError::NotFinite))?;
     Ok(TweediePowerSelection {
         best_power,
         best_fit,
@@ -2509,7 +2510,7 @@ fn fit_log_normal_glm(
     n_obs: usize,
     q: usize,
     dof: usize,
-) -> Result<GlmReservingResult, ValidationError> {
+) -> Result<GlmReservingResult, ReservingError> {
     let z_obs: Vec<f64> = y_obs
         .iter()
         .zip(offsets_obs.iter())
@@ -2556,7 +2557,7 @@ fn fit_log_normal_glm(
             }
             let mu = (eta + 0.5 * sigma_sq).exp();
             if !mu.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             fitted_incremental[i * n + j] = mu;
             if i + j >= n {
@@ -2628,7 +2629,7 @@ fn fit_log_normal_glm(
         || proc_var_origin.iter().any(|v| !v.is_finite())
         || param_var_origin.iter().any(|v| !v.is_finite())
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let process_se: Vec<f64> = proc_var_origin.iter().map(|v| v.max(0.0).sqrt()).collect();
@@ -2795,7 +2796,7 @@ struct GlmDesignSchema {
 }
 
 impl GlmDesignSchema {
-    fn build(n: usize, design: &GlmDesign) -> Result<Self, ValidationError> {
+    fn build(n: usize, design: &GlmDesign) -> Result<Self, ReservingError> {
         let cap = match design {
             GlmDesign::CrossClassified => 2 * n - 1,
             GlmDesign::Hoerl {
@@ -2848,12 +2849,12 @@ impl GlmDesignSchema {
                 let mut prev = 0.0_f64;
                 for &k in calendar_knots {
                     if !k.is_finite() || k <= 0.0 || k >= (n - 1) as f64 {
-                        return Err(ValidationError::InvalidParameter(
+                        return Err(ReservingError::InvalidParameter(
                             "calendar spline knots must lie strictly inside (0, n - 1)",
                         ));
                     }
                     if k <= prev {
-                        return Err(ValidationError::InvalidParameter(
+                        return Err(ReservingError::InvalidParameter(
                             "calendar spline knots must be strictly increasing",
                         ));
                     }
@@ -3200,7 +3201,7 @@ mod tests {
         ];
         let tri = Triangle::new(3, 3, data);
         let err = fit_glm(&tri.view(), &GlmOptions::odp()).unwrap_err();
-        assert_eq!(err, ValidationError::NotFinite);
+        assert_eq!(err, ReservingError::NotFinite);
     }
 
     #[test]

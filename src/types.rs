@@ -8,7 +8,8 @@
 
 use std::fmt;
 
-use crate::validate::{ValidationError, validate_triangle};
+use crate::error::ReservingError;
+use crate::validate::validate_triangle;
 
 /// Deserialize a `Vec<f64>` where JSON `null` values map back to `f64::NAN`,
 /// enabling lossless `serde_json` round-trips for triangles containing `NaN`
@@ -31,7 +32,7 @@ struct RawTriangle {
 }
 
 impl TryFrom<RawTriangle> for Triangle {
-    type Error = ValidationError;
+    type Error = ReservingError;
 
     fn try_from(raw: RawTriangle) -> Result<Self, Self::Error> {
         Self::try_new(raw.n_origins, raw.n_devs, raw.data)
@@ -63,14 +64,18 @@ impl PartialEq for Triangle {
 }
 
 impl Triangle {
-    /// Construct a triangle from a row-major slice without validation.
+    /// Construct a triangle from a row-major buffer without validation.
     ///
-    /// Callers must ensure `data.len() == n_origins * n_devs`. Use
-    /// [`Self::try_new`] at external ingress boundaries when full validation
-    /// (square, finite, non-negative observed cells) is required.
+    /// Crate-internal only: callers must guarantee
+    /// `data.len() == n_origins * n_devs` (accessors such as
+    /// [`Self::latest_diagonal`] index the buffer directly and would panic in
+    /// release builds otherwise). Every in-crate caller derives `data` from an
+    /// existing validated triangle of the same shape or from a fixed-size
+    /// literal. External users must go through [`Self::try_new`] or the
+    /// `try_from_*` constructors.
     #[inline]
     #[must_use]
-    pub fn new(n_origins: usize, n_devs: usize, data: Vec<f64>) -> Self {
+    pub(crate) fn new(n_origins: usize, n_devs: usize, data: Vec<f64>) -> Self {
         debug_assert_eq!(data.len(), n_origins * n_devs);
         Self {
             n_origins,
@@ -88,7 +93,13 @@ impl Triangle {
         n_origins: usize,
         n_devs: usize,
         data: Vec<f64>,
-    ) -> Result<Self, ValidationError> {
+    ) -> Result<Self, ReservingError> {
+        // Checked product first: with untrusted (e.g. deserialized) dimensions
+        // `n_origins * n_devs` can overflow and wrap to `data.len()`, which
+        // would otherwise let a `2^32 × 2^32` header with empty data through.
+        if n_origins.checked_mul(n_devs) != Some(data.len()) {
+            return Err(ReservingError::ShapeMismatch);
+        }
         let triangle = Self {
             n_origins,
             n_devs,
@@ -115,24 +126,24 @@ impl Triangle {
     /// ])?;
     /// assert_eq!(tri.n(), 3);
     /// assert_eq!(tri.latest_diagonal(), vec![195.0, 190.0, 135.0]);
-    /// # Ok::<(), reserving_kernels::validate::ValidationError>(())
+    /// # Ok::<(), reserving_kernels::ReservingError>(())
     /// ```
-    pub fn try_from_upper_rows(rows: &[&[f64]]) -> Result<Self, ValidationError> {
+    pub fn try_from_upper_rows(rows: &[&[f64]]) -> Result<Self, ReservingError> {
         Self::try_from_rows(rows)
     }
 
     /// Generic variant of [`Self::try_from_upper_rows`] accepting any slice of
     /// row buffers (`&[Vec<f64>]`, `&[&[f64]]`, etc.).
-    pub fn try_from_rows<R: AsRef<[f64]>>(rows: &[R]) -> Result<Self, ValidationError> {
+    pub fn try_from_rows<R: AsRef<[f64]>>(rows: &[R]) -> Result<Self, ReservingError> {
         let n = rows.len();
         if n == 0 {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         let mut data = vec![f64::NAN; n * n];
         for (i, row) in rows.iter().enumerate() {
             let row = row.as_ref();
             if row.len() != n - i {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             data[i * n..i * n + row.len()].copy_from_slice(row);
         }
@@ -143,20 +154,20 @@ impl Triangle {
     /// incremental upper-triangle rows along each origin period.
     ///
     /// Row `i` must have length `n - i` where `n = rows.len() > 0`.
-    pub fn try_from_incremental_rows(rows: &[&[f64]]) -> Result<Self, ValidationError> {
+    pub fn try_from_incremental_rows(rows: &[&[f64]]) -> Result<Self, ReservingError> {
         let n = rows.len();
         if n == 0 {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         let mut data = vec![f64::NAN; n * n];
         for (i, row) in rows.iter().enumerate() {
             if row.len() != n - i {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             let mut acc = 0.0;
             for (j, &inc) in row.iter().enumerate() {
                 if !inc.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 acc += inc;
                 data[i * n + j] = acc;
@@ -309,13 +320,13 @@ impl TriangleView<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validate::ValidationError;
+    use crate::error::ReservingError;
 
     #[test]
     fn try_new_rejects_shape_mismatch() {
         assert_eq!(
             Triangle::try_new(2, 2, vec![1.0, 2.0, 3.0]),
-            Err(ValidationError::ShapeMismatch)
+            Err(ReservingError::ShapeMismatch)
         );
     }
 
