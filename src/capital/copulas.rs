@@ -22,7 +22,8 @@ use crate::capital::correlation::{
     rank_match_reorder, validate_and_convert_correlation_matrix,
 };
 use crate::error::ReservingError;
-use crate::stochastic::bootstrap_odp::{DeterministicRng, ln_gamma};
+use crate::special::ln_gamma;
+use crate::stochastic::bootstrap_odp::DeterministicRng;
 
 pub use crate::capital::correlation::repair_correlation_matrix;
 
@@ -106,7 +107,7 @@ pub fn student_t_cdf(x: f64, nu: f64) -> f64 {
         return f64::NAN;
     }
     if nu > 1.0e8 {
-        return crate::excess::severity::normal_cdf_exact(x);
+        return crate::special::normal_cdf(x);
     }
     let t_arg = nu / (nu + x * x);
     let ib = regularized_incomplete_beta(t_arg, 0.5 * nu, 0.5);

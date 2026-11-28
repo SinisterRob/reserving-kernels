@@ -40,13 +40,12 @@
 //! bit-for-bit on the same target / toolchain, but transcendental functions
 //! (`ln`, `exp`, `powf`) are not guaranteed correctly rounded across platforms.
 
-use std::f64::consts::TAU;
-
 use crate::capital::reserve_distribution::{ReserveDistributionSummary, summarize_with_scratch};
 use crate::deterministic::ldf::{cdfs_from_ldfs, volume_weighted_ldfs};
 use crate::error::ReservingError;
 use crate::linalg::{invert_spd, solve_lower_into};
 use crate::preprocessing::triangle::{cumulative_to_incremental, latest_diagonal};
+use crate::special::ln_gamma;
 use crate::stochastic::odp_tridiagonal::TridiagonalRank1Factor;
 use crate::types::TriangleView;
 use crate::validate::{
@@ -1223,28 +1222,6 @@ impl FastIndexSampler {
             *dst = pool[rng.next_index(self.bound)] * sm;
         }
     }
-}
-
-/// Lanczos approximation to `ln Γ(z)` for `z > 0` (accuracy ~1e-14).
-pub(crate) fn ln_gamma(z: f64) -> f64 {
-    const COEFFS: [f64; 9] = [
-        0.999_999_999_999_809_9,
-        676.520_368_121_885_1,
-        -1_259.139_216_722_402_8,
-        771.323_428_777_653_1,
-        -176.615_029_162_140_6,
-        12.507_343_278_686_905,
-        -0.138_571_095_265_720_12,
-        9.984_369_578_019_572e-6,
-        1.505_632_735_149_311_6e-7,
-    ];
-    let x = z - 1.0;
-    let mut sum = COEFFS[0];
-    for (idx, &coeff) in COEFFS.iter().enumerate().skip(1) {
-        sum += coeff / (x + idx as f64);
-    }
-    let t = x + 7.5;
-    0.5 * TAU.ln() + (x + 0.5) * t.ln() - t + sum.ln()
 }
 
 // ===========================================================================

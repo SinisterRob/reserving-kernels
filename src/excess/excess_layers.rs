@@ -173,7 +173,7 @@ impl LognormalLayerModel {
             return 0.0;
         }
         let z = (threshold.ln() - self.log_mean) * self.inv_sigma;
-        crate::excess::severity::normal_cdf_exact(-z)
+        crate::special::normal_cdf(-z)
     }
 
     /// Lognormal probability density function $f_X(x)$ at loss amount `x`.
