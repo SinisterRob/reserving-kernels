@@ -569,7 +569,7 @@ pub fn analyze_observed_counts_with_policy(
 /// let res = mack::analyze(&tri.view(), 1.0)?;
 /// assert!(res.total_reserve > 0.0);
 /// assert!(res.total_standard_error > 0.0);
-/// # Ok::<(), reserving_kernels::validate::ReservingError>(())
+/// # Ok::<(), reserving_kernels::ReservingError>(())
 /// ```
 pub fn analyze(t: &TriangleView<'_>, tail: f64) -> Result<Mack, ReservingError> {
     analyze_with_policy(t, tail, MonotonicityPolicy::AllowNegativeIncrements)

@@ -596,7 +596,7 @@ const ZIG_NORM_F: [f64; 257] = [
 // Deterministic PRNG & Exact Samplers (SplitMix64 + Xoshiro256** + Ziggurat)
 // ===========================================================================
 
-/// Rate above which [`DeterministicRng::sample_poisson`] switches from exact
+/// Rate above which the internal Poisson sampler (`DeterministicRng::sample_poisson`) switches from exact
 /// PTRD to a rounded Normal approximation (avoids catastrophic cancellation in
 /// the PTRD acceptance test for huge rates).
 pub const POISSON_NORMAL_APPROX_THRESHOLD: f64 = 1.0e9;
