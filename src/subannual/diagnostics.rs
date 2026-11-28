@@ -11,6 +11,7 @@ use crate::validate::{ValidationError, validate_positive_finite_slice};
 
 /// Output of [`equilibrium_ibnr_check`] (Robbin 2018).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct EquilibriumIbnrCheckResult {
     /// Sub-period emergence rates `(P(t_k) - P(t_{k-1})) / (t_k - t_{k-1})` (length `m - 1`).
     pub emergence_rates: Vec<f64>,
@@ -130,6 +131,7 @@ pub fn equilibrium_ibnr_check(
 
 /// Product-parity diagnostic for a single annual window `[start_age_months, end_age_months]`.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct AnnualWindowParity {
     /// Window index (`0..annual_ldfs.len()`).
     pub window_index: usize,
@@ -153,6 +155,7 @@ pub struct AnnualWindowParity {
 
 /// Output of [`subannual_product_parity`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SubannualProductParityResult {
     /// Per-window parity diagnostics.
     pub windows: Vec<AnnualWindowParity>,

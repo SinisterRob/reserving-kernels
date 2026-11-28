@@ -24,6 +24,7 @@ use crate::validate::{MonotonicityPolicy, ValidationError, validate_tail};
 /// Asymmetric ODP GLM fit diagnostics, exact hat-matrix leverages, and analytic
 /// prediction errors.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct AsymmetricOdpFit {
     /// Number of origin periods.
     pub n_origins: usize,
@@ -65,6 +66,7 @@ pub struct AsymmetricOdpFit {
 
 /// Full output of [`asymmetric_odp_bootstrap`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct AsymmetricOdpBootstrapResult {
     /// Underlying asymmetric ODP GLM fit.
     pub fit: AsymmetricOdpFit,
@@ -615,7 +617,7 @@ mod tests {
             }
         }
 
-        let opts = OdpBootstrapOptions::shapland(250, 12345);
+        let opts = OdpBootstrapOptions::shapland(250, 42069);
         let boot = asymmetric_odp_bootstrap(&cum, &grid, 1.0, opts).unwrap();
         assert!((boot.fit.leverage_sum - boot.fit.n_params as f64).abs() < 1e-8);
         assert_eq!(boot.simulated_totals.len() + boot.failed_iterations, 250);

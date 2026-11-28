@@ -23,21 +23,24 @@ fn asymmetric_age_grid_handles_2_to_1_4_to_1_and_12_to_1_strides() {
     let g2 = asymmetric_age_grid(4, 8, 12.0, 6.0, 6.0, None).unwrap();
     assert!((g2.stride_ratio - 2.0).abs() < 1e-12);
     assert_eq!(g2.observed_counts, vec![8, 6, 4, 2]);
-    assert_eq!(g2.latest_ages_months(), vec![48.0, 36.0, 24.0, 12.0]);
+    assert_eq!(
+        g2.latest_ages_months().unwrap(),
+        vec![48.0, 36.0, 24.0, 12.0]
+    );
 
     // 4:1 (annual × quarterly, 3-month Q1 stub valuation)
     let g4 = asymmetric_age_grid(3, 12, 12.0, 3.0, 3.0, Some(3.0)).unwrap();
     assert!((g4.stride_ratio - 4.0).abs() < 1e-12);
     assert_eq!(g4.observed_counts, vec![9, 5, 1]);
-    assert_eq!(g4.latest_ages_months(), vec![27.0, 15.0, 3.0]);
+    assert_eq!(g4.latest_ages_months().unwrap(), vec![27.0, 15.0, 3.0]);
     assert!((g4.exposure_fractions()[2] - 0.25).abs() < 1e-12);
-    assert!((g4.cell_average_age(2, 0) - 1.5).abs() < 1e-12);
+    assert!((g4.cell_average_age(2, 0).unwrap() - 1.5).abs() < 1e-12);
 
     // 12:1 (annual × monthly, 6-month stub valuation)
     let g12 = asymmetric_age_grid(2, 24, 12.0, 1.0, 1.0, Some(6.0)).unwrap();
     assert!((g12.stride_ratio - 12.0).abs() < 1e-12);
     assert_eq!(g12.observed_counts, vec![18, 6]);
-    assert!((g12.cell_average_age(1, 5) - 3.0).abs() < 1e-12);
+    assert!((g12.cell_average_age(1, 5).unwrap() - 3.0).abs() < 1e-12);
 }
 
 #[test]
@@ -69,7 +72,7 @@ fn calendar_diagonal_index_pinpoints_shock_on_quarterly_asymmetric_grid() {
     let target_month = 39.0;
     for i in 0..4 {
         for j in 0..grid.observed_counts[i] {
-            let cm = grid.origin_start_months[i] + grid.cell_age(i, j);
+            let cm = grid.origin_start_months[i] + grid.cell_age(i, j).unwrap();
             residuals[i * 16 + j] = if (cm - target_month).abs() < 1e-9 {
                 5.0
             } else {
@@ -88,8 +91,13 @@ fn calendar_diagonal_index_pinpoints_shock_on_quarterly_asymmetric_grid() {
 // 2. Sub-Annual LDF & CDF Interpolation
 // ===========================================================================
 
+/// Annual-window product parity telescopes (`prod CDF(t_k)/CDF(t_{k+1}) =
+/// CDF(start)/CDF(end)`), so for any interpolator it is *equivalent* to knot
+/// preservation. This test therefore checks knot preservation directly, plus
+/// monotonicity and `CDF >= 1` on a real industry pattern, and then proves the
+/// parity diagnostic is not vacuous by showing it flags a perturbed pattern.
 #[test]
-fn all_seven_interpolators_pass_parity_on_friedland_auto_pattern() {
+fn all_seven_interpolators_preserve_knots_and_parity_detects_breakage_on_friedland_auto() {
     let auto = friedland_us_industry_auto();
     let factors = auto.paid.ldfs(1.0).unwrap();
     let n = factors.cdfs.len();
@@ -107,6 +115,28 @@ fn all_seven_interpolators_pass_parity_on_friedland_auto_pattern() {
     ] {
         let pat = interpolate_pattern(method, &annual_ages, &factors.cdfs, &quarterly_ages)
             .expect("interpolate Friedland Auto");
+        // Knot k (age 12(k+1)) sits at quarterly index 4k.
+        for (k, &expected) in factors.cdfs.iter().enumerate() {
+            let got = pat.cdfs[4 * k];
+            assert!(
+                (got - expected).abs() <= 1e-10 * expected,
+                "{method:?} knot {k}: got {got}, expected {expected}"
+            );
+        }
+        for (k, w) in pat.cdfs.windows(2).enumerate() {
+            assert!(
+                w[0] >= w[1] - 1e-10,
+                "{method:?} non-monotone at quarterly index {k}: {} < {}",
+                w[0],
+                w[1]
+            );
+        }
+        assert!(
+            pat.cdfs.iter().all(|&c| c >= 1.0 - 1e-12),
+            "{method:?} CDF < 1"
+        );
+
+        // Parity passes on the untouched pattern...
         let parity = subannual_product_parity(
             &annual_ages,
             &factors.ldfs,
@@ -115,10 +145,23 @@ fn all_seven_interpolators_pass_parity_on_friedland_auto_pattern() {
             1e-9,
         )
         .expect("parity");
+        assert!(parity.passed, "{method:?}: {}", parity.max_abs_error);
+
+        // ...and fails once a single sub-annual LDF in window 0 is bumped by 1%.
+        let mut broken = pat.ldfs.clone();
+        broken[1] *= 1.01;
+        let parity_broken =
+            subannual_product_parity(&annual_ages, &factors.ldfs, &pat.ages_months, &broken, 1e-9)
+                .expect("parity");
         assert!(
-            parity.passed,
-            "{method:?} failed quarterly product parity on Friedland Auto: max_abs={}",
-            parity.max_abs_error
+            !parity_broken.passed,
+            "{method:?}: parity missed a 1% break"
+        );
+        assert!(!parity_broken.windows[0].within_tolerance);
+        assert!(
+            parity_broken.windows[1..]
+                .iter()
+                .all(|w| w.within_tolerance)
         );
     }
 }
@@ -164,18 +207,37 @@ fn spliced_weibull_reproduces_exact_weibull_emergence_curve() {
 }
 
 #[test]
-fn ivf12_satisfies_exact_12_month_volume_factor_identity() {
+fn ivf12_satisfies_exact_12_month_factor_identity_and_differs_from_exponential() {
     let annual_ages = [12.0, 24.0, 36.0, 48.0, 60.0];
     let annual_cdfs = [2.60, 1.50, 1.20, 1.07, 1.00];
     let monthly_ages: Vec<f64> = (12..=60).map(f64::from).collect();
     let pat = interp_ivf12(&annual_ages, &annual_cdfs, &monthly_ages).unwrap();
+    let ex = interp_exponential(&annual_ages, &annual_cdfs, &monthly_ages).unwrap();
 
-    // At month 18, F_12(18) = CDF(18)/CDF(30) should equal geometric mean sqrt(F_12(12) * F_12(24)).
-    let f12_12 = annual_cdfs[0] / annual_cdfs[1];
-    let f12_24 = annual_cdfs[1] / annual_cdfs[2];
-    let expected_f12_18 = (f12_12 * f12_24).sqrt();
-    let got_f12_18 = pat.cdfs[6] / pat.cdfs[18]; // index 6 = 18m, index 18 = 30m
-    assert!((got_f12_18 - expected_f12_18).abs() < 1e-12);
+    // Rolling 12-month factor F(t) = CDF(t) / CDF(t + 12) is the smooth
+    // interpolant itself; at the knots it equals the annual LDFs exactly.
+    for k in 0..4 {
+        let got = pat.cdfs[12 * k] / pat.cdfs[12 * (k + 1)];
+        let expected = annual_cdfs[k] / annual_cdfs[k + 1];
+        assert!((got - expected).abs() < 1e-12);
+    }
+    // In the final window CDF(t) = CDF(60) * F(t), and F is monotone between
+    // its knot values F(48) = 1.07 and F(60) = 1.0.
+    for idx in 37..48 {
+        let f = pat.cdfs[idx] / annual_cdfs[4];
+        assert!(f > 1.0 && f < 1.07, "F({}) = {f}", monthly_ages[idx]);
+    }
+    // Genuinely distinct from geometric interpolation off the knots.
+    let max_diff = pat
+        .cdfs
+        .iter()
+        .zip(ex.cdfs.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_diff > 1e-2,
+        "IVF12 collapsed onto exponential: {max_diff}"
+    );
 }
 
 // ===========================================================================
@@ -266,13 +328,15 @@ fn clark_mle_exact_age_recovers_truth_on_asymmetric_quarterly_stub_triangle() {
     for i in 0..5 {
         let u_i = earned_prem[i] * elr_true;
         for j in 0..grid.observed_counts[i] {
-            let avg_age = grid.cell_average_age(i, j);
+            let avg_age = grid.cell_average_age(i, j).unwrap();
             let g = GrowthCurve::Loglogistic.eval(avg_age, omega_true, theta_true);
             // Tiny deterministic noise so sigma_sq > 0 and Fisher matrix is well-conditioned.
             let noise = 1.0 + 1e-4 * (((i * 5 + j * 3) % 7) as f64 - 3.0);
             cum[i * 16 + j] = u_i * g * noise;
         }
-        let last_age = grid.cell_average_age(i, grid.observed_counts[i] - 1);
+        let last_age = grid
+            .cell_average_age(i, grid.observed_counts[i] - 1)
+            .unwrap();
         let g_last = GrowthCurve::Loglogistic.eval(last_age, omega_true, theta_true);
         expected_total_res += u_i * (1.0 - g_last);
     }
@@ -284,11 +348,7 @@ fn clark_mle_exact_age_recovers_truth_on_asymmetric_quarterly_stub_triangle() {
         grid.n_devs,
         &grid.observed_counts,
         &earned_prem,
-        &ClarkExactAgeOptions {
-            curve: GrowthCurve::Loglogistic,
-            max_age: None,
-            monotonicity_policy: MonotonicityPolicy::Strict,
-        },
+        &ClarkExactAgeOptions::loglogistic().with_monotonicity_policy(MonotonicityPolicy::Strict),
     )
     .unwrap();
 
@@ -310,7 +370,7 @@ fn asymmetric_odp_bootstrap_is_deterministic_and_supports_all_modes() {
 
     let opts_a = OdpBootstrapOptions {
         iterations: 100,
-        seed: 777,
+        seed: 42069,
         residual_adjustment: ResidualAdjustment::HatMatrixLeverage,
         process_distribution: ProcessDistribution::OverDispersedPoisson,
         center_residuals: true,
