@@ -8,8 +8,12 @@
 
 use reserving_kernels::{
     ReservingError,
-    stochastic::bootstrap_odp::{OdpBootstrapOptions, OdpNumerics},
+    stochastic::bootstrap_odp::{
+        OdpBootstrapOptions, OdpNumerics, ProcessDistribution, bootstrap, bootstrap_odp,
+        bootstrap_odp_with_numerics, fit_odp,
+    },
     stochastic::clark_mle::{ClarkCovariance, ClarkOptions, fit_clark_cape_cod, fit_clark_ldf},
+    stochastic::glm_reserving::{GlmDesign, GlmFamily, GlmOptions, fit_glm, select_tweedie_power},
     stochastic::mack::{self, MackOptions},
     stochastic::mack_bf::{self, BfPayoutEstimator, MackBfOptions},
     stochastic::merz_wuthrich,
@@ -390,4 +394,367 @@ fn runoff_failed_fraction_threshold_is_validated_and_clean_runs_pass() {
     )
     .expect("odp runoff");
     assert_eq!(odp.failed_iterations, 0);
+}
+
+// ===========================================================================
+// S2: GLM log-normal bias correction & consistent MSEP
+// ===========================================================================
+
+/// Minimal deterministic SplitMix64 + Box-Muller for test-side simulation.
+struct TestRng(u64);
+
+impl TestRng {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    fn uniform(&mut self) -> f64 {
+        ((self.next_u64() >> 11) as f64 + 0.5) / 9_007_199_254_740_992.0
+    }
+    fn normal(&mut self) -> f64 {
+        let u1 = self.uniform();
+        let u2 = self.uniform();
+        (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    }
+}
+
+/// True log-linear increments `exp(a_i + b_j)` for an `n × n` model.
+fn log_linear_eta(n: usize) -> Vec<f64> {
+    let mut eta = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            let a = 8.0 + 0.05 * i as f64;
+            let b = if j == 0 { 0.0 } else { 0.6 - 0.45 * j as f64 };
+            eta[i * n + j] = a + b;
+        }
+    }
+    eta
+}
+
+fn simulate_log_normal_triangle(n: usize, sigma: f64, rng: &mut TestRng) -> (Triangle, f64) {
+    let eta = log_linear_eta(n);
+    let mut data = vec![NAN; n * n];
+    let mut future = 0.0;
+    for i in 0..n {
+        let mut cum = 0.0;
+        for j in 0..n {
+            let y = (eta[i * n + j] + sigma * rng.normal()).exp();
+            if i + j < n {
+                cum += y;
+                data[i * n + j] = cum;
+            } else {
+                future += y;
+            }
+        }
+    }
+    (Triangle::try_new(n, n, data).expect("triangle"), future)
+}
+
+#[test]
+fn log_normal_glm_uses_bias_corrected_means_and_consistent_msep() {
+    let mut rng = TestRng(42069);
+    let (tri, _) = simulate_log_normal_triangle(8, 0.3, &mut rng);
+    let fit = fit_glm(&tri.view(), &GlmOptions::log_normal()).expect("log-normal");
+    let n = 8;
+    let sigma_sq = fit.pearson_dispersion;
+    // Process variance is exactly Σ_future μ̂²(e^{σ̂²} − 1).
+    let mut proc = 0.0;
+    let mut reserve = 0.0;
+    for i in 0..n {
+        for j in (n - i)..n {
+            let mu = fit.fitted_incremental[i * n + j];
+            proc += mu * mu * sigma_sq.exp_m1();
+            reserve += mu;
+        }
+    }
+    assert!(close_rel(fit.total_process_se.powi(2), proc, 1e-10));
+    assert!(close_rel(fit.total_reserve, reserve, 1e-12));
+    assert!(close_rel(
+        fit.total_prediction_error.powi(2),
+        fit.total_process_se.powi(2) + fit.total_parameter_se.powi(2),
+        1e-12
+    ));
+    // Bias correction: each future mean sits below the naive exp(η̂ + σ̂²/2)
+    // by exactly exp(-v/2) with v = Var(η̂) > 0; reconstruct the naive mean
+    // from the coefficients (corner coding: intercept + row + column).
+    let c = &fit.coefficients;
+    let eta_hat = |i: usize, j: usize| -> f64 {
+        let mut e = c[0];
+        if i > 0 {
+            e += c[i];
+        }
+        if j > 0 {
+            e += c[n - 1 + j];
+        }
+        e
+    };
+    for i in 1..n {
+        let j = n - 1;
+        let naive = (eta_hat(i, j) + 0.5 * sigma_sq).exp();
+        assert!(fit.fitted_incremental[i * n + j] < naive);
+    }
+    assert_eq!(fit.eta_clamp_hits, 0);
+}
+
+/// Seeded Monte Carlo: bias of the reserve estimator < 2% and realised MSEP
+/// ≈ reported MSEP. Slow: run with `cargo test -- --include-ignored`.
+#[test]
+#[ignore = "slow seeded Monte Carlo; run with --include-ignored"]
+fn log_normal_glm_bias_and_msep_ratio_seeded_monte_carlo() {
+    let n = 10;
+    let sigma = 0.3;
+    let eta = log_linear_eta(n);
+    let true_mean: f64 = (0..n)
+        .flat_map(|i| ((n - i)..n).map(move |j| (i, j)))
+        .map(|(i, j)| (eta[i * n + j] + 0.5 * sigma * sigma).exp())
+        .sum();
+    let mut rng = TestRng(42069);
+    let sims = 2000;
+    let mut sum_hat = 0.0;
+    let mut sum_sq_err = 0.0;
+    let mut sum_msep = 0.0;
+    for _ in 0..sims {
+        let (tri, future) = simulate_log_normal_triangle(n, sigma, &mut rng);
+        let fit = fit_glm(&tri.view(), &GlmOptions::log_normal()).expect("fit");
+        sum_hat += fit.total_reserve;
+        sum_sq_err += (future - fit.total_reserve).powi(2);
+        sum_msep += fit.total_prediction_error.powi(2);
+    }
+    let bias = sum_hat / f64::from(sims) / true_mean - 1.0;
+    assert!(bias.abs() < 0.02, "relative bias {bias}");
+    let ratio = sum_sq_err / sum_msep;
+    assert!(
+        (0.85..1.20).contains(&ratio),
+        "realised/reported MSEP {ratio}"
+    );
+}
+
+// ===========================================================================
+// S2: Tweedie p = 2 zero handling, EQL selection, ODP deviance consistency
+// ===========================================================================
+
+fn genins_with_zero_increment() -> Triangle {
+    let g = genins_triangle();
+    let n = 10;
+    let mut data = g.data().to_vec();
+    // Make the (1, 8) increment exactly zero: C[1,8] = C[1,7].
+    data[n + 8] = data[n + 7];
+    Triangle::try_new(n, n, data).expect("triangle")
+}
+
+#[test]
+fn tweedie_power_two_rejects_zero_increments_like_gamma() {
+    let tri = genins_with_zero_increment();
+    assert!(fit_glm(&tri.view(), &GlmOptions::tweedie(2.0)).is_err());
+    assert!(fit_glm(&tri.view(), &GlmOptions::gamma()).is_err());
+    assert!(fit_glm(&tri.view(), &GlmOptions::tweedie(1.5)).is_ok());
+    let sel = select_tweedie_power(&tri.view(), GlmDesign::CrossClassified, &[1.2, 1.5, 2.0])
+        .expect("selection");
+    assert!(sel.candidates.iter().all(|c| c.power < 2.0));
+    assert!(sel.best_power < 2.0);
+    assert!(sel.best_fit.converged);
+}
+
+#[test]
+fn odp_glm_deviance_with_negative_increments_uses_abs_y_convention() {
+    let raa = raa_triangle();
+    let mut opts = GlmOptions::odp();
+    opts.monotonicity_policy = MonotonicityPolicy::AllowNegativeIncrements;
+    let fit = fit_glm(&raa.view(), &opts).expect("odp raa");
+    let n = 10;
+    let mut dev = 0.0;
+    let mut saw_negative = false;
+    for i in 0..n {
+        for j in 0..(n - i) {
+            let y = if j == 0 {
+                raa.get(i, 0)
+            } else {
+                raa.get(i, j) - raa.get(i, j - 1)
+            };
+            let mu = fit.fitted_incremental[i * n + j];
+            let term = if y > 0.0 {
+                y * (y / mu).ln()
+            } else if y < 0.0 {
+                saw_negative = true;
+                y * (-y / mu).ln()
+            } else {
+                0.0
+            };
+            dev += 2.0 * (term - (y - mu));
+        }
+    }
+    assert!(saw_negative);
+    assert!(
+        close_rel(fit.deviance, dev, 1e-9),
+        "{} vs {dev}",
+        fit.deviance
+    );
+    assert!(close_rel(
+        fit.deviance_dispersion,
+        dev / fit.degrees_of_freedom as f64,
+        1e-9
+    ));
+}
+
+#[test]
+fn glm_options_expose_numerical_tunables() {
+    let g = genins_triangle();
+    let base = fit_glm(&g.view(), &GlmOptions::tweedie(1.5)).expect("base");
+    let mut opts = GlmOptions::tweedie(1.5);
+    opts.max_step_halvings = 40;
+    opts.y_floor_relative = 1e-3;
+    opts.eta_clamp = 60.0;
+    let alt = fit_glm(&g.view(), &opts).expect("alt");
+    assert_eq!(base.eta_clamp_hits, 0);
+    assert_eq!(alt.eta_clamp_hits, 0);
+    assert!(close_rel(base.total_reserve, alt.total_reserve, 1e-6));
+    assert_eq!(GlmFamily::Odp, GlmOptions::default().family);
+}
+
+// ===========================================================================
+// S2: ODP bootstrap — tail in analytic PE, bootstrap == bootstrap_odp,
+// reflection branches, zero-residual exclusion, golden stream
+// ===========================================================================
+
+#[test]
+fn odp_analytic_prediction_error_includes_fixed_tail() {
+    let g = genins_triangle();
+    let f1 = fit_odp(&g.view(), 1.0, MonotonicityPolicy::Strict).expect("fit");
+    let ft = fit_odp(&g.view(), 1.10, MonotonicityPolicy::Strict).expect("fit tail");
+    // Parameter SE scales by tail; process SE uses the tail-inclusive reserve.
+    assert!(close_rel(
+        ft.analytic_total_param_se,
+        1.10 * f1.analytic_total_param_se,
+        1e-10
+    ));
+    assert!(close_rel(
+        ft.analytic_total_process_se.powi(2),
+        ft.dispersion * ft.total_reserve,
+        1e-10
+    ));
+    // Analytic PE is consistent with the bootstrap SD (E&V 2002 pool).
+    let boot = bootstrap_odp(
+        &g.view(),
+        1.10,
+        OdpBootstrapOptions::england_verrall(4000, 42069),
+    )
+    .expect("boot");
+    let sd = boot.summary.std_dev;
+    let ratio = sd / ft.analytic_total_prediction_error;
+    assert!(
+        (0.93..1.07).contains(&ratio),
+        "bootstrap SD {sd} vs analytic {}",
+        ft.analytic_total_prediction_error
+    );
+}
+
+#[test]
+fn legacy_bootstrap_is_identical_projection_of_bootstrap_odp() {
+    let g = genins_triangle();
+    for opts in [
+        OdpBootstrapOptions::england_verrall(203, 42069),
+        OdpBootstrapOptions::shapland(203, 42069),
+        OdpBootstrapOptions::england_verrall(50, 7)
+            .with_process_distribution(ProcessDistribution::OverDispersedPoisson),
+    ] {
+        let full = bootstrap_odp(&g.view(), 1.05, opts).expect("full");
+        let compact = bootstrap(&g.view(), 1.05, opts).expect("compact");
+        assert_eq!(full.simulated_totals, compact.simulated_totals);
+        assert_eq!(full.failed_iterations, compact.failed_iterations);
+        assert_eq!(compact.failed_iterations, 0);
+    }
+    let zero = bootstrap(&g.view(), 1.0, OdpBootstrapOptions::england_verrall(0, 1));
+    assert_eq!(zero.map(|_| ()), Err(ReservingError::InvalidIterations));
+}
+
+#[test]
+fn negative_pseudo_increments_are_reflected_on_x4_and_scalar_paths() {
+    // RAA-like late development makes pseudo-LDFs < 1 frequent.
+    let g = genins_triangle();
+    // x4 vectorised path: Gamma, iterations >= 4; scalar path: ODP process.
+    for (opts, label) in [
+        (
+            OdpBootstrapOptions::england_verrall(4001, 42069),
+            "x4+scalar",
+        ),
+        (
+            OdpBootstrapOptions::england_verrall(1000, 42069)
+                .with_process_distribution(ProcessDistribution::OverDispersedPoisson),
+            "scalar",
+        ),
+    ] {
+        let boot = bootstrap_odp(&g.view(), 1.0, opts).expect(label);
+        let origin1 = &boot.simulated_by_origin[1];
+        assert!(origin1.iter().all(|v| v.is_finite()), "{label}");
+        assert!(
+            origin1.iter().any(|&v| v < 0.0),
+            "{label}: reflection should produce some negative origin-1 reserves"
+        );
+        let mean = boot.summary.mean;
+        assert!(close_rel(mean, boot.base_total_reserve, 0.05), "{label}");
+    }
+}
+
+#[test]
+fn zero_residual_exclusion_option_changes_degrees_of_freedom_pool_only() {
+    let g = genins_triangle();
+    let opts = OdpBootstrapOptions::england_verrall(500, 42069);
+    let keep = bootstrap_odp(&g.view(), 1.0, opts).expect("keep");
+    let drop = bootstrap_odp_with_numerics(
+        &g.view(),
+        1.0,
+        opts,
+        OdpNumerics {
+            exclude_zero_residuals: true,
+            ..OdpNumerics::default()
+        },
+    )
+    .expect("drop");
+    assert_ne!(keep.simulated_totals, drop.simulated_totals);
+    assert!(close_rel(keep.summary.mean, drop.summary.mean, 0.05));
+    // Hat-matrix pool already excludes saturated cells: option is a no-op there.
+    let sh = OdpBootstrapOptions::shapland(200, 42069);
+    let a = bootstrap_odp(&g.view(), 1.0, sh).expect("a");
+    let b = bootstrap_odp_with_numerics(
+        &g.view(),
+        1.0,
+        sh,
+        OdpNumerics {
+            exclude_zero_residuals: true,
+            ..OdpNumerics::default()
+        },
+    )
+    .expect("b");
+    assert_eq!(a.simulated_totals, b.simulated_totals);
+}
+
+/// Golden pin of the first bootstrap draws for seed 42069 (E&V 2002 spec,
+/// GenIns, tail 1.0). Bit-exact only per platform: restricted to
+/// linux / x86_64 where it was recorded, to detect RNG / stream changes.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn bootstrap_odp_first_draws_golden_seed_42069() {
+    let g = genins_triangle();
+    let boot = bootstrap_odp(
+        &g.view(),
+        1.0,
+        OdpBootstrapOptions::england_verrall(8, 42069),
+    )
+    .expect("boot");
+    let golden: [f64; 8] = [
+        21_214_431.632_405_326,
+        17_721_598.399_976_738,
+        18_909_734.996_420_678,
+        19_719_445.977_566_436,
+        21_994_147.204_176_97,
+        17_408_756.868_490_62,
+        17_110_393.182_354_525,
+        14_339_983.178_005_299,
+    ];
+    let got: Vec<u64> = boot.simulated_totals.iter().map(|v| v.to_bits()).collect();
+    let want: Vec<u64> = golden.iter().map(|v| v.to_bits()).collect();
+    assert_eq!(got, want, "draws: {:?}", boot.simulated_totals);
 }

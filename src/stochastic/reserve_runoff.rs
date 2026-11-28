@@ -51,7 +51,7 @@ use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::stochastic::bootstrap_odp::{
     DeterministicRng, FastIndexSampler, OdpBootstrapOptions, OdpBootstrapScratch, OdpNumerics,
-    build_adjusted_residual_pool, fit_odp, refit_pseudo_ldfs_from_pool,
+    build_adjusted_residual_pool_with, fit_odp_with_numerics, refit_pseudo_ldfs_from_pool,
     sample_process_increment_fast,
 };
 use crate::stochastic::mack;
@@ -604,6 +604,7 @@ pub fn mack_one_year_runoff_with_options(
     }
     OdpNumerics {
         max_failed_fraction: options.max_failed_fraction,
+        ..OdpNumerics::default()
     }
     .validate()?;
     validate_tail(tail)?;
@@ -812,6 +813,7 @@ pub fn mack_one_year_runoff_with_options(
         failed_iterations,
         OdpNumerics {
             max_failed_fraction: options.max_failed_fraction,
+            ..OdpNumerics::default()
         },
     )
 }
@@ -854,9 +856,13 @@ pub fn odp_one_year_runoff_with_numerics(
     }
     validate_tail(tail)?;
 
-    let fit = fit_odp(triangle, tail, options.monotonicity_policy)?;
-    let (pool, _) =
-        build_adjusted_residual_pool(&fit, options.residual_adjustment, options.center_residuals)?;
+    let fit = fit_odp_with_numerics(triangle, tail, options.monotonicity_policy, numerics)?;
+    let (pool, _) = build_adjusted_residual_pool_with(
+        &fit,
+        options.residual_adjustment,
+        options.center_residuals,
+        numerics.exclude_zero_residuals,
+    )?;
 
     let n = fit.n_origins;
     if n < 3 {

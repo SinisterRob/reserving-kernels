@@ -14,7 +14,9 @@ use reserving_kernels::ReservingError;
 use reserving_kernels::datasets::genins;
 use reserving_kernels::deterministic::ldf::LdfSelectionMethod;
 use reserving_kernels::stochastic::bootstrap_odp::OdpBootstrapOptions;
-use reserving_kernels::stochastic::clark_mle::{ClarkOptions, fit_clark_cape_cod, fit_clark_ldf};
+use reserving_kernels::stochastic::clark_mle::{
+    ClarkCovariance, ClarkOptions, fit_clark_cape_cod, fit_clark_ldf,
+};
 use reserving_kernels::subannual::*;
 use reserving_kernels::validate::MonotonicityPolicy;
 
@@ -472,7 +474,11 @@ fn clark_exact_age_on_annual_grid_matches_square_clark_mle() {
         assert_eq!(grid.cell_average_age(0, j), Some(12.0 * (j as f64 + 0.5)));
     }
 
-    let sq = fit_clark_ldf(&tri.view(), &ClarkOptions::loglogistic()).unwrap();
+    let sq = fit_clark_ldf(
+        &tri.view(),
+        &ClarkOptions::loglogistic().with_covariance(ClarkCovariance::Expected),
+    )
+    .unwrap();
     let ex = fit_clark_ldf_exact_age(
         tri.data(),
         &grid.cell_average_ages_months,
@@ -503,7 +509,12 @@ fn clark_exact_age_on_annual_grid_matches_square_clark_mle() {
     );
 
     let prem = vec![10_000_000.0; n];
-    let sq_cc = fit_clark_cape_cod(&tri.view(), &prem, &ClarkOptions::weibull()).unwrap();
+    let sq_cc = fit_clark_cape_cod(
+        &tri.view(),
+        &prem,
+        &ClarkOptions::weibull().with_covariance(ClarkCovariance::Expected),
+    )
+    .unwrap();
     let ex_cc = fit_clark_cape_cod_exact_age(
         tri.data(),
         &grid.cell_average_ages_months,

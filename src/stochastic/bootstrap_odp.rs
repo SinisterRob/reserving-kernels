@@ -35,6 +35,10 @@
 //! common dispersion `φ`, per-origin future reserves are sampled directly in
 //! `O(n)` per iteration while preserving exact distributional equivalence
 //! (including Shapland reflection for negative pseudo-increments).
+//!
+//! Reproducibility is per platform: a fixed seed reproduces the draw stream
+//! bit-for-bit on the same target / toolchain, but transcendental functions
+//! (`ln`, `exp`, `powf`) are not guaranteed correctly rounded across platforms.
 
 use std::f64::consts::TAU;
 
@@ -117,12 +121,25 @@ pub struct OdpNumerics {
     /// tails; above this fraction the run returns
     /// [`ReservingError::InvalidParameter`] instead of a silently biased result.
     pub max_failed_fraction: f64,
+    /// A cell is structurally saturated when `1 − h_ii <= leverage_saturation_tol`
+    /// (default `1e-10`); saturated cells are excluded from the
+    /// [`ResidualAdjustment::HatMatrixLeverage`] pool and flagged in
+    /// [`OdpCellResidual::saturated`].
+    pub leverage_saturation_tol: f64,
+    /// Exclude structurally zero (saturated corner) residuals from the
+    /// [`ResidualAdjustment::DegreesOfFreedom`] pool as recommended by Shapland
+    /// (2016, §3.4). Default `false` keeps England & Verrall (2002) parity
+    /// (their pool keeps the zero corner residuals and the published GenIns
+    /// golden values depend on it).
+    pub exclude_zero_residuals: bool,
 }
 
 impl Default for OdpNumerics {
     fn default() -> Self {
         Self {
             max_failed_fraction: 0.01,
+            leverage_saturation_tol: 1e-10,
+            exclude_zero_residuals: false,
         }
     }
 }
@@ -133,6 +150,13 @@ impl OdpNumerics {
             return Err(ReservingError::InvalidProbability {
                 value: self.max_failed_fraction,
             });
+        }
+        if !self.leverage_saturation_tol.is_finite()
+            || !(0.0..1.0).contains(&self.leverage_saturation_tol)
+        {
+            return Err(ReservingError::InvalidParameter(
+                "leverage_saturation_tol must lie in [0, 1)",
+            ));
         }
         Ok(())
     }
@@ -235,6 +259,8 @@ pub struct BootstrapResult {
     pub simulated_totals: Vec<f64>,
     /// Summary percentiles and moments.
     pub summary: BootstrapSummary,
+    /// Number of bootstrap draws rejected due to degenerate pseudo-triangles.
+    pub failed_iterations: usize,
 }
 
 /// Cell-level residual and hat-matrix leverage record from [`fit_odp`].
@@ -289,9 +315,12 @@ pub struct OdpFit {
     pub origin_reserves: Vec<f64>,
     /// Aggregate point-estimate reserve.
     pub total_reserve: f64,
-    /// Analytic ODP process standard error by origin (pre-tail).
+    /// Analytic ODP process standard error by origin `sqrt(φ · R_i)` (including tail;
+    /// a tail > 1 is treated as a fixed, known factor).
     pub analytic_origin_process_se: Vec<f64>,
-    /// Analytic ODP parameter estimation standard error by origin (pre-tail).
+    /// Analytic ODP parameter estimation standard error by origin: delta-method
+    /// GLM variance of the pre-tail reserve scaled by `tail²` (since
+    /// `R_i = C_i (tail · CDF_i − 1)` with `C_i` observed).
     pub analytic_origin_param_se: Vec<f64>,
     /// Analytic ODP total prediction error by origin (England & Verrall 1999, Table 2).
     pub analytic_origin_prediction_error: Vec<f64>,
@@ -566,6 +595,11 @@ const ZIG_NORM_F: [f64; 257] = [
 // Deterministic PRNG & Exact Samplers (SplitMix64 + Xoshiro256** + Ziggurat)
 // ===========================================================================
 
+/// Rate above which [`DeterministicRng::sample_poisson`] switches from exact
+/// PTRD to a rounded Normal approximation (avoids catastrophic cancellation in
+/// the PTRD acceptance test for huge rates).
+pub const POISSON_NORMAL_APPROX_THRESHOLD: f64 = 1.0e9;
+
 /// Deterministic SplitMix64-seeded Xoshiro256** PRNG with exact Ziggurat
 /// Normal, Marsaglia–Tsang Gamma, and Knuth/Hörmann PTRD Poisson samplers.
 /// Shared with [`crate::capital::dependence`], [`crate::stochastic::hertig`], [`crate::stochastic::micro_reserving`],
@@ -680,6 +714,27 @@ impl DeterministicRng {
         self.sample_gamma_ge1(shape) * scale
     }
 
+    /// Natural log of a `Gamma(shape, 1)` draw computed in log space.
+    ///
+    /// For `shape < 1` uses Marsaglia & Tsang's boost
+    /// `ln G = ln G_{shape+1} + ln(U) / shape`, which stays finite where
+    /// `g · u^{1/shape}` underflows to `0` (tiny shapes, e.g. Clayton frailty
+    /// with small θ). Returns `NEG_INFINITY` for a non-positive / non-finite
+    /// shape. Consumes the same RNG stream as [`Self::sample_gamma`].
+    #[inline]
+    #[allow(dead_code)] // Reserved for the capital Clayton frailty sampler.
+    pub(crate) fn sample_gamma_ln(&mut self, shape: f64) -> f64 {
+        if !(shape > 0.0) || !shape.is_finite() {
+            return f64::NEG_INFINITY;
+        }
+        if shape < 1.0 {
+            let g = self.sample_gamma_ge1(shape + 1.0);
+            let u = self.next_open01();
+            return g.ln() + u.ln() / shape;
+        }
+        self.sample_gamma_ge1(shape).ln()
+    }
+
     #[inline]
     fn sample_gamma_ge1(&mut self, shape: f64) -> f64 {
         let d = shape - (1.0 / 3.0);
@@ -702,7 +757,10 @@ impl DeterministicRng {
         }
     }
 
-    /// Exact Poisson(lambda) via Knuth (`lambda < 10`) and Hörmann PTRD (`lambda >= 10`).
+    /// Poisson(lambda): exact Knuth (`lambda < 10`) and Hörmann PTRD
+    /// (`10 <= lambda < POISSON_NORMAL_APPROX_THRESHOLD`); **approximate**
+    /// rounded `Normal(lambda, lambda)` for `lambda >= POISSON_NORMAL_APPROX_THRESHOLD`
+    /// (`1e9`, relative error of the moments < 1e-4.5).
     pub(crate) fn sample_poisson(&mut self, lambda: f64) -> f64 {
         if !(lambda > 0.0) || !lambda.is_finite() {
             return 0.0;
@@ -719,7 +777,7 @@ impl DeterministicRng {
                 }
             }
         }
-        if lambda >= 1.0e9 {
+        if lambda >= POISSON_NORMAL_APPROX_THRESHOLD {
             // Avoid catastrophic cancellation in `-lambda + k * ln(lambda) - ln_gamma(k + 1)`
             // for huge rates; Normal(lambda, lambda) is indistinguishable to > 4.5 digits.
             return (lambda + lambda.sqrt() * self.next_standard_normal())
@@ -1220,6 +1278,7 @@ struct OdpSolvedDiagnostics {
 ///
 /// Returns `None` if any cell has non-positive fitted mass or ill-conditioned pivot,
 /// signaling the caller to fall back to the general `O(n^3)` SPD-inverse path.
+#[allow(clippy::too_many_arguments)]
 fn try_solve_odp_tridiagonal(
     n: usize,
     ldfs: &[f64],
@@ -1228,6 +1287,7 @@ fn try_solve_odp_tridiagonal(
     fitted_cumulative: &[f64],
     fitted_incremental: &[f64],
     observed_incremental: &[f64],
+    leverage_tol: f64,
 ) -> Option<OdpSolvedDiagnostics> {
     let m = n - 1;
     if latest.iter().any(|&v| !(v > 0.0) || !v.is_finite())
@@ -1365,7 +1425,7 @@ fn try_solve_odp_tridiagonal(
                 w_g_w[dev] + 2.0 * w_g_z + z_g_z
             };
             let leverage = (mu * (base_phi + y_g_y)).clamp(0.0, 1.0);
-            let saturated = (1.0 - leverage) <= 1e-10;
+            let saturated = (1.0 - leverage) <= leverage_tol;
 
             residuals.push(OdpCellResidual {
                 origin,
@@ -1393,7 +1453,6 @@ fn try_solve_odp_tridiagonal(
     let mut analytic_origin_process_se = vec![0.0; n];
     let mut analytic_origin_param_se = vec![0.0; n];
     let mut analytic_origin_prediction_error = vec![0.0; n];
-    let mut pre_tail_total_reserve = 0.0;
     let mut r_diag_sum = 0.0;
     let g_mm = g_diag[m - 1];
 
@@ -1405,7 +1464,6 @@ fn try_solve_odp_tridiagonal(
         } else {
             ai * (1.0 - b_cum[ki])
         };
-        pre_tail_total_reserve += r_pre_tail;
         let tail_increment = ai * (tail - 1.0);
         origin_reserves[origin] = r_pre_tail + tail_increment;
 
@@ -1422,8 +1480,11 @@ fn try_solve_odp_tridiagonal(
             r_diag_sum += diag_term;
             diag_term + ai * ai * g_mm
         };
-        let param_var = (dispersion * param_quad).max(0.0);
-        let proc_var = (dispersion * r_pre_tail).max(0.0);
+        // Fixed tail (England & Verrall 2002 bootstrap convention): R_i =
+        // C_i (tail · CDF_i − 1) with C_i observed, so parameter variance
+        // scales by tail² and the ODP process variance covers the tail amount.
+        let param_var = (tail * tail * dispersion * param_quad).max(0.0);
+        let proc_var = (dispersion * origin_reserves[origin]).max(0.0);
         analytic_origin_process_se[origin] = proc_var.sqrt();
         analytic_origin_param_se[origin] = param_var.sqrt();
         analytic_origin_prediction_error[origin] = (proc_var + param_var).sqrt();
@@ -1449,8 +1510,8 @@ fn try_solve_odp_tridiagonal(
     }
 
     let total_reserve: f64 = origin_reserves.iter().sum();
-    let total_param_var = (dispersion * total_quad).max(0.0);
-    let total_proc_var = (dispersion * pre_tail_total_reserve).max(0.0);
+    let total_param_var = (tail * tail * dispersion * total_quad).max(0.0);
+    let total_proc_var = (dispersion * total_reserve).max(0.0);
 
     Some(OdpSolvedDiagnostics {
         residuals,
@@ -1479,6 +1540,7 @@ fn solve_odp_general(
     fitted_cumulative: &[f64],
     fitted_incremental: &[f64],
     observed_incremental: &[f64],
+    leverage_tol: f64,
 ) -> Result<OdpSolvedDiagnostics, ReservingError> {
     let mut active_origins = vec![false; n];
     let mut active_devs = vec![false; n];
@@ -1580,7 +1642,7 @@ fn solve_odp_general(
             }
         }
         let leverage = (mu * qf).clamp(0.0, 1.0);
-        let saturated = (1.0 - leverage) <= 1e-10;
+        let saturated = (1.0 - leverage) <= leverage_tol;
 
         residuals.push(OdpCellResidual {
             origin,
@@ -1602,7 +1664,6 @@ fn solve_odp_general(
     let mut g_total = vec![0.0; param_count];
     let mut g_origin = vec![0.0; param_count];
     let mut y_buf = vec![0.0; param_count];
-    let mut pre_tail_total_reserve = 0.0;
 
     for origin in 0..n {
         g_origin.fill(0.0);
@@ -1621,13 +1682,14 @@ fn solve_odp_general(
                 g_total[c] += mu;
             }
         }
-        pre_tail_total_reserve += r_pre_tail;
         let tail_increment = fitted_cumulative[origin * n + (n - 1)] * (tail - 1.0);
         origin_reserves[origin] = r_pre_tail + tail_increment;
 
         solve_lower_into(&chol, param_count, &g_origin, &mut y_buf);
-        let param_var = (dispersion * y_buf.iter().map(|v| v * v).sum::<f64>()).max(0.0);
-        let proc_var = (dispersion * r_pre_tail).max(0.0);
+        // Fixed tail: parameter variance scales by tail², process covers the tail.
+        let param_var =
+            (tail * tail * dispersion * y_buf.iter().map(|v| v * v).sum::<f64>()).max(0.0);
+        let proc_var = (dispersion * origin_reserves[origin]).max(0.0);
         analytic_origin_process_se[origin] = proc_var.sqrt();
         analytic_origin_param_se[origin] = param_var.sqrt();
         analytic_origin_prediction_error[origin] = (proc_var + param_var).sqrt();
@@ -1635,8 +1697,9 @@ fn solve_odp_general(
 
     let total_reserve: f64 = origin_reserves.iter().sum();
     solve_lower_into(&chol, param_count, &g_total, &mut y_buf);
-    let total_param_var = (dispersion * y_buf.iter().map(|v| v * v).sum::<f64>()).max(0.0);
-    let total_proc_var = (dispersion * pre_tail_total_reserve).max(0.0);
+    let total_param_var =
+        (tail * tail * dispersion * y_buf.iter().map(|v| v * v).sum::<f64>()).max(0.0);
+    let total_proc_var = (dispersion * total_reserve).max(0.0);
 
     Ok(OdpSolvedDiagnostics {
         residuals,
@@ -1666,6 +1729,17 @@ pub fn fit_odp(
     tail: f64,
     policy: MonotonicityPolicy,
 ) -> Result<OdpFit, ReservingError> {
+    fit_odp_with_numerics(triangle, tail, policy, OdpNumerics::default())
+}
+
+/// [`fit_odp`] with explicit [`OdpNumerics`] (leverage saturation tolerance).
+pub fn fit_odp_with_numerics(
+    triangle: &TriangleView<'_>,
+    tail: f64,
+    policy: MonotonicityPolicy,
+    numerics: OdpNumerics,
+) -> Result<OdpFit, ReservingError> {
+    numerics.validate()?;
     validate_triangle(triangle)?;
     if policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(triangle)?;
@@ -1731,6 +1805,7 @@ pub fn fit_odp(
         &fitted_cumulative,
         &fitted_incremental,
         &observed_incremental,
+        numerics.leverage_saturation_tol,
     ) {
         Some(fast) => fast,
         None => solve_odp_general(
@@ -1739,6 +1814,7 @@ pub fn fit_odp(
             &fitted_cumulative,
             &fitted_incremental,
             &observed_incremental,
+            numerics.leverage_saturation_tol,
         )?,
     };
 
@@ -1772,11 +1848,25 @@ pub(crate) fn build_adjusted_residual_pool(
     adjustment: ResidualAdjustment,
     center: bool,
 ) -> Result<(Vec<f64>, f64), ReservingError> {
+    build_adjusted_residual_pool_with(fit, adjustment, center, false)
+}
+
+/// [`build_adjusted_residual_pool`] with optional exclusion of structurally
+/// zero (saturated) residuals from the degrees-of-freedom pool.
+pub(crate) fn build_adjusted_residual_pool_with(
+    fit: &OdpFit,
+    adjustment: ResidualAdjustment,
+    center: bool,
+    exclude_zero_residuals: bool,
+) -> Result<(Vec<f64>, f64), ReservingError> {
     let mut pool = Vec::with_capacity(fit.residuals.len());
     match adjustment {
         ResidualAdjustment::DegreesOfFreedom => {
             let scale = (fit.n_observed as f64 / fit.degrees_of_freedom as f64).sqrt();
             for cell in &fit.residuals {
+                if exclude_zero_residuals && cell.saturated {
+                    continue;
+                }
                 pool.push(cell.raw_pearson_residual * scale);
             }
         }
@@ -2767,18 +2857,41 @@ fn run_odp_bootstrap_x4(
 /// assert!(boot.base_total_reserve > 0.0);
 /// # Ok::<(), ReservingError>(())
 /// ```
+///
+/// Failed iterations (degenerate pseudo-triangles) are dropped and counted in
+/// [`OdpBootstrapResult::failed_iterations`]; more than 1% failures
+/// ([`OdpNumerics::max_failed_fraction`]) is an error. Use
+/// [`bootstrap_odp_with_numerics`] to change numerical tunables.
+///
+/// Reproducibility: draws are bit-reproducible for a fixed seed on a given
+/// platform / toolchain; bit-identity across platforms is not guaranteed
+/// (libm `ln` / `exp` / `powf` may differ in the last ulp).
 pub fn bootstrap_odp(
     triangle: &TriangleView<'_>,
     tail: f64,
     options: OdpBootstrapOptions,
 ) -> Result<OdpBootstrapResult, ReservingError> {
+    bootstrap_odp_with_numerics(triangle, tail, options, OdpNumerics::default())
+}
+
+/// [`bootstrap_odp`] with explicit [`OdpNumerics`].
+pub fn bootstrap_odp_with_numerics(
+    triangle: &TriangleView<'_>,
+    tail: f64,
+    options: OdpBootstrapOptions,
+    numerics: OdpNumerics,
+) -> Result<OdpBootstrapResult, ReservingError> {
     if options.iterations == 0 {
         return Err(ReservingError::InvalidIterations);
     }
 
-    let fit = fit_odp(triangle, tail, options.monotonicity_policy)?;
-    let (pool, pool_mean) =
-        build_adjusted_residual_pool(&fit, options.residual_adjustment, options.center_residuals)?;
+    let fit = fit_odp_with_numerics(triangle, tail, options.monotonicity_policy, numerics)?;
+    let (pool, pool_mean) = build_adjusted_residual_pool_with(
+        &fit,
+        options.residual_adjustment,
+        options.center_residuals,
+        numerics.exclude_zero_residuals,
+    )?;
 
     let mut rng = DeterministicRng::from_seed(options.seed);
     let mut sampler = FastIndexSampler::new(pool.len());
@@ -2840,6 +2953,7 @@ pub fn bootstrap_odp(
         }
     }
 
+    numerics.check_failures(failed_iterations, options.iterations)?;
     if simulated_totals.is_empty() {
         return Err(ReservingError::NotFinite);
     }
@@ -2866,180 +2980,24 @@ pub fn bootstrap_odp(
     })
 }
 
-/// Run a compact deterministic ODP bootstrap returning portfolio totals only.
+/// Run the ODP bootstrap returning portfolio totals only.
 ///
-/// Because this entry point only returns portfolio totals, it skips
-/// allocating per-origin simulation series (`O(B)` space instead of `O(n B)`),
-/// skips `n` per-origin summaries, and collapses process variance to 1–2 exact
-/// draws per iteration.
+/// Thin projection of [`bootstrap_odp`] with the same `options`: for a given
+/// seed the simulated totals are identical to
+/// `bootstrap_odp(..).simulated_totals`, failures are counted in
+/// [`BootstrapResult::failed_iterations`], and `iterations == 0` returns
+/// [`ReservingError::InvalidIterations`].
 pub fn bootstrap(
     triangle: &TriangleView<'_>,
     tail: f64,
     options: OdpBootstrapOptions,
 ) -> Result<BootstrapResult, ReservingError> {
-    if options.iterations == 0 {
-        return Err(ReservingError::InvalidIterations);
-    }
-
-    let fit = fit_odp(triangle, tail, options.monotonicity_policy)?;
-    let (pool, _) =
-        build_adjusted_residual_pool(&fit, options.residual_adjustment, options.center_residuals)?;
-
-    let mut rng = DeterministicRng::from_seed(options.seed);
-    let mut sampler = FastIndexSampler::new(pool.len());
-    let n = fit.n_origins;
-    let phi = fit.dispersion;
-    let mut scratch = OdpBootstrapScratch::for_fit(&fit);
-    let inv_phi = scratch.inv_phi;
-    let tail_inc = fit.tail - 1.0;
-    let mut simulated_totals = Vec::with_capacity(options.iterations);
-
-    for _ in 0..options.iterations {
-        let outcome = refit_pseudo_ldfs_from_pool(&pool, &mut sampler, &mut rng, &mut scratch);
-        if !outcome.valid {
-            continue;
-        }
-        let mut ok = true;
-        let total = if outcome.all_ldfs_ge_one {
-            let mut cdf = fit.tail;
-            let l0 = scratch.latest_pseudo[0];
-            if !l0.is_finite() {
-                ok = false;
-            }
-            let mut pos_sum = if tail_inc > 0.0 && l0 > 0.0 {
-                l0 * tail_inc
-            } else {
-                0.0
-            };
-            let mut neg_sum = if tail_inc > 0.0 && l0 < 0.0 {
-                -l0 * tail_inc
-            } else {
-                0.0
-            };
-            for origin in 1..n {
-                cdf *= scratch.pseudo_ldfs[n - 1 - origin];
-                let li = scratch.latest_pseudo[origin];
-                if !li.is_finite() {
-                    ok = false;
-                    break;
-                }
-                let expected = li * (cdf - 1.0);
-                if expected >= 0.0 {
-                    pos_sum += expected;
-                } else {
-                    neg_sum -= expected;
-                }
-            }
-            if ok {
-                let p_draw = if pos_sum > 0.0 {
-                    sample_positive_process(
-                        pos_sum,
-                        phi,
-                        inv_phi,
-                        options.process_distribution,
-                        &mut rng,
-                    )
-                } else {
-                    0.0
-                };
-                let n_draw = if neg_sum > 0.0 {
-                    sample_positive_process(
-                        neg_sum,
-                        phi,
-                        inv_phi,
-                        options.process_distribution,
-                        &mut rng,
-                    )
-                } else {
-                    0.0
-                };
-                p_draw - n_draw
-            } else {
-                f64::NAN
-            }
-        } else {
-            let mut pos_factor = tail_inc;
-            let mut neg_factor = 0.0;
-            let l0 = scratch.latest_pseudo[0];
-            if !l0.is_finite() {
-                ok = false;
-            }
-            let mut pos_sum = if tail_inc > 0.0 && l0 > 0.0 {
-                l0 * tail_inc
-            } else {
-                0.0
-            };
-            let mut neg_sum = if tail_inc > 0.0 && l0 < 0.0 {
-                -l0 * tail_inc
-            } else {
-                0.0
-            };
-            for origin in 1..n {
-                let f = scratch.pseudo_ldfs[n - 1 - origin];
-                let step = f - 1.0;
-                if step >= 0.0 {
-                    pos_factor = step + f * pos_factor;
-                    neg_factor *= f;
-                } else {
-                    pos_factor *= f;
-                    neg_factor = (-step) + f * neg_factor;
-                }
-                let li = scratch.latest_pseudo[origin];
-                if !li.is_finite() {
-                    ok = false;
-                    break;
-                }
-                if li >= 0.0 {
-                    pos_sum += li * pos_factor;
-                    neg_sum += li * neg_factor;
-                } else {
-                    pos_sum += -li * neg_factor;
-                    neg_sum += -li * pos_factor;
-                }
-            }
-            if ok {
-                let p_draw = if pos_sum > 0.0 {
-                    sample_positive_process(
-                        pos_sum,
-                        phi,
-                        inv_phi,
-                        options.process_distribution,
-                        &mut rng,
-                    )
-                } else {
-                    0.0
-                };
-                let n_draw = if neg_sum > 0.0 {
-                    sample_positive_process(
-                        neg_sum,
-                        phi,
-                        inv_phi,
-                        options.process_distribution,
-                        &mut rng,
-                    )
-                } else {
-                    0.0
-                };
-                p_draw - n_draw
-            } else {
-                f64::NAN
-            }
-        };
-        if ok && total.is_finite() {
-            simulated_totals.push(total);
-        }
-    }
-
-    if simulated_totals.is_empty() {
-        return Err(ReservingError::NotFinite);
-    }
-
-    let mut summary_buf = Vec::with_capacity(simulated_totals.len());
-    let summary = summarize_with_scratch(&simulated_totals, &mut summary_buf, true)?;
+    let full = bootstrap_odp(triangle, tail, options)?;
     Ok(BootstrapResult {
-        base_total_reserve: fit.total_reserve,
-        simulated_totals,
-        summary,
+        base_total_reserve: full.base_total_reserve,
+        simulated_totals: full.simulated_totals,
+        summary: full.summary,
+        failed_iterations: full.failed_iterations,
     })
 }
 
@@ -3342,6 +3300,7 @@ mod tests {
             &fit.fitted_cumulative,
             &fit.fitted_incremental,
             &fit.observed_incremental,
+            1e-10,
         )
         .expect("general fit");
 

@@ -12,8 +12,11 @@
 //! * [`GlmFamily::Gamma`] — Gamma (`V(mu) = mu^2`, Tweedie `p = 2`).
 //! * [`GlmFamily::Tweedie`] — General Compound Poisson–Gamma Tweedie
 //!   (`V(mu) = mu^p`, `p in [1, 2]`).
-//! * [`GlmFamily::LogNormal`] — Gaussian on `ln Y_{i,j}` with bias-corrected
-//!   expectations `exp(eta + 0.5 * sigma^2)` and exact log-normal MSEP.
+//! * [`GlmFamily::LogNormal`] — Gaussian on `ln Y_{i,j}` with the
+//!   Verrall (1991) bias-corrected mean `exp(η̂ + (σ̂² − Var η̂)/2)` and a
+//!   consistent plug-in MSEP: process `μ²(e^{σ²} − 1)` per cell plus parameter
+//!   covariance `μ_a μ_b (e^{Cov(η̂_a, η̂_b)} − 1)` (delta-free, but evaluated
+//!   at estimated `σ̂²`, `μ̂`, so not exact in finite samples).
 //!
 //! ## Supported Design Specifications
 //!
@@ -122,6 +125,17 @@ pub struct GlmOptions {
     pub tolerance: f64,
     /// Cumulative monotonicity validation policy.
     pub monotonicity_policy: MonotonicityPolicy,
+    /// Symmetric clamp `|η| <= eta_clamp` applied before `exp` in the IRLS
+    /// paths (default `50.0`, i.e. `μ ∈ [e^-50, e^50]`). Cells where it binds
+    /// are counted in [`GlmReservingResult::eta_clamp_hits`]; the closed-form
+    /// ODP fast path falls back to IRLS within one unit of the clamp.
+    pub eta_clamp: f64,
+    /// Working-response floor for zero / negative increments in the Tweedie
+    /// IRLS start, relative to the mean positive increment (default `1e-4`,
+    /// absolute minimum `1e-8`).
+    pub y_floor_relative: f64,
+    /// Maximum step halvings in the IRLS deviance line search (default `25`).
+    pub max_step_halvings: usize,
 }
 
 impl Default for GlmOptions {
@@ -140,6 +154,9 @@ impl GlmOptions {
             max_iterations: 100,
             tolerance: 1e-10,
             monotonicity_policy: MonotonicityPolicy::Strict,
+            eta_clamp: 50.0,
+            y_floor_relative: 1e-4,
+            max_step_halvings: 25,
         }
     }
 
@@ -227,6 +244,9 @@ pub struct GlmReservingResult {
     pub pearson_dispersion: f64,
     /// Deviance dispersion estimate `phi_D = deviance / (N - q)`.
     pub deviance_dispersion: f64,
+    /// Number of observed + future cells whose linear predictor exceeded
+    /// [`GlmOptions::eta_clamp`] in the final fit (`0` means the clamp never bound).
+    pub eta_clamp_hits: usize,
     /// Diagonal hat-matrix leverages `h_k` for each observed cell in row-major
     /// `(origin, dev)` order (`sum(h_k) == q`).
     pub leverages: Vec<f64>,
@@ -459,6 +479,13 @@ fn validate_triangle_single_pass_into(
     Ok(())
 }
 
+/// Tolerance below `2` at which a Tweedie power is treated as the Gamma limit.
+const TWEEDIE_GAMMA_LIMIT_TOL: f64 = 1e-12;
+
+/// Nelder & Pregibon (1987) EQL offset `c` in `V(y + c)`, keeping the variance
+/// term finite for zero observations.
+const EQL_ZERO_OFFSET: f64 = 1.0 / 6.0;
+
 #[inline]
 fn validate_observed_increment(
     y: f64,
@@ -473,6 +500,16 @@ fn validate_observed_increment(
             if y <= 0.0 {
                 return Err(ReservingError::InvalidParameter(
                     "Gamma and LogNormal GLMs require strictly positive observed increments",
+                ));
+            }
+        }
+        // Tweedie p >= 2 (incl. the Gamma limit p = 2) has no point mass at
+        // zero: y = 0 has zero density and an undefined unit deviance, so it is
+        // rejected exactly as for Gamma.
+        GlmFamily::Tweedie { power } if power >= 2.0 - TWEEDIE_GAMMA_LIMIT_TOL => {
+            if y <= 0.0 {
+                return Err(ReservingError::InvalidParameter(
+                    "Tweedie GLMs with power >= 2 require strictly positive observed increments",
                 ));
             }
         }
@@ -983,10 +1020,10 @@ fn try_fit_cross_classified_odp(
     latest: &[f64],
     col_sum: &[f64],
 ) -> Option<GlmReservingResult> {
-    // Clamp guard thresholds matching `eta.clamp(-50.0, 50.0)` with margin:
-    // exp(-49.0) and exp(49.0).
-    const MIN_UNCLAMPED_MU: f64 = 5.242_885_663_363_464e-22;
-    const MAX_UNCLAMPED_MU: f64 = 1.907_346_572_495_099_8e21;
+    // Clamp guard thresholds matching `eta.clamp(-eta_clamp, eta_clamp)` with
+    // a one-unit margin (exp(-(c - 1)), exp(c - 1)); outside them fall back to IRLS.
+    let max_unclamped_mu = (options.eta_clamp - 1.0).exp();
+    let min_unclamped_mu = (-(options.eta_clamp - 1.0)).exp();
 
     let n = triangle.n_origins;
     let m = n - 1;
@@ -1055,7 +1092,7 @@ fn try_fit_cross_classified_odp(
     // Ensure no cell approaches the IRLS linear-predictor clamp `[-50, 50]` (no extra ln).
     let min_mu = min_u * min_pi;
     let max_mu = max_u * max_pi;
-    if !(min_mu > MIN_UNCLAMPED_MU) || !(max_mu < MAX_UNCLAMPED_MU) {
+    if !(min_mu > min_unclamped_mu) || !(max_mu < max_unclamped_mu) {
         return None;
     }
 
@@ -1124,7 +1161,14 @@ fn try_fit_cross_classified_odp(
 
             let diff = y - mu;
             pearson_chi_sq += (diff * diff) * inv_mu;
-            let term = if y > 0.0 { y * (y * inv_mu).ln() } else { 0.0 };
+            // Same ln|y| convention as `tweedie_unit_deviance` for negative increments.
+            let term = if y > 0.0 {
+                y * (y * inv_mu).ln()
+            } else if y < 0.0 {
+                y * (-y * inv_mu).ln()
+            } else {
+                0.0
+            };
             half_deviance += term - diff;
 
             let y_g_y = if j == 0 {
@@ -1240,6 +1284,7 @@ fn try_fit_cross_classified_odp(
         pearson_chi_sq,
         pearson_dispersion,
         deviance_dispersion,
+        eta_clamp_hits: 0,
         leverages,
         fitted_incremental,
         reserves,
@@ -1305,7 +1350,7 @@ fn try_fit_cross_classified_tweedie(
     }
 
     let positive_mean = pos_sum / (pos_cnt.max(1) as f64);
-    let y_floor = (positive_mean * 1e-4).max(1e-8);
+    let y_floor = (positive_mean * options.y_floor_relative).max(1e-8);
     let ln_y_floor = y_floor.ln();
 
     let mut log_exp_buf = SmallBuf::<16>::zeroed(n);
@@ -1555,7 +1600,7 @@ fn try_fit_cross_classified_tweedie(
 
         let mut halvings = 0usize;
         while (!next_obj.is_finite() || next_obj > cur_obj + 1e-9 * (1.0 + cur_obj.abs()))
-            && halvings < 25
+            && halvings < options.max_step_halvings
         {
             step_len *= 0.5;
             halvings += 1;
@@ -1763,6 +1808,7 @@ fn try_fit_cross_classified_tweedie(
         pearson_chi_sq,
         pearson_dispersion,
         deviance_dispersion,
+        eta_clamp_hits: 0,
         leverages,
         fitted_incremental,
         reserves,
@@ -1781,6 +1827,101 @@ fn try_fit_cross_classified_tweedie(
 // ===========================================================================
 // Fast Path C: Cross-Classified Log-Normal GLM (O(n^2) OLS/Cov/Leverages)
 // ===========================================================================
+
+/// Bias-corrected log-normal mean `exp(η̂ + (σ̂² − v)/2)` for a cell with
+/// estimated linear predictor `η̂` and estimation variance `v = Var(η̂)`.
+///
+/// With `η̂ ~ N(η, v)`, `E[exp(η̂ − v/2)] = exp(η)`, so this estimator is
+/// unbiased for `E[Y] = exp(η + σ²/2)` given `(σ², v)` (Verrall 1991,
+/// *Insurance: Mathematics and Economics* 10, "On the estimation of reserves
+/// from loglinear models"). The naive `exp(η̂ + σ̂²/2)` is biased upward by
+/// the factor `e^{v/2}`.
+#[inline]
+fn log_normal_mean(eta: f64, sigma_sq: f64, v: f64) -> f64 {
+    (eta + 0.5 * (sigma_sq - v.max(0.0))).exp()
+}
+
+/// Future-cell bias-corrected means and their MSEP decomposition.
+struct LogNormalMsep {
+    mu: Vec<f64>,
+    reserves: Vec<f64>,
+    proc_origin: Vec<f64>,
+    param_origin: Vec<f64>,
+    total_proc: f64,
+    total_param: f64,
+}
+
+/// Consistent log-normal MSEP over future cells `a` with origin `fut_i[a]`,
+/// linear predictor `fut_eta[a]` and `cov_eta(a, b) = Cov(η̂_a, η̂_b)`.
+///
+/// Using [`log_normal_mean`] for `μ̂_a` (unbiased, independent of the future
+/// noise), `MSEP(Σ μ̂_a) = Σ_a Var(Y_a) + Σ_{a,b} Cov(μ̂_a, μ̂_b)` with
+///
+/// * process variance `Var(Y_a) = μ_a² (e^{σ²} − 1)`,
+/// * parameter covariance `Cov(μ̂_a, μ̂_b) = μ_a μ_b (e^{c_ab} − 1)`,
+///   applied identically on the diagonal (`c_aa = v_a`),
+///
+/// evaluated at the plug-in `μ̂`.
+fn log_normal_future_msep<C>(
+    n: usize,
+    fut_i: &[usize],
+    fut_eta: &[f64],
+    sigma_sq: f64,
+    cov_eta: C,
+) -> Result<LogNormalMsep, ReservingError>
+where
+    C: Fn(usize, usize) -> f64,
+{
+    let n_fut = fut_eta.len();
+    let mut mu = Vec::with_capacity(n_fut);
+    let mut reserves = vec![0.0; n];
+    for a in 0..n_fut {
+        let m = log_normal_mean(fut_eta[a], sigma_sq, cov_eta(a, a));
+        if !m.is_finite() {
+            return Err(ReservingError::NotFinite);
+        }
+        reserves[fut_i[a]] += m;
+        mu.push(m);
+    }
+    let mut proc_origin = vec![0.0; n];
+    let mut param_origin = vec![0.0; n];
+    let mut total_proc = 0.0;
+    let mut total_param = 0.0;
+    let exp_m1_sig = sigma_sq.exp_m1();
+    for a in 0..n_fut {
+        let ia = fut_i[a];
+        let mu_a = mu[a];
+        let pv = mu_a * mu_a * exp_m1_sig;
+        let pmv = mu_a * mu_a * cov_eta(a, a).max(0.0).exp_m1();
+        proc_origin[ia] += pv;
+        param_origin[ia] += pmv;
+        total_proc += pv;
+        total_param += pmv;
+        let two_mu_a = 2.0 * mu_a;
+        for b in (a + 1)..n_fut {
+            let two_cov_ab = two_mu_a * mu[b] * cov_eta(a, b).exp_m1();
+            total_param += two_cov_ab;
+            if fut_i[b] == ia {
+                param_origin[ia] += two_cov_ab;
+            }
+        }
+    }
+    if !total_proc.is_finite()
+        || !total_param.is_finite()
+        || proc_origin.iter().any(|v| !v.is_finite())
+        || param_origin.iter().any(|v| !v.is_finite())
+    {
+        return Err(ReservingError::NotFinite);
+    }
+    Ok(LogNormalMsep {
+        mu,
+        reserves,
+        proc_origin,
+        param_origin,
+        total_proc,
+        total_param,
+    })
+}
 
 fn try_fit_cross_classified_log_normal(
     triangle: &TriangleView<'_>,
@@ -1873,33 +2014,8 @@ fn try_fit_cross_classified_log_normal(
         coefficients.push(v[j]);
     }
 
-    let mut fitted_incremental = vec![0.0; n * n];
-    let mut reserves = vec![0.0; n];
-    let n_fut = n * (n - 1) / 2;
-    let mut fut_i = Vec::with_capacity(n_fut);
-    let mut fut_j = Vec::with_capacity(n_fut);
-    let mut fut_mu = Vec::with_capacity(n_fut);
-
-    let half_sig = 0.5 * sigma_sq;
-    for i in 0..n {
-        let ui_off = u[i] + log_exp[i] + half_sig;
-        for j in 0..n {
-            let mu = (ui_off + v[j]).exp();
-            if !mu.is_finite() {
-                return Err(ReservingError::NotFinite);
-            }
-            fitted_incremental[i * n + j] = mu;
-            if i + j >= n {
-                reserves[i] += mu;
-                fut_i.push(i);
-                fut_j.push(j);
-                fut_mu.push(mu);
-            }
-        }
-    }
-
     // Precompute small (n × n) (u, v) covariance blocks scaled by sigma_sq so
-    // every future-pair covariance Cov(eta_{i,j}, eta_{r,s}) is O(1) (4 adds).
+    // every pair covariance Cov(eta_{i,j}, eta_{r,s}) is O(1) (4 adds).
     let mut cov_u_buf = SmallBuf::<256>::zeroed(n * n);
     let mut cov_uv_buf = SmallBuf::<256>::zeroed(n * n);
     let mut cov_v_buf = SmallBuf::<256>::zeroed(n * n);
@@ -1929,45 +2045,43 @@ fn try_fit_cross_classified_log_normal(
             cov_v[b * n + a] = val;
         }
     }
+    let cov_cell = |i: usize, j: usize, r: usize, s: usize| -> f64 {
+        cov_u[i * n + r] + cov_uv[i * n + s] + cov_uv[r * n + j] + cov_v[j * n + s]
+    };
 
-    let mut proc_var_origin = SmallBuf::<32>::zeroed(n);
-    let mut param_var_origin = SmallBuf::<32>::zeroed(n);
-    let pvo = proc_var_origin.as_mut_slice();
-    let pmvo = param_var_origin.as_mut_slice();
-    let mut total_proc_var = 0.0;
-    let mut total_param_var = 0.0;
-    let exp_m1_sig = sigma_sq.exp_m1();
-
-    for a in 0..n_fut {
-        let ia = fut_i[a];
-        let ja = fut_j[a];
-        let mu_a = fut_mu[a];
-        let v_est_a =
-            (cov_u[ia * n + ia] + 2.0 * cov_uv[ia * n + ja] + cov_v[ja * n + ja]).max(0.0);
-        let pv = mu_a * mu_a * exp_m1_sig;
-        let tot_a = mu_a * mu_a * (sigma_sq + v_est_a).exp_m1();
-        let pmv = (tot_a - pv).max(0.0);
-        pvo[ia] += pv;
-        pmvo[ia] += pmv;
-        total_proc_var += pv;
-        total_param_var += pmv;
-
-        let cu_row = &cov_u[ia * n..ia * n + n];
-        let cuv_row = &cov_uv[ia * n..ia * n + n];
-        let cv_row = &cov_v[ja * n..ja * n + n];
-        let two_mu_a = 2.0 * mu_a;
-
-        for b in (a + 1)..n_fut {
-            let ib = fut_i[b];
-            let jb = fut_j[b];
-            let cov_eta = cu_row[ib] + cuv_row[jb] + cov_uv[ib * n + ja] + cv_row[jb];
-            let two_cov_ab = two_mu_a * fut_mu[b] * cov_eta.exp_m1();
-            total_param_var += two_cov_ab;
-            if ia == ib {
-                pmvo[ia] += two_cov_ab;
+    let mut fitted_incremental = vec![0.0; n * n];
+    let n_fut = n * (n - 1) / 2;
+    let mut fut_i = Vec::with_capacity(n_fut);
+    let mut fut_j = Vec::with_capacity(n_fut);
+    let mut fut_eta = Vec::with_capacity(n_fut);
+    for i in 0..n {
+        let ui_off = u[i] + log_exp[i];
+        for j in 0..n {
+            let eta = ui_off + v[j];
+            if i + j >= n {
+                fut_i.push(i);
+                fut_j.push(j);
+                fut_eta.push(eta);
+            } else {
+                let mu = log_normal_mean(eta, sigma_sq, cov_cell(i, j, i, j));
+                if !mu.is_finite() {
+                    return Err(ReservingError::NotFinite);
+                }
+                fitted_incremental[i * n + j] = mu;
             }
         }
     }
+    let ln = log_normal_future_msep(n, &fut_i, &fut_eta, sigma_sq, |a, b| {
+        cov_cell(fut_i[a], fut_j[a], fut_i[b], fut_j[b])
+    })?;
+    for (a, &mu) in ln.mu.iter().enumerate() {
+        fitted_incremental[fut_i[a] * n + fut_j[a]] = mu;
+    }
+    let reserves = ln.reserves;
+    let pvo = ln.proc_origin.as_slice();
+    let pmvo = ln.param_origin.as_slice();
+    let total_proc_var = ln.total_proc;
+    let total_param_var = ln.total_param;
 
     let process_se: Vec<f64> = pvo.iter().map(|v| v.max(0.0).sqrt()).collect();
     let parameter_se: Vec<f64> = pmvo.iter().map(|v| v.max(0.0).sqrt()).collect();
@@ -2004,6 +2118,7 @@ fn try_fit_cross_classified_log_normal(
         pearson_chi_sq: rss,
         pearson_dispersion: sigma_sq,
         deviance_dispersion: sigma_sq,
+        eta_clamp_hits: 0,
         leverages,
         fitted_incremental,
         reserves,
@@ -2112,7 +2227,7 @@ fn fit_glm_general_qr(
         }
     }
     let positive_mean = pos_sum / (pos_cnt.max(1) as f64);
-    let y_floor = (positive_mean * 1e-4).max(1e-8);
+    let y_floor = (positive_mean * options.y_floor_relative).max(1e-8);
     let ln_y_floor = y_floor.ln();
 
     let mut working_z: Vec<f64> = Vec::with_capacity(n_obs);
@@ -2147,9 +2262,26 @@ fn fit_glm_general_qr(
 
     let mut eta = vec![0.0; n_obs];
     let mut mu = vec![0.0; n_obs];
-    eval_linear_predictor_and_mu(&x_obs, &offsets_obs, &beta, n_obs, q, &mut eta, &mut mu);
-    let mut cur_obj =
-        total_tweedie_objective_fast(&y_obs, &ln_y, &eta, &mu, power, is_odp, is_gamma);
+    eval_linear_predictor_and_mu(
+        &x_obs,
+        &offsets_obs,
+        &beta,
+        n_obs,
+        q,
+        &mut eta,
+        &mut mu,
+        options.eta_clamp,
+    );
+    let mut cur_obj = total_tweedie_objective_fast(
+        &y_obs,
+        &ln_y,
+        &eta,
+        &mu,
+        power,
+        is_odp,
+        is_gamma,
+        options.eta_clamp,
+    );
 
     let mut converged = false;
     let mut iterations = 0usize;
@@ -2200,14 +2332,22 @@ fn fit_glm_general_qr(
             q,
             &mut next_eta,
             &mut next_mu,
+            options.eta_clamp,
         );
         let mut next_obj = total_tweedie_objective_fast(
-            &y_obs, &ln_y, &next_eta, &next_mu, power, is_odp, is_gamma,
+            &y_obs,
+            &ln_y,
+            &next_eta,
+            &next_mu,
+            power,
+            is_odp,
+            is_gamma,
+            options.eta_clamp,
         );
 
         let mut halvings = 0usize;
         while (!next_obj.is_finite() || next_obj > cur_obj + 1e-9 * (1.0 + cur_obj.abs()))
-            && halvings < 25
+            && halvings < options.max_step_halvings
         {
             step_len *= 0.5;
             halvings += 1;
@@ -2222,9 +2362,17 @@ fn fit_glm_general_qr(
                 q,
                 &mut next_eta,
                 &mut next_mu,
+                options.eta_clamp,
             );
             next_obj = total_tweedie_objective_fast(
-                &y_obs, &ln_y, &next_eta, &next_mu, power, is_odp, is_gamma,
+                &y_obs,
+                &ln_y,
+                &next_eta,
+                &next_mu,
+                power,
+                is_odp,
+                is_gamma,
+                options.eta_clamp,
             );
         }
 
@@ -2246,6 +2394,7 @@ fn fit_glm_general_qr(
         }
     }
 
+    let mut eta_clamp_hits = eta.iter().filter(|e| e.abs() > options.eta_clamp).count();
     let cur_dev = if is_odp && has_negative_y {
         total_tweedie_deviance(&y_obs, &mu, power)
     } else {
@@ -2316,7 +2465,10 @@ fn fit_glm_general_qr(
             for (&xc, &bc) in x_cell.iter().zip(beta.iter()) {
                 e_ij += xc * bc;
             }
-            let mu_ij = e_ij.clamp(-50.0, 50.0).exp();
+            if e_ij.abs() > options.eta_clamp {
+                eta_clamp_hits += 1;
+            }
+            let mu_ij = e_ij.clamp(-options.eta_clamp, options.eta_clamp).exp();
             fitted_incremental[i * n + j] = mu_ij;
 
             r_i += mu_ij;
@@ -2372,6 +2524,7 @@ fn fit_glm_general_qr(
         pearson_chi_sq,
         pearson_dispersion,
         deviance_dispersion,
+        eta_clamp_hits,
         leverages: final_leverages,
         fitted_incremental,
         reserves,
@@ -2393,7 +2546,7 @@ pub struct TweediePowerCandidate {
     /// Evaluated Tweedie variance power $p \in [1, 2]$.
     pub power: f64,
     /// Extended quasi-likelihood (EQL) negative log-likelihood score (lower is better):
-    /// $\frac{1}{2}\big(n_{\text{obs}} \ln(2\pi \hat{\phi}) + p \sum \ln y_k + D(y, \hat{\mu})/\hat{\phi}\big)$.
+    /// $\frac{1}{2}\big(n_{\text{obs}} \ln(2\pi \hat{\phi}) + p \sum \ln (y_k + 1/6) + D(y, \hat{\mu})/\hat{\phi}\big)$.
     pub eql_score: f64,
     /// Fitted Pearson dispersion $\hat{\phi}$.
     pub pearson_dispersion: f64,
@@ -2403,8 +2556,10 @@ pub struct TweediePowerCandidate {
     pub total_prediction_error: f64,
 }
 
-/// Output of profile extended quasi-likelihood Tweedie power selection
-/// (mirroring `mages/ChainLadder`'s `tweedieReserve` power estimation).
+/// Output of profile extended quasi-likelihood (EQL; Nelder & Pregibon 1987)
+/// Tweedie power selection. This is an EQL grid profile, not the exact Tweedie
+/// likelihood profile used by R's `tweedie::tweedie.profile` /
+/// `ChainLadder::tweedieReserve`, so selected powers can differ.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TweediePowerSelection {
     /// Best Tweedie power $p^*$ minimizing the extended quasi-likelihood score.
@@ -2417,6 +2572,10 @@ pub struct TweediePowerSelection {
 
 /// Select the Tweedie variance power $p \in [1, 2]$ by minimizing the Nelder &
 /// Pregibon (1987) extended quasi-likelihood profile criterion over `p_grid`.
+///
+/// Powers whose fit errors (e.g. `p = 2` with zero increments) or whose IRLS
+/// does not converge are skipped; zero increments enter the EQL variance term
+/// via `ln(y + 1/6)`.
 #[allow(clippy::needless_pass_by_value)]
 pub fn select_tweedie_power(
     triangle: &TriangleView<'_>,
@@ -2430,6 +2589,9 @@ pub fn select_tweedie_power(
     }
     crate::validate::validate_triangle(triangle)?;
     let n = triangle.n_origins;
+    // EQL variance term Σ ln V(y + c) / p = Σ ln(y + c) over *all* observed
+    // cells (zeros included through the Nelder–Pregibon offset c = 1/6), so the
+    // score compares every power on the same observations.
     let mut sum_log_y = 0.0;
     let mut n_pos = 0usize;
     for i in 0..n {
@@ -2437,9 +2599,11 @@ pub fn select_tweedie_power(
         let row = &triangle.data[i * triangle.n_devs..i * triangle.n_devs + row_len];
         for j in 0..row_len {
             let y = if j == 0 { row[0] } else { row[j] - row[j - 1] };
-            if y.is_finite() && y > 0.0 {
-                sum_log_y += y.ln();
-                n_pos += 1;
+            if y.is_finite() && y >= 0.0 {
+                sum_log_y += (y + EQL_ZERO_OFFSET).ln();
+                if y > 0.0 {
+                    n_pos += 1;
+                }
             }
         }
     }
@@ -2461,6 +2625,14 @@ pub fn select_tweedie_power(
         }
         let opts = GlmOptions::tweedie(p).with_design(design.clone());
         match fit_glm(triangle, &opts) {
+            Ok(fit) if !fit.converged => {
+                // Non-converged IRLS fits are not comparable on the EQL scale.
+                if first_err.is_none() {
+                    first_err = Some(ReservingError::InvalidParameter(
+                        "Tweedie IRLS did not converge at this power",
+                    ));
+                }
+            }
             Ok(fit) => {
                 let phi = fit.deviance_dispersion.max(1e-12);
                 let n_obs = fit.n_observed as f64;
@@ -2541,10 +2713,11 @@ fn fit_log_normal_glm(
     let mut fitted_incremental = vec![0.0; n * n];
     let n_fut = n * (n - 1) / 2;
     let mut fut_i = Vec::with_capacity(n_fut);
-    let mut fut_mu = Vec::with_capacity(n_fut);
+    let mut fut_cell = Vec::with_capacity(n_fut);
+    let mut fut_eta = Vec::with_capacity(n_fut);
     let mut fut_x = vec![0.0; n_fut * q];
-    let mut reserves = vec![0.0; n];
     let mut x_cell = vec![0.0; q];
+    let mut cx = vec![0.0; q];
     let mut fut_idx = 0usize;
 
     for i in 0..n {
@@ -2555,27 +2728,31 @@ fn fit_log_normal_glm(
             for col in 0..q {
                 eta += x_cell[col] * beta[col];
             }
-            let mu = (eta + 0.5 * sigma_sq).exp();
-            if !mu.is_finite() {
-                return Err(ReservingError::NotFinite);
-            }
-            fitted_incremental[i * n + j] = mu;
             if i + j >= n {
-                reserves[i] += mu;
                 fut_i.push(i);
-                fut_mu.push(mu);
+                fut_cell.push(i * n + j);
+                fut_eta.push(eta);
                 fut_x[fut_idx * q..(fut_idx + 1) * q].copy_from_slice(&x_cell);
                 fut_idx += 1;
+            } else {
+                for r in 0..q {
+                    cx[r] = cov[r * q..(r + 1) * q]
+                        .iter()
+                        .zip(&x_cell)
+                        .map(|(c, x)| c * x)
+                        .sum();
+                }
+                let v_cell: f64 = x_cell.iter().zip(&cx).map(|(x, c)| x * c).sum();
+                let mu = log_normal_mean(eta, sigma_sq, v_cell);
+                if !mu.is_finite() {
+                    return Err(ReservingError::NotFinite);
+                }
+                fitted_incremental[i * n + j] = mu;
             }
         }
     }
 
-    // Exact log-normal process + parameter variance decomposition using flat `cov_x`.
-    let mut proc_var_origin = vec![0.0; n];
-    let mut param_var_origin = vec![0.0; n];
-    let mut total_proc_var = 0.0;
-    let mut total_param_var = 0.0;
-
+    // Flat `cov_x[a] = Cov(beta) x_a` so each pair covariance is one dot product.
     let mut cov_x = vec![0.0; n_fut * q];
     for a in 0..n_fut {
         let xa = &fut_x[a * q..(a + 1) * q];
@@ -2589,48 +2766,21 @@ fn fit_log_normal_glm(
             dst[r] = acc;
         }
     }
-
-    let exp_m1_sig = sigma_sq.exp_m1();
-    for a in 0..n_fut {
-        let ia = fut_i[a];
-        let mu_a = fut_mu[a];
-        let xa = &fut_x[a * q..(a + 1) * q];
-        let cva = &cov_x[a * q..(a + 1) * q];
-        let mut v_est_a = 0.0;
-        for (&xr, &cr) in xa.iter().zip(cva.iter()) {
-            v_est_a += xr * cr;
-        }
-        let v_est_a = v_est_a.max(0.0);
-        let pv = mu_a * mu_a * exp_m1_sig;
-        let tot_a = mu_a * mu_a * (sigma_sq + v_est_a).exp_m1();
-        let pmv = (tot_a - pv).max(0.0);
-        proc_var_origin[ia] += pv;
-        param_var_origin[ia] += pmv;
-        total_proc_var += pv;
-        total_param_var += pmv;
-
-        let two_mu_a = 2.0 * mu_a;
-        for b in (a + 1)..n_fut {
-            let ib = fut_i[b];
-            let cvb = &cov_x[b * q..(b + 1) * q];
-            let mut cov_eta = 0.0;
-            for (&xr, &cr) in xa.iter().zip(cvb.iter()) {
-                cov_eta += xr * cr;
-            }
-            let two_cov_ab = two_mu_a * fut_mu[b] * cov_eta.exp_m1();
-            total_param_var += two_cov_ab;
-            if ia == ib {
-                param_var_origin[ia] += two_cov_ab;
-            }
-        }
+    let ln = log_normal_future_msep(n, &fut_i, &fut_eta, sigma_sq, |a, b| {
+        fut_x[a * q..(a + 1) * q]
+            .iter()
+            .zip(&cov_x[b * q..(b + 1) * q])
+            .map(|(x, c)| x * c)
+            .sum()
+    })?;
+    for (a, &mu) in ln.mu.iter().enumerate() {
+        fitted_incremental[fut_cell[a]] = mu;
     }
-    if !total_proc_var.is_finite()
-        || !total_param_var.is_finite()
-        || proc_var_origin.iter().any(|v| !v.is_finite())
-        || param_var_origin.iter().any(|v| !v.is_finite())
-    {
-        return Err(ReservingError::NotFinite);
-    }
+    let reserves = ln.reserves;
+    let proc_var_origin = ln.proc_origin;
+    let param_var_origin = ln.param_origin;
+    let total_proc_var = ln.total_proc;
+    let total_param_var = ln.total_param;
 
     let process_se: Vec<f64> = proc_var_origin.iter().map(|v| v.max(0.0).sqrt()).collect();
     let parameter_se: Vec<f64> = param_var_origin.iter().map(|v| v.max(0.0).sqrt()).collect();
@@ -2667,6 +2817,7 @@ fn fit_log_normal_glm(
         pearson_chi_sq: rss,
         pearson_dispersion: sigma_sq,
         deviance_dispersion: sigma_sq,
+        eta_clamp_hits: 0,
         leverages,
         fitted_incremental,
         reserves,
@@ -2683,6 +2834,7 @@ fn fit_log_normal_glm(
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn eval_linear_predictor_and_mu(
     x: &[f64],
     offsets: &[f64],
@@ -2691,6 +2843,7 @@ fn eval_linear_predictor_and_mu(
     q: usize,
     eta_out: &mut [f64],
     mu_out: &mut [f64],
+    eta_clamp: f64,
 ) {
     for k in 0..n_obs {
         let mut s = offsets[k];
@@ -2699,7 +2852,7 @@ fn eval_linear_predictor_and_mu(
             s += xj * bj;
         }
         eta_out[k] = s;
-        mu_out[k] = s.clamp(-50.0, 50.0).exp();
+        mu_out[k] = s.clamp(-eta_clamp, eta_clamp).exp();
     }
 }
 
@@ -2707,8 +2860,18 @@ fn eval_linear_predictor_and_mu(
 /// to avoid catastrophic cancellation when `p` is close to `1` or `2`.
 fn tweedie_unit_deviance(y: f64, mu: f64, p: f64) -> f64 {
     if (p - 1.0).abs() < 1e-12 {
-        // Poisson / ODP deviance: 2 * (y ln(y / mu) - (y - mu)).
-        let term = if y > 0.0 { y * (y / mu).ln() } else { 0.0 };
+        // Poisson / ODP deviance: 2 * (y ln(y / mu) - (y - mu)). For negative
+        // increments (AllowNegativeIncrements) the quasi-deviance uses
+        // y ln(|y| / mu): it differs from the optimised quasi-likelihood
+        // objective -2 (y ln mu - mu) only by a mu-free constant, so the
+        // reported deviance is the minimised objective on a fixed origin.
+        let term = if y > 0.0 {
+            y * (y / mu).ln()
+        } else if y < 0.0 {
+            y * (-y / mu).ln()
+        } else {
+            0.0
+        };
         2.0 * (term - (y - mu))
     } else if (p - 2.0).abs() < 1e-12 {
         // Gamma deviance: 2 * (-ln(y / mu) + (y - mu) / mu).
@@ -2729,6 +2892,7 @@ fn tweedie_unit_deviance(y: f64, mu: f64, p: f64) -> f64 {
 
 /// Fast `ln`-free line-search objective using precomputed `ln_y` and `eta`
 /// (since `mu = eta.clamp(-50, 50).exp()`, `ln(mu) == eta.clamp(-50, 50)`).
+#[allow(clippy::too_many_arguments)]
 fn total_tweedie_objective_fast(
     y: &[f64],
     ln_y: &[f64],
@@ -2737,17 +2901,19 @@ fn total_tweedie_objective_fast(
     p: f64,
     is_odp: bool,
     is_gamma: bool,
+    eta_clamp: f64,
 ) -> f64 {
     let mut sum = 0.0;
     if is_odp {
         for k in 0..y.len() {
             let yk = y[k];
             let mk = mu[k];
-            let ec = eta[k].clamp(-50.0, 50.0);
+            let ec = eta[k].clamp(-eta_clamp, eta_clamp);
             if yk > 0.0 {
                 sum += 2.0 * (yk * (ln_y[k] - ec) - (yk - mk));
             } else if yk < 0.0 {
-                sum += 2.0 * (mk - yk * ec);
+                // Same mu-free origin as `tweedie_unit_deviance` (ln|y|).
+                sum += 2.0 * (yk * ((-yk).ln() - ec) - (yk - mk));
             } else {
                 sum += 2.0 * mk;
             }
@@ -2756,7 +2922,7 @@ fn total_tweedie_objective_fast(
         for k in 0..y.len() {
             let yk = y[k];
             let mk = mu[k];
-            let ec = eta[k].clamp(-50.0, 50.0);
+            let ec = eta[k].clamp(-eta_clamp, eta_clamp);
             sum += 2.0 * ((ec - ln_y[k]) + (yk - mk) / mk);
         }
     } else {
@@ -2766,7 +2932,7 @@ fn total_tweedie_objective_fast(
         let inv_two_mp = 1.0 / two_mp;
         for k in 0..y.len() {
             let yk = y[k];
-            let ec = eta[k].clamp(-50.0, 50.0);
+            let ec = eta[k].clamp(-eta_clamp, eta_clamp);
             let mu_2mp = (two_mp * ec).exp();
             if yk > 0.0 {
                 let ln_ratio = ln_y[k] - ec;
