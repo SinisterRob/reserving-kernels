@@ -1268,7 +1268,9 @@ fn try_fit_cross_classified_tweedie(
     let q = 2 * n - 1;
     let n_obs = n * (n + 1) / 2;
     let dof = n_obs - q;
-    let power = options.family.tweedie_power().expect("Tweedie family");
+    let Some(power) = options.family.tweedie_power() else {
+        return Ok(None);
+    };
     let is_gamma = (power - 2.0).abs() < 1e-12;
     let one_mp = 1.0 - power;
     let two_mp = 2.0 - power;
@@ -1507,7 +1509,9 @@ fn try_fit_cross_classified_tweedie(
                 b_w[j] = (two_mp * v[j]).exp();
                 b_sc[j] = (one_mp * v[j]).exp();
             }
-            let fac = tw_factor.as_mut().expect("tweedie factor");
+            let Some(fac) = tw_factor.as_mut() else {
+                return Ok(None);
+            };
             if !fac.refactor(a_w, b_w) {
                 return Ok(None);
             }
@@ -1624,7 +1628,9 @@ fn try_fit_cross_classified_tweedie(
         for j in 0..n {
             b_w[j] = (two_mp * v[j]).exp();
         }
-        let fac = tw_factor.as_mut().expect("tweedie factor");
+        let Some(fac) = tw_factor.as_mut() else {
+            return Ok(None);
+        };
         if !fac.refactor(a_w, b_w) {
             return Ok(None);
         }
@@ -2082,7 +2088,12 @@ fn fit_glm_general_qr(
         );
     }
 
-    let power = options.family.tweedie_power().expect("Tweedie family");
+    let power = options
+        .family
+        .tweedie_power()
+        .ok_or(ValidationError::InvalidParameter(
+            "expected Tweedie GLM family",
+        ))?;
     let is_odp = (power - 1.0).abs() < 1e-12;
     let is_gamma = (power - 2.0).abs() < 1e-12;
 

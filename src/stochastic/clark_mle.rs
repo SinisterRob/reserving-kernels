@@ -601,7 +601,7 @@ fn prepare_inputs(
             .collect()
     };
     if let Some(mx) = options.max_age
-        && (!mx.is_finite() || mx < *ages.last().expect("n >= 3"))
+        && (!mx.is_finite() || mx < ages[ages.len() - 1])
     {
         return Err(ValidationError::InvalidParameter(
             "max_age must be finite and >= largest observed development age",

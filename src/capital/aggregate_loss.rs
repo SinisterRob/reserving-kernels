@@ -486,9 +486,19 @@ pub fn fft_aggregate_loss(
     // Inverse radix-2 FFT back to loss lattice.
     fft_radix2_in_place(&mut re, &mut im, &tw_re, &tw_im, true);
 
-    // Untilt and suppress sub-noise-floor FFT roundoff dust that exponential
-    // untilting by exp(theta * k) would otherwise amplify into one-sided bias.
-    let noise_floor = if theta > 0.0 { 4.0 * f64::EPSILON } else { 0.0 };
+    // Untilt and suppress sub-noise-floor FFT roundoff dust scaled to the tilted peak
+    // so exponential untilting by exp(theta * k) doesn't amplify roundoff without
+    // truncating legitimate tail mass on heavily tilted grids.
+    let max_re = re
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .fold(0.0_f64, |acc, v| acc.max(v.abs()));
+    let noise_floor = if theta > 0.0 {
+        4.0 * f64::EPSILON * max_re
+    } else {
+        0.0
+    };
     let mut g = vec![0.0; fft_size];
     if theta > 0.0 {
         let step_up = theta.exp();

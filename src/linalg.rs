@@ -253,11 +253,24 @@ fn qr_factorize_a_cm_in_place(
         let col_k_start = k * n + k;
         let col_k = &ws.a_cm[col_k_start..col_k_start + len];
 
-        let mut norm_sq = 0.0;
+        // Scale by column infinity norm before squaring to prevent overflow (> 1e154)
+        // or underflow (< 1e-154) on extreme-magnitude design matrices.
+        let mut max_abs = 0.0_f64;
         for &val in col_k {
-            norm_sq += val * val;
+            max_abs = max_abs.max(val.abs());
         }
-        let norm = norm_sq.sqrt();
+        if !max_abs.is_finite() || max_abs <= 0.0 {
+            return Err(ValidationError::InvalidParameter(
+                "design matrix is rank-deficient or collinear",
+            ));
+        }
+        let inv_scale = 1.0 / max_abs;
+        let mut scaled_norm_sq = 0.0;
+        for &val in col_k {
+            let s = val * inv_scale;
+            scaled_norm_sq += s * s;
+        }
+        let norm = max_abs * scaled_norm_sq.sqrt();
         if !norm.is_finite() || norm <= 0.0 {
             return Err(ValidationError::InvalidParameter(
                 "design matrix is rank-deficient or collinear",
@@ -268,19 +281,22 @@ fn qr_factorize_a_cm_in_place(
         let alpha = -sign * norm;
 
         let v_slice = &mut ws.v[..len];
-        v_slice[0] = x0 - alpha;
-        let mut v_norm_sq = v_slice[0] * v_slice[0];
+        let mut sub_norm_sq = 0.0;
         for (dst, &src) in v_slice[1..].iter_mut().zip(col_k[1..].iter()) {
-            *dst = src;
-            v_norm_sq += src * src;
+            let s = src * inv_scale;
+            *dst = s;
+            sub_norm_sq += s * s;
         }
-        if v_norm_sq <= 1e-30 * norm_sq {
+        if sub_norm_sq <= 1e-30 * scaled_norm_sq {
+            ws.a_cm[col_k_start] = x0;
             if store_reflectors {
                 ws.tau[k] = 0.0;
                 ws.a_cm[col_k_start + 1..col_k_start + len].fill(0.0);
             }
             continue;
         }
+        v_slice[0] = (x0 - alpha) * inv_scale;
+        let v_norm_sq = v_slice[0] * v_slice[0] + sub_norm_sq;
         let tau = 2.0 / v_norm_sq;
 
         ws.a_cm[col_k_start] = alpha;

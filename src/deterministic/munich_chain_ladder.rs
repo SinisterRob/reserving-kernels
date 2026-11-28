@@ -338,6 +338,13 @@ pub fn project(
 
     let total_paid_reserve: f64 = paid_reserves.iter().sum();
     let total_incurred_reserve: f64 = incurred_reserves.iter().sum();
+    if !total_paid_reserve.is_finite()
+        || !total_incurred_reserve.is_finite()
+        || paid_ultimates.iter().any(|v| !v.is_finite())
+        || incurred_ultimates.iter().any(|v| !v.is_finite())
+    {
+        return Err(ValidationError::NotFinite);
+    }
 
     Ok(MunichChainLadder {
         paid_ldfs,

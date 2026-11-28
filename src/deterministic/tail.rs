@@ -61,7 +61,7 @@ pub fn bondy(ldfs: &[f64]) -> Result<TailFit, ValidationError> {
         return Err(ValidationError::ShapeMismatch);
     }
     validate_positive_finite_slice(ldfs, "LDF")?;
-    let last = *ldfs.last().expect("non-empty");
+    let last = ldfs[ldfs.len() - 1];
     let tail_factor = last.max(1.0);
     // Geometric Bondy decay: f_{last+m} = f_last^{0.5^m}, whose infinite product equals f_last.
     let mut extrapolated_ldfs = Vec::with_capacity(5);

@@ -235,8 +235,10 @@ fn fit_geometric(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), Validation
     // Log-linear OLS: ln(S_{i,j}) = alpha_j + beta_{i+j}, with beta_{n-1} = 0.
     // Parameters: [alpha_0..alpha_{n-1}, beta_0..beta_{n-2}] (length 2n - 1).
     let p = 2 * n - 1;
-    let mut x_rows = Vec::new();
-    let mut y_vals = Vec::new();
+    let n_obs = n * (n + 1) / 2;
+    let mut x_rows = vec![0.0; n_obs * p];
+    let mut y_vals = Vec::with_capacity(n_obs);
+    let mut row_idx = 0usize;
 
     for i in 0..n {
         for j in 0..(n - i) {
@@ -246,18 +248,17 @@ fn fit_geometric(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), Validation
                     "geometric separation requires strictly positive incremental losses",
                 ));
             }
-            let mut row = vec![0.0; p];
-            row[j] = 1.0;
+            let base = row_idx * p;
+            x_rows[base + j] = 1.0;
             let k = i + j;
             if k < n - 1 {
-                row[n + k] = 1.0;
+                x_rows[base + n + k] = 1.0;
             }
-            x_rows.extend_from_slice(&row);
             y_vals.push(v.ln());
+            row_idx += 1;
         }
     }
 
-    let n_obs = y_vals.len();
     let weights = vec![1.0; n_obs];
     let beta = weighted_least_squares_qr_beta_only(&x_rows, &y_vals, &weights, n_obs, p)?;
 
@@ -272,7 +273,11 @@ fn fit_geometric(s: &[f64], n: usize) -> Result<(Vec<f64>, Vec<f64>), Validation
     let r: Vec<f64> = raw_r.into_iter().map(|v| v / sum_r).collect();
     let mut lam = Vec::with_capacity(n);
     for k in 0..(n - 1) {
-        lam.push(beta[n + k].exp() * sum_r);
+        let l = beta[n + k].exp() * sum_r;
+        if !l.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        lam.push(l);
     }
     lam.push(sum_r);
 

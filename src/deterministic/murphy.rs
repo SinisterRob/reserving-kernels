@@ -412,10 +412,17 @@ pub fn analyze(
     total_mse = total_mse.max(0.0);
     let total_standard_error = total_mse.sqrt();
     let total_reserve: f64 = reserve.iter().sum();
-    let total_cv = if total_reserve == 0.0 {
-        0.0
-    } else {
+    if !total_mse.is_finite()
+        || !total_reserve.is_finite()
+        || ultimate.iter().any(|v| !v.is_finite())
+        || reserve.iter().any(|v| !v.is_finite())
+    {
+        return Err(ValidationError::NotFinite);
+    }
+    let total_cv = if total_reserve > 0.0 {
         total_standard_error / total_reserve
+    } else {
+        0.0
     };
 
     Ok(MurphyResult {

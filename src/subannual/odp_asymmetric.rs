@@ -324,9 +324,7 @@ pub fn asymmetric_odp_bootstrap(
     options: OdpBootstrapOptions,
 ) -> Result<AsymmetricOdpBootstrapResult, ValidationError> {
     if options.iterations == 0 {
-        return Err(ValidationError::InvalidParameter(
-            "bootstrap iterations must be >= 1",
-        ));
+        return Err(ValidationError::InvalidIterations);
     }
     let fit = fit_asymmetric_odp(cum, grid, tail, options.monotonicity_policy)?;
 

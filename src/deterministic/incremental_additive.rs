@@ -141,11 +141,9 @@ pub fn project_incremental_additive(
     let mut completed_incremental = inc;
     for i in 0..n_origins {
         let retrend = factor.powi(i as i32 - (n_origins - 1) as i32);
-        for j in 0..n_devs {
+        for j in (n_origins - i)..n_devs {
             let idx = i * n_devs + j;
-            if !completed_incremental[idx].is_finite() {
-                completed_incremental[idx] = exposures[i] * zeta[j] * retrend;
-            }
+            completed_incremental[idx] = exposures[i] * zeta[j] * retrend;
         }
     }
 
@@ -169,7 +167,13 @@ pub fn project_incremental_additive(
         reserve.push(acc - lp);
     }
 
-    let total_reserve = reserve.iter().sum();
+    let total_reserve: f64 = reserve.iter().sum();
+    if !total_reserve.is_finite()
+        || ultimate.iter().any(|v| !v.is_finite())
+        || reserve.iter().any(|v| !v.is_finite())
+    {
+        return Err(ValidationError::NotFinite);
+    }
 
     Ok(IncrementalAdditiveProjection {
         zeta,

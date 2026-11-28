@@ -161,27 +161,36 @@ pub fn development_age_by_origin(t: &TriangleView<'_>) -> Vec<usize> {
     out
 }
 
-/// Summarize the structural state of a triangle.
+/// Summarize the structural state of a triangle in a single pass.
 pub fn analyze(t: &TriangleView<'_>) -> TriangleDiagnostics {
-    let mask = observed_mask(t);
-    let latest = latest_diagonal(t);
-    let negative_increment = negative_increment_flags(t);
-    let monotonicity = monotonicity_flags(t);
-
-    let mut observed_count = 0;
-    let mut missing_count = 0;
-    let mut sparse_origin_count = 0;
+    let n = t.n_origins.min(t.n_devs);
+    let mut latest = vec![f64::NAN; n];
+    let mut observed_count = 0usize;
+    let mut missing_count = 0usize;
+    let mut sparse_origin_count = 0usize;
+    let mut negative_increment_count = 0usize;
+    let mut non_monotone_row_count = 0usize;
+    let mut zero_latest_count = 0usize;
 
     for origin in 0..t.n_origins {
-        let mut row_observed = 0;
+        let mut row_observed = 0usize;
+        let mut prev_val: Option<f64> = None;
+        let mut row_non_monotone = false;
         for dev in 0..t.n_devs {
-            if !mask[origin * t.n_devs + dev] {
+            if !t.is_scheduled_observed(origin, dev) {
                 continue;
             }
             let value = t.get(origin, dev);
             if value.is_finite() {
                 observed_count += 1;
                 row_observed += 1;
+                if let Some(prev) = prev_val
+                    && value < prev
+                {
+                    negative_increment_count += 1;
+                    row_non_monotone = true;
+                }
+                prev_val = Some(value);
             } else {
                 missing_count += 1;
             }
@@ -189,20 +198,26 @@ pub fn analyze(t: &TriangleView<'_>) -> TriangleDiagnostics {
         if row_observed <= 1 {
             sparse_origin_count += 1;
         }
+        if row_non_monotone {
+            non_monotone_row_count += 1;
+        }
+        if origin < n
+            && let Some(last) = prev_val
+        {
+            latest[origin] = last;
+            if last == 0.0 {
+                zero_latest_count += 1;
+            }
+        }
     }
-
-    let zero_latest_count = latest
-        .iter()
-        .filter(|value| value.is_finite() && **value == 0.0)
-        .count();
 
     TriangleDiagnostics {
         n_origin: t.n_origins,
         n_dev: t.n_devs,
         observed_count,
         missing_count,
-        negative_increment_count: negative_increment.len(),
-        non_monotone_row_count: monotonicity.len(),
+        negative_increment_count,
+        non_monotone_row_count,
         zero_latest_count,
         sparse_origin_count,
         latest_diagonal: latest,

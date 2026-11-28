@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(not(feature = "wasm"), forbid(unsafe_code))]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![warn(missing_docs)]
 #![allow(clippy::needless_range_loop)]
 // Intentional NaN-rejecting numeric guards such as `!(x > 0.0)`.

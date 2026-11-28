@@ -83,6 +83,10 @@ impl LognormalLayerModel {
     /// Closed-form expected loss in the layer `(attachment, top]`:
     /// $E[\min(X, \text{top}) - \min(X, \text{attachment})]$.
     ///
+    /// **Parameter convention:** `top` is the upper exhaustion point
+    /// (`attachment + limit`), unlike [`crate::excess::severity::SeverityDistribution::layer_expected_loss`]
+    /// which takes `(attachment, limit)`.
+    ///
     /// Returns `0.0` when `top <= attachment`.
     #[inline]
     pub fn exact_layer(&self, attachment: f64, top: f64) -> f64 {

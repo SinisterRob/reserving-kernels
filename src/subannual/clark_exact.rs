@@ -258,8 +258,83 @@ fn profile_log_lik(
     ll
 }
 
+/// Evaluate profile ODP quasi-log-likelihood and its exact analytic gradient
+/// `(ll, d ll / d u, d ll / d v)` at `(u, v) = (ln_omega, ln_theta)` via the
+/// envelope theorem (`partial ll / partial scale_i == 0` at the profile optimum).
+fn profile_log_lik_and_grad(
+    data: &ExactAgeData,
+    exposure_weights: Option<&[f64]>,
+    curve: GrowthCurve,
+    u: f64,
+    v: f64,
+) -> (f64, f64, f64) {
+    let omega = u.exp();
+    let theta = v.exp();
+    if !omega.is_finite() || !theta.is_finite() || omega <= 1e-4 || omega > 100.0 {
+        return (f64::NEG_INFINITY, f64::NAN, f64::NAN);
+    }
+
+    let elr = if let Some(weights) = exposure_weights {
+        let mut sum_lat = 0.0;
+        let mut sum_wg = 0.0;
+        for i in 0..data.n_origins {
+            let g_last = curve.eval(data.latest_ages[i], omega, theta);
+            if !(g_last > 1e-15) || !g_last.is_finite() {
+                return (f64::NEG_INFINITY, f64::NAN, f64::NAN);
+            }
+            sum_lat += data.latest[i];
+            sum_wg += weights[i] * g_last;
+        }
+        if !(sum_wg > 0.0) || !(sum_lat > 0.0) {
+            return (f64::NEG_INFINITY, f64::NAN, f64::NAN);
+        }
+        Some(sum_lat / sum_wg)
+    } else {
+        None
+    };
+
+    let mut ll = 0.0;
+    let mut gu = 0.0;
+    let mut gv = 0.0;
+    for i in 0..data.n_origins {
+        let scale_i = if let (Some(w), Some(e)) = (exposure_weights, elr) {
+            w[i] * e
+        } else {
+            let g_last = curve.eval(data.latest_ages[i], omega, theta);
+            if !(g_last > 1e-15) || !g_last.is_finite() {
+                return (f64::NEG_INFINITY, f64::NAN, f64::NAN);
+            }
+            data.latest[i] / g_last
+        };
+        let mut prev_g = 0.0;
+        let mut prev_dg_dw = 0.0;
+        let mut prev_dg_dt = 0.0;
+        for j in 0..data.observed_counts[i] {
+            let idx = i * data.n_devs + j;
+            let (g, dg_dw, dg_dt) = curve.eval_with_grad(data.ages[idx], omega, theta);
+            let dg = g - prev_g;
+            let d_dg_du = (dg_dw - prev_dg_dw) * omega;
+            let d_dg_dv = (dg_dt - prev_dg_dt) * theta;
+            prev_g = g;
+            prev_dg_dw = dg_dw;
+            prev_dg_dt = dg_dt;
+            let mu = scale_i * dg;
+            if !(mu > 1e-300) || !mu.is_finite() {
+                return (f64::NEG_INFINITY, f64::NAN, f64::NAN);
+            }
+            let c = data.inc[idx];
+            ll += c * mu.ln() - mu;
+            let coeff = c / dg - scale_i;
+            gu += coeff * d_dg_du;
+            gv += coeff * d_dg_dv;
+        }
+    }
+    (ll, gu, gv)
+}
+
 /// Maximize profile ODP quasi-log-likelihood over `(ln_omega, ln_theta)` using
-/// multi-start grid search followed by damped Newton–Raphson with backtracking.
+/// multi-start grid search followed by damped Newton–Raphson with exact analytic
+/// profile gradients (envelope theorem) and gradient finite-difference Hessian.
 fn optimize_exact_age_params(
     data: &ExactAgeData,
     exposure_weights: Option<&[f64]>,
@@ -295,60 +370,42 @@ fn optimize_exact_age_params(
     let mut v = best_v;
     let mut ll = best_ll;
     let mut max_grad = f64::INFINITY;
-    let h_grad = 1e-5;
-    let h_hess = 1e-4;
+    let h_hess = 1e-5;
 
     for _iter in 0..80 {
-        let f_pu = profile_log_lik(data, exposure_weights, curve, u + h_grad, v);
-        let f_mu = profile_log_lik(data, exposure_weights, curve, u - h_grad, v);
-        let f_pv = profile_log_lik(data, exposure_weights, curve, u, v + h_grad);
-        let f_mv = profile_log_lik(data, exposure_weights, curve, u, v - h_grad);
-
-        let gu = if f_pu.is_finite() && f_mu.is_finite() {
-            (f_pu - f_mu) / (2.0 * h_grad)
-        } else if f_pu.is_finite() {
-            (f_pu - ll) / h_grad
-        } else if f_mu.is_finite() {
-            (ll - f_mu) / h_grad
-        } else {
+        let (ll_cur, gu, gv) = profile_log_lik_and_grad(data, exposure_weights, curve, u, v);
+        if !ll_cur.is_finite() || !gu.is_finite() || !gv.is_finite() {
             break;
-        };
-        let gv = if f_pv.is_finite() && f_mv.is_finite() {
-            (f_pv - f_mv) / (2.0 * h_grad)
-        } else if f_pv.is_finite() {
-            (f_pv - ll) / h_grad
-        } else if f_mv.is_finite() {
-            (ll - f_mv) / h_grad
-        } else {
-            break;
-        };
+        }
+        ll = ll_cur;
         max_grad = gu.abs().max(gv.abs());
         if max_grad < 1e-9 {
             break;
         }
 
-        let h_pu = profile_log_lik(data, exposure_weights, curve, u + h_hess, v);
-        let h_mu = profile_log_lik(data, exposure_weights, curve, u - h_hess, v);
-        let h_pv = profile_log_lik(data, exposure_weights, curve, u, v + h_hess);
-        let h_mv = profile_log_lik(data, exposure_weights, curve, u, v - h_hess);
-        let f_pp = profile_log_lik(data, exposure_weights, curve, u + h_hess, v + h_hess);
-        let f_pm = profile_log_lik(data, exposure_weights, curve, u + h_hess, v - h_hess);
-        let f_mp = profile_log_lik(data, exposure_weights, curve, u - h_hess, v + h_hess);
-        let f_mm = profile_log_lik(data, exposure_weights, curve, u - h_hess, v - h_hess);
+        // First-order central FD of the exact analytic gradient (4 evals, O(eps^(1/2)) accuracy).
+        let (_, gu_pu, gv_pu) =
+            profile_log_lik_and_grad(data, exposure_weights, curve, u + h_hess, v);
+        let (_, gu_mu, gv_mu) =
+            profile_log_lik_and_grad(data, exposure_weights, curve, u - h_hess, v);
+        let (_, gu_pv, gv_pv) =
+            profile_log_lik_and_grad(data, exposure_weights, curve, u, v + h_hess);
+        let (_, gu_mv, gv_mv) =
+            profile_log_lik_and_grad(data, exposure_weights, curve, u, v - h_hess);
 
-        let (huu, hvv, huv) = if h_pu.is_finite()
-            && h_mu.is_finite()
-            && h_pv.is_finite()
-            && h_mv.is_finite()
-            && f_pp.is_finite()
-            && f_pm.is_finite()
-            && f_mp.is_finite()
-            && f_mm.is_finite()
+        let (huu, hvv, huv) = if gu_pu.is_finite()
+            && gu_mu.is_finite()
+            && gv_pu.is_finite()
+            && gv_mu.is_finite()
+            && gu_pv.is_finite()
+            && gu_mv.is_finite()
+            && gv_pv.is_finite()
+            && gv_mv.is_finite()
         {
             (
-                (h_pu - 2.0 * ll + h_mu) / (h_hess * h_hess),
-                (h_pv - 2.0 * ll + h_mv) / (h_hess * h_hess),
-                (f_pp - f_pm - f_mp + f_mm) / (4.0 * h_hess * h_hess),
+                (gu_pu - gu_mu) / (2.0 * h_hess),
+                (gv_pv - gv_mv) / (2.0 * h_hess),
+                f64::midpoint(gv_pu - gv_mu, gu_pv - gu_mv) / (2.0 * h_hess),
             )
         } else {
             (-1.0, -1.0, 0.0)

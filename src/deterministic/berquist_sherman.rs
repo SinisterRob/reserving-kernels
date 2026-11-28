@@ -189,9 +189,14 @@ pub fn adjust_case_reserves(
     )?;
     let cl = ChainLadderEngine::project_with_policy(&adjusted_reported.view(), &factors, policy)?;
 
+    let annual_compound_rate = rate.exp_m1();
+    if !annual_compound_rate.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
+
     Ok(CaseReserveAdjustmentResult {
         exponential_trend_rate: rate,
-        annual_compound_rate: rate.exp_m1(),
+        annual_compound_rate,
         raw_case_reserves: Triangle::new(n, n, raw_case),
         raw_average_case: Triangle::new(n, n, raw_avg),
         adjusted_average_case: Triangle::new(n, n, adj_avg),

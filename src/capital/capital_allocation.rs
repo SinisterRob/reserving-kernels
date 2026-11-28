@@ -383,7 +383,7 @@ pub fn myers_read_from_default_ratio(
         }
         tail_sum += sm;
     }
-    let assets = assets.unwrap_or_else(|| (tail_sum - target_sum_excess) / nf);
+    let assets = assets.unwrap_or((tail_sum - target_sum_excess) / nf);
     // Guarantee strictly below s_max so at least one scenario has S > A.
     let safe_assets = if assets >= s_max {
         s_max - s_max.abs().max(1.0) * 1e-12

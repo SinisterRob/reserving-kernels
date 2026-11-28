@@ -168,7 +168,7 @@ pub fn interp_linear_cdf(
 ) -> Result<InterpolatedPattern, ValidationError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_min = anchor_ages[0];
-    let t_max = *anchor_ages.last().expect("len >= 2");
+    let t_max = anchor_ages[anchor_ages.len() - 1];
     let tol = 1e-9 * t_max;
 
     let mut cdfs = Vec::with_capacity(target_ages.len());
@@ -209,7 +209,7 @@ pub fn interp_linear_pct_reported(
     target_ages: &[f64],
 ) -> Result<InterpolatedPattern, ValidationError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
-    let t_max = *anchor_ages.last().expect("len >= 2");
+    let t_max = anchor_ages[anchor_ages.len() - 1];
     let tol = 1e-9 * t_max;
 
     let mut cdfs = Vec::with_capacity(target_ages.len());
@@ -257,7 +257,7 @@ pub fn interp_exponential(
 ) -> Result<InterpolatedPattern, ValidationError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_min = anchor_ages[0];
-    let t_max = *anchor_ages.last().expect("len >= 2");
+    let t_max = anchor_ages[anchor_ages.len() - 1];
     let tol = 1e-9 * t_max;
 
     let mut cdfs = Vec::with_capacity(target_ages.len());
@@ -388,7 +388,7 @@ pub fn interp_inverse_power(
     };
 
     let t_min = anchor_ages[0];
-    let t_max = *anchor_ages.last().expect("len >= 2");
+    let t_max = anchor_ages[anchor_ages.len() - 1];
     let first_step = anchor_ages[1] - anchor_ages[0];
     let last_step = anchor_ages[anchor_ages.len() - 1] - anchor_ages[anchor_ages.len() - 2];
 
@@ -399,7 +399,7 @@ pub fn interp_inverse_power(
             anchor_cdfs[0] * integral.exp()
         } else if t > t_max {
             let integral = integrate_sherman_log_rate(t_max, t, a, b) / last_step;
-            (*anchor_cdfs.last().expect("non-empty") * (-integral).exp()).max(1.0)
+            (anchor_cdfs[anchor_cdfs.len() - 1] * (-integral).exp()).max(1.0)
         } else {
             let k = find_bracket(anchor_ages, t);
             let t0 = anchor_ages[k];
@@ -465,7 +465,7 @@ pub fn interp_swimon(
     target_ages: &[f64],
 ) -> Result<InterpolatedPattern, ValidationError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
-    let t_max = *anchor_ages.last().expect("len >= 2");
+    let t_max = anchor_ages[anchor_ages.len() - 1];
     let tol = 1e-9 * t_max;
 
     // Prepend origin knot (0.0, 0.0) so P(t) is smoothly defined on (0, t_max].
@@ -618,7 +618,7 @@ pub fn interp_spliced_weibull(
     target_ages: &[f64],
 ) -> Result<InterpolatedPattern, ValidationError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
-    let t_max = *anchor_ages.last().expect("len >= 2");
+    let t_max = anchor_ages[anchor_ages.len() - 1];
     let tol = 1e-9 * t_max;
 
     let pcts: Vec<f64> = anchor_cdfs.iter().map(|&c| 1.0 / c).collect();

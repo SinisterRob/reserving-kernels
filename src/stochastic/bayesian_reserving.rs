@@ -616,40 +616,134 @@ fn meyers_log_posterior(
     lp
 }
 
-/// Pure-Rust L-BFGS maximizer with central finite-difference gradients.
-fn lbfgs_maximize<F>(f: F, mut x: Vec<f64>, max_iter: usize, tol: f64) -> (Vec<f64>, f64, bool)
+/// Evaluate Meyers LCL/CCL log-posterior and its exact analytic gradient via
+/// reverse-mode adjoint propagation along each development column.
+fn meyers_log_posterior_and_grad(
+    psi: &[f64],
+    log_y: &[f64],
+    n: usize,
+    alpha_prior_mean: &[f64],
+    is_ccl: bool,
+) -> (f64, Vec<f64>) {
+    let p = psi.len();
+    let alphas = &psi[0..n];
+    let betas = &psi[n..(2 * n - 1)];
+    let etas = &psi[(2 * n - 1)..(3 * n - 1)];
+    let Some((sigmas, _log_jac_sigma)) = unpack_sigmas(etas) else {
+        return (f64::NEG_INFINITY, vec![0.0; p]);
+    };
+
+    let (rho, log_prior_rho) = if is_ccl {
+        let z = psi[3 * n - 1];
+        if !(-12.0..=12.0).contains(&z) {
+            return (f64::NEG_INFINITY, vec![0.0; p]);
+        }
+        let r = z.tanh();
+        // Uniform(-1, 1) prior on rho => density (1/2) sech^2(z) on z.
+        let log_sech = -z.abs() - (-2.0 * z.abs()).exp().ln_1p() + std::f64::consts::LN_2;
+        (r, -std::f64::consts::LN_2 + 2.0 * log_sech)
+    } else {
+        (0.0, 0.0)
+    };
+
+    let mut lp = log_prior_rho;
+    let mut grad = vec![0.0; p];
+
+    // Priors: alpha_i ~ N(alpha_prior_mean[i], 10.0), beta_j ~ N(0, 100.0).
+    for i in 0..n {
+        let d = alphas[i] - alpha_prior_mean[i];
+        lp -= 0.5 * d * d / 10.0;
+        grad[i] -= d / 10.0;
+    }
+    for (j, &b) in betas.iter().enumerate() {
+        lp -= 0.5 * b * b / 100.0;
+        grad[n + j] -= b / 100.0;
+    }
+    // Monotonic sigma priors:
+    // - sigma_{n-1} = exp(eta_{n-1}): -3.0 * e_last - 0.06 * exp(-e_last)
+    // - delta_j = exp(eta_j): 2.0 * e - 20.0 * exp(e) for j < n - 1
+    let e_last = etas[n - 1];
+    lp += -3.0 * e_last - 0.06 * (-e_last).exp();
+    grad[3 * n - 2] += -3.0 + 0.06 * (-e_last).exp();
+    for (j, &e) in etas[..(n - 1)].iter().enumerate() {
+        lp += 2.0 * e - 20.0 * e.exp();
+        grad[2 * n - 1 + j] += 2.0 - 20.0 * e.exp();
+    }
+
+    // Forward pass per column j (storing residuals along column j in a small vec of length <= n),
+    // followed by exact backward adjoint pass along column j.
+    let mut col_resids = vec![0.0; n];
+    let mut grad_sigma = vec![0.0; n];
+    let mut grad_rho = 0.0;
+
+    for j in 0..n {
+        let col_len = n - j;
+        let b_j = if j == n - 1 { 0.0 } else { betas[j] };
+        let s = sigmas[j].max(1e-8);
+        let inv_s = 1.0 / s;
+        let inv_s2 = inv_s * inv_s;
+        let ln_s = s.ln();
+
+        // Forward residuals for column j.
+        let mut prev_r = 0.0;
+        for i in 0..col_len {
+            let mu = if i == 0 || !is_ccl {
+                alphas[i] + b_j
+            } else {
+                alphas[i] + b_j + rho * prev_r
+            };
+            let resid = log_y[i * n + j] - mu;
+            lp -= ln_s + 0.5 * resid * resid * inv_s2;
+            col_resids[i] = resid;
+            prev_r = resid;
+        }
+
+        // Backward adjoint pass along column j.
+        let mut adj_next = 0.0;
+        let mut d_lp_ds_j = 0.0;
+        for i in (0..col_len).rev() {
+            let resid = col_resids[i];
+            let adj_r = -resid * inv_s2 - if is_ccl { rho * adj_next } else { 0.0 };
+            grad[i] -= adj_r;
+            if j < n - 1 {
+                grad[n + j] -= adj_r;
+            }
+            if i > 0 && is_ccl {
+                grad_rho -= adj_r * col_resids[i - 1];
+            }
+            if sigmas[j] > 1e-8 {
+                d_lp_ds_j += -inv_s + resid * resid * inv_s2 * inv_s;
+            }
+            adj_next = adj_r;
+        }
+        grad_sigma[j] = d_lp_ds_j;
+    }
+
+    // Chain rule from sigma_j = sum_{m=j}^{n-1} exp(eta_m) to eta_m:
+    // d lp / d eta_m += exp(eta_m) * sum_{j=0}^{m} (d lp / d sigma_j).
+    let mut cum_d_sigma = 0.0;
+    for m in 0..n {
+        cum_d_sigma += grad_sigma[m];
+        grad[2 * n - 1 + m] += etas[m].exp() * cum_d_sigma;
+    }
+
+    if is_ccl {
+        // d/dz [ -ln(2) + 2 ln sech(z) ] = -2 tanh(z) = -2 rho, and d rho / d z = 1 - rho^2.
+        grad[3 * n - 1] = -2.0 * rho + grad_rho * (1.0 - rho * rho);
+    }
+
+    (lp, grad)
+}
+
+/// Pure-Rust L-BFGS maximizer using exact analytic gradients.
+fn lbfgs_maximize<F>(fg: F, mut x: Vec<f64>, max_iter: usize, tol: f64) -> (Vec<f64>, f64, bool)
 where
-    F: Fn(&[f64]) -> f64,
+    F: Fn(&[f64]) -> (f64, Vec<f64>),
 {
     let p = x.len();
     let m = 10usize;
-    let eps = 1e-6;
 
-    let grad_fn = |pt: &[f64], f_pt: f64| -> Vec<f64> {
-        let mut g = vec![0.0; p];
-        let mut work = pt.to_vec();
-        for k in 0..p {
-            let xk = work[k];
-            work[k] = xk + eps;
-            let fp = f(&work);
-            work[k] = xk - eps;
-            let fm = f(&work);
-            work[k] = xk;
-            g[k] = if fp.is_finite() && fm.is_finite() {
-                (fp - fm) / (2.0 * eps)
-            } else if fp.is_finite() && f_pt.is_finite() {
-                (fp - f_pt) / eps
-            } else if fm.is_finite() && f_pt.is_finite() {
-                (f_pt - fm) / eps
-            } else {
-                0.0
-            };
-        }
-        g
-    };
-
-    let mut fx = f(&x);
-    let mut gx = grad_fn(&x, fx);
+    let (mut fx, mut gx) = fg(&x);
     let mut s_hist: Vec<Vec<f64>> = Vec::with_capacity(m);
     let mut y_hist: Vec<Vec<f64>> = Vec::with_capacity(m);
     let mut rho_hist: Vec<f64> = Vec::with_capacity(m);
@@ -708,12 +802,15 @@ where
         let mut step = 1.0;
         let mut x_next = vec![0.0; p];
         let mut f_next = f64::NEG_INFINITY;
+        let mut g_next = vec![0.0; p];
         for _ in 0..30 {
             for k in 0..p {
                 x_next[k] = x[k] + step * d[k];
             }
-            f_next = f(&x_next);
+            let (fn_val, gn_val) = fg(&x_next);
+            f_next = fn_val;
             if f_next.is_finite() && f_next >= fx + 1e-4 * step * dir_deriv {
+                g_next = gn_val;
                 break;
             }
             step *= 0.5;
@@ -722,7 +819,6 @@ where
             break;
         }
 
-        let g_next = grad_fn(&x_next, f_next);
         let s_vec: Vec<f64> = x_next.iter().zip(x.iter()).map(|(a, b)| a - b).collect();
         let step_norm = s_vec.iter().map(|z| z.abs()).fold(0.0_f64, f64::max);
         // For minimizing -f, y_vec = (-g_next) - (-gx) = gx - g_next.
@@ -936,24 +1032,15 @@ fn meyers_laplace_snis_internal(
     let p = init.len();
 
     let obj = |psi: &[f64]| meyers_log_posterior(psi, &log_y, n, &alpha_prior_mean, is_ccl);
+    let obj_and_grad =
+        |psi: &[f64]| meyers_log_posterior_and_grad(psi, &log_y, n, &alpha_prior_mean, is_ccl);
     let (mut psi_map, mut map_log_posterior, mut converged) =
-        lbfgs_maximize(obj, init, options.max_map_iterations, 1e-6);
+        lbfgs_maximize(obj_and_grad, init, options.max_map_iterations, 1e-6);
 
-    // Damped Newton polish so `psi_map` sits at the exact posterior mode
-    // (eliminates linear gradient drift in SNIS importance weights).
-    let eps_g = 1e-6;
+    // Damped Newton polish using exact analytic gradients so `psi_map` sits at the
+    // exact posterior mode (eliminates linear gradient drift in SNIS importance weights).
     for _ in 0..8 {
-        let mut grad = vec![0.0; p];
-        let mut work = psi_map.clone();
-        for k in 0..p {
-            let xk = work[k];
-            work[k] = xk + eps_g;
-            let fp = obj(&work);
-            work[k] = xk - eps_g;
-            let fm = obj(&work);
-            work[k] = xk;
-            grad[k] = (fp - fm) / (2.0 * eps_g);
-        }
+        let (_, grad) = obj_and_grad(&psi_map);
         let g_inf = grad.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
         if g_inf < 1e-4 {
             converged = true;
@@ -1266,12 +1353,29 @@ pub fn meyers_bivariate_ccl(
         idx2.swap(k, swap_idx);
     }
 
-    let cond_sd_factor = (1.0 - cross_line_rho * cross_line_rho).max(0.0).sqrt();
+    // Fisher-z posterior uncertainty on cross-line correlation rho_12:
+    // z_12 ~ N(atanh(r_12), 1 / (N_obs - 3)) for N_obs > 3.
+    let n_obs_cells = n * (n + 1) / 2;
+    let z_rho_hat = cross_line_rho.clamp(-0.99, 0.99).atanh();
+    let z_rho_se = if n_obs_cells > 3 {
+        (1.0 / (n_obs_cells - 3) as f64).sqrt()
+    } else {
+        0.0
+    };
+
     let mut port_totals = Vec::with_capacity(m);
     let mut prev1 = vec![0.0; n];
     let mut prev2 = vec![0.0; n];
 
     for draw_k in 0..m {
+        let rho_draw = if z_rho_se > 0.0 {
+            (z_rho_hat + z_rho_se * rng.next_standard_normal())
+                .tanh()
+                .clamp(-0.995, 0.995)
+        } else {
+            cross_line_rho
+        };
+        let cond_sd_factor = (1.0 - rho_draw * rho_draw).max(0.0).sqrt();
         let p1 = &psi1_draws[idx1[draw_k]];
         let p2 = &psi2_draws[idx2[draw_k]];
         let a1 = &p1[0..n];
@@ -1317,7 +1421,7 @@ pub fn meyers_bivariate_ccl(
                     prev2[j] = log_y2[i * n + j] - mu2;
                 } else {
                     let z1 = rng.next_standard_normal();
-                    let z2 = cross_line_rho * z1 + cond_sd_factor * rng.next_standard_normal();
+                    let z2 = rho_draw * z1 + cond_sd_factor * rng.next_standard_normal();
                     let e1 = sig1[j] * z1;
                     let e2 = sig2[j] * z2;
                     prev1[j] = e1;

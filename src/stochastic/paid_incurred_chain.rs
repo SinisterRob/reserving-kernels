@@ -495,12 +495,9 @@ fn estimate_column_variances(mat: &[f64], n: usize, start_col: usize, floor: f64
         }
     }
     // Extrapolate the final single-observation column via Mack's min-rule.
-    if let Some(last) = vars.last_mut()
-        && !last.is_finite()
-    {
-        let known = &vars[..count - 1];
-        let ext = extrapolate_last_variance(known, floor);
-        *vars.last_mut().expect("non-empty") = ext;
+    if count > 0 && !vars[count - 1].is_finite() {
+        let ext = extrapolate_last_variance(&vars[..count - 1], floor);
+        vars[count - 1] = ext;
     }
     vars
 }
