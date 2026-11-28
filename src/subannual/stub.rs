@@ -18,6 +18,7 @@ use crate::validate::ValidationError;
 
 /// Result of extrapolating a pre-12-month stub CDF and stub-to-12-month LDF.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct StubExtrapolationResult {
     /// Target stub valuation age in months (`0 < stub_age_months <= first_annual_age`).
     pub stub_age_months: f64,
@@ -183,6 +184,7 @@ pub fn stub_natural_log(
 /// Output from [`stub_exposure_scale`] separating partial-year earned exposure
 /// growth from pure claim reporting lag.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct StubExposureScaleResult {
     /// Earned exposure fraction `e = stub_duration_months / full_period_months` in `(0, 1]`.
     pub exposure_fraction: f64,

@@ -18,6 +18,7 @@ use crate::validate::{MonotonicityPolicy, ValidationError, validate_positive_fin
 
 /// Configuration options for [`clark_mle_exact_age`].
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ClarkExactAgeOptions {
     /// Parametric growth curve family (`Loglogistic` or `Weibull`).
     pub curve: GrowthCurve,
@@ -30,16 +31,46 @@ pub struct ClarkExactAgeOptions {
 
 impl Default for ClarkExactAgeOptions {
     fn default() -> Self {
+        Self::new(GrowthCurve::Loglogistic)
+    }
+}
+
+impl ClarkExactAgeOptions {
+    /// Options for `curve`, projecting to infinity with strict monotonicity.
+    pub const fn new(curve: GrowthCurve) -> Self {
         Self {
-            curve: GrowthCurve::Loglogistic,
+            curve,
             max_age: None,
             monotonicity_policy: MonotonicityPolicy::Strict,
         }
+    }
+
+    /// Clark (2003) Loglogistic defaults.
+    pub const fn loglogistic() -> Self {
+        Self::new(GrowthCurve::Loglogistic)
+    }
+
+    /// Clark (2003) Weibull defaults.
+    pub const fn weibull() -> Self {
+        Self::new(GrowthCurve::Weibull)
+    }
+
+    /// Truncate the ultimate projection at a finite maximum age.
+    pub const fn with_max_age(mut self, max_age: f64) -> Self {
+        self.max_age = Some(max_age);
+        self
+    }
+
+    /// Set the cumulative monotonicity validation policy.
+    pub const fn with_monotonicity_policy(mut self, policy: MonotonicityPolicy) -> Self {
+        self.monotonicity_policy = policy;
+        self
     }
 }
 
 /// Full output from [`clark_mle_exact_age`] (both LDF and Cape Cod variants).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct ClarkExactAgeResult {
     /// Growth curve family fitted.
     pub curve: GrowthCurve,
@@ -116,10 +147,10 @@ fn prepare_exact_age_data(
     if n_origins == 0 || n_devs == 0 {
         return Err(ValidationError::ShapeMismatch);
     }
-    if cum.len() != n_origins * n_devs
-        || cell_ages.len() != n_origins * n_devs
-        || observed_counts.len() != n_origins
-    {
+    let n_cells = n_origins
+        .checked_mul(n_devs)
+        .ok_or(ValidationError::ShapeMismatch)?;
+    if cum.len() != n_cells || cell_ages.len() != n_cells || observed_counts.len() != n_origins {
         return Err(ValidationError::ShapeMismatch);
     }
 

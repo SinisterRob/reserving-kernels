@@ -25,6 +25,7 @@ use crate::validate::{
 
 /// Result of [`asymmetric_chain_ladder`] on a rectangular/staggered triangle.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct AsymmetricChainLadderProjection {
     /// Selected step-to-step LDFs (length `n_devs - 1`).
     pub ldfs: Vec<f64>,
@@ -58,13 +59,8 @@ pub(crate) fn validate_asymmetric_cumulative(
     grid: &AsymmetricAgeGrid,
     policy: MonotonicityPolicy,
 ) -> Result<(), ValidationError> {
-    if grid.n_origins == 0 || grid.n_devs < 2 {
-        return Err(ValidationError::ShapeMismatch);
-    }
-    if cum.len() != grid.n_origins * grid.n_devs
-        || grid.observed_counts.len() != grid.n_origins
-        || grid.cell_ages_months.len() != grid.n_origins * grid.n_devs
-    {
+    grid.validate()?;
+    if grid.n_devs < 2 || cum.len() != grid.cell_ages_months.len() {
         return Err(ValidationError::ShapeMismatch);
     }
     for i in 0..grid.n_origins {
@@ -215,7 +211,7 @@ pub fn asymmetric_chain_ladder(
         let ult = lat * cdf;
         latest.push(lat);
         latest_dev_indices.push(d_i);
-        latest_ages_months.push(grid.cell_age(i, d_i));
+        latest_ages_months.push(grid.cell_age(i, d_i).ok_or(ValidationError::NotFinite)?);
         origin_cdfs.push(cdf);
         ultimates.push(ult);
         ibnr.push(ult - lat);
@@ -244,6 +240,7 @@ pub fn asymmetric_chain_ladder(
 /// Output from [`interim_bf`] (interim-valuation Bornhuetter–Ferguson with
 /// pro-rated stub exposure and sub-annual CDFs).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct InterimBfProjection {
     /// Latest observed cumulative losses by origin.
     pub latest: Vec<f64>,
@@ -330,6 +327,7 @@ pub fn interim_bf(
 /// Output from [`interim_cape_cod`] (interim-valuation Cape Cod with pro-rated
 /// stub earned premium and sub-annual CDFs).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct InterimCapeCodProjection {
     /// Latest observed cumulative losses by origin.
     pub latest: Vec<f64>,
