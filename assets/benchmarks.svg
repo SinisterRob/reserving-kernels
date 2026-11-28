@@ -78,20 +78,20 @@
   <text x="892.0" y="397.0" text-anchor="end" class="speedup">4,410×–183,000×</text>
   <text x="26" y="451.0" class="label">ODP Bootstrap (GenIns, 1k sims)</text>
   <rect x="258.0" y="431.0" width="2.5" height="8" rx="1.5" fill="#f97316"/>
-  <text x="267.5" y="438.5" class="val-rust">0.19 ms</text>
+  <text x="267.5" y="438.5" class="val-rust">0.15 ms</text>
   <rect x="258.0" y="443.0" width="424.0" height="8" rx="2" fill="#38bdf8" opacity="0.88"/>
   <text x="689.0" y="450.5" class="val" fill="#7dd3fc">216 ms</text>
   <rect x="258.0" y="455.0" width="150.4" height="8" rx="2" fill="#a78bfa" opacity="0.88"/>
   <text x="415.4" y="462.5" class="val" fill="#c4b5fd">76.8 ms</text>
-  <text x="892.0" y="451.0" text-anchor="end" class="speedup">410×–1,160×</text>
+  <text x="892.0" y="451.0" text-anchor="end" class="speedup">509×–1,430×</text>
   <rect x="18" y="476.0" width="884" height="50.0" rx="6" fill="#161b22" opacity="0.55"/>
   <text x="26" y="505.0" class="label">ODP Bootstrap (GenIns, 10k sims)</text>
   <rect x="258.0" y="485.0" width="2.5" height="8" rx="1.5" fill="#f97316"/>
-  <text x="267.5" y="492.5" class="val-rust">1.90 ms</text>
+  <text x="267.5" y="492.5" class="val-rust">1.57 ms</text>
   <rect x="258.0" y="497.0" width="424.0" height="8" rx="2" fill="#38bdf8" opacity="0.88"/>
   <text x="689.0" y="504.5" class="val" fill="#7dd3fc">2.22 s</text>
   <rect x="258.0" y="509.0" width="79.4" height="8" rx="2" fill="#a78bfa" opacity="0.88"/>
   <text x="344.4" y="516.5" class="val" fill="#c4b5fd">416 ms</text>
-  <text x="892.0" y="505.0" text-anchor="end" class="speedup">220×–1,170×</text>
+  <text x="892.0" y="505.0" text-anchor="end" class="speedup">265×–1,410×</text>
   <text x="26" y="552" class="foot">i9-14900K · rustc 1.97 · ChainLadder 0.2.21 (R) · chainladder-python 0.10.1 · flat f64 slices vs. S3/S4 &amp; DataFrame overhead</text>
 </svg>

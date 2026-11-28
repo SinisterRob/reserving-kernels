@@ -2,8 +2,8 @@
   "metadata": {
     "hardware": "Intel Core i9-14900K",
     "rustc": "1.97.0",
-    "commit": "cff50f4",
-    "updated_at": "2026-11-26",
+    "commit": "156f9d6",
+    "updated_at": "2026-11-27",
     "reference_r": "ChainLadder 0.2.21",
     "reference_python": "chainladder-python 0.10.1"
   },
@@ -147,28 +147,28 @@
       "mean_ns": 13972.11
     },
     "bootstrap/odp_cdr_genins_1000": {
-      "median_ns": 226863.98,
-      "mean_ns": 227303.29
+      "median_ns": 222546.84,
+      "mean_ns": 222700.66
     },
     "bootstrap/odp_genins/1000": {
-      "median_ns": 187240.22,
-      "mean_ns": 187279.28
+      "median_ns": 150923.08,
+      "mean_ns": 152061.02
     },
     "bootstrap/odp_genins/10000": {
-      "median_ns": 1895693.62,
-      "mean_ns": 1899302.55
+      "median_ns": 1571628.79,
+      "mean_ns": 1581398.37
     },
     "bootstrap/synchronized_odp_2line_500": {
-      "median_ns": 193992.35,
-      "mean_ns": 194373.66
+      "median_ns": 189456.32,
+      "mean_ns": 189572.35
     },
     "dependence_dist/iman_conover_2000x3": {
       "median_ns": 325850.92,
       "mean_ns": 327122.41
     },
     "dependence_dist/reserve_dist_summarize_10k": {
-      "median_ns": 19889.51,
-      "mean_ns": 19899.56
+      "median_ns": 18878.42,
+      "mean_ns": 19145.48
     },
     "dependence_dist/reserve_dist_tvar_coherent_10k": {
       "median_ns": 10269.05,

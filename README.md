@@ -184,8 +184,8 @@ Single-threaded benchmarks on an Intel Core i9-14900K comparing `reserving-kerne
 | Merz–Wüthrich 1-Yr CDR (RAA) | **0.38 µs** | 9,420 µs | — | 24,580× | — |
 | Clark Loglogistic MLE (GenIns) | **11.7 µs** | 8,300 µs | 12,026 µs | 711× | 1,030× |
 | ODP GLM Reserve (GenIns) | **1.20 µs** | 5,300 µs | 219.6 ms | 4,410× | 182,860× |
-| ODP Bootstrap (GenIns, 1k sims) | **0.19 ms** | 216.5 ms | 76.8 ms | 1,160× | 410× |
-| ODP Bootstrap (GenIns, 10k sims) | **1.90 ms** | 2,223 ms | 416.2 ms | 1,170× | 220× |
+| ODP Bootstrap (GenIns, 1k sims) | **0.15 ms** | 216.5 ms | 76.8 ms | 1,430× | 509× |
+| ODP Bootstrap (GenIns, 10k sims) | **1.57 ms** | 2,223 ms | 416.2 ms | 1,410× | 265× |
 
 <details>
 <summary><strong>Additional i9-14900K Rust kernel latencies (29 more kernels in <code>benches/kernels.rs</code>)</strong></summary>
