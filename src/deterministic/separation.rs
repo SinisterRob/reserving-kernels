@@ -49,6 +49,7 @@ pub enum InflationProjection {
 
 /// Result of Taylor's (1977) Separation Method.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SeparationResult {
     /// Separation variant used.
     pub method: SeparationMethod,

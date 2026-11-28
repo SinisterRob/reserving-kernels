@@ -13,6 +13,7 @@ pub mod diagnostics;
 pub mod excess;
 pub(crate) mod linalg;
 pub mod preprocessing;
+pub(crate) mod special;
 pub mod stochastic;
 pub mod subannual;
 mod triangle_ops;

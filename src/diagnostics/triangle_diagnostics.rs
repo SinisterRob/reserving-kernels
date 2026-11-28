@@ -9,6 +9,7 @@ use crate::types::TriangleView;
 
 /// Flag emitted for a cell-level diagnostic condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CellFlag {
     /// Origin row index.
     pub origin: usize,
@@ -18,6 +19,7 @@ pub struct CellFlag {
 
 /// Flag emitted for a row-level diagnostic condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RowFlag {
     /// Origin row index.
     pub origin: usize,
@@ -25,6 +27,7 @@ pub struct RowFlag {
 
 /// Summary diagnostics for one triangle.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct TriangleDiagnostics {
     /// Number of origin rows.
     pub n_origin: usize,

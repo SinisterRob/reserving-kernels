@@ -32,7 +32,7 @@ use crate::deterministic::ldf::DevelopmentFactors;
 use crate::preprocessing::apriori::{AprioriInput, build_apriori};
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_development_factor_slices,
+    MonotonicityPolicy, ValidationError, validate_development_factor_slices_with_policy,
     validate_latest_and_dev, validate_monotone_cumulative, validate_nonnegative_finite_slice,
     validate_nonnegative_finite_vector, validate_triangle,
 };
@@ -167,12 +167,13 @@ impl BenktanderEngine {
         if policy == MonotonicityPolicy::Strict {
             validate_monotone_cumulative(cumulative)?;
         }
-        validate_development_factor_slices(
+        validate_development_factor_slices_with_policy(
             &factors.ldfs,
             &factors.cdfs,
             factors.tail,
             cumulative.n_devs,
             "Benktander factor",
+            policy,
         )?;
         validate_nonnegative_finite_vector(expected_ultimate, cumulative.n_origins)?;
 
@@ -185,7 +186,7 @@ impl BenktanderEngine {
             cumulative.n_devs,
             &mut latest,
             &mut latest_dev,
-        );
+        )?;
         validate_latest_and_dev(&latest, &latest_dev, &factors.cdfs)?;
 
         let mut maturity = vec![0.0; n];

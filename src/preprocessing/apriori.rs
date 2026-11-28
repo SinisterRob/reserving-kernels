@@ -48,6 +48,7 @@ pub enum AprioriInput<'a> {
 
 /// Built expected-ultimate vector plus provenance.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct AprioriVector {
     /// Expected ultimate loss by origin.
     pub expected_ultimate: Vec<f64>,

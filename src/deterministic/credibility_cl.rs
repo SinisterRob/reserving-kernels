@@ -67,6 +67,7 @@ pub struct CollectiveCredibilityParams {
 
 /// Full Gisler & Wüthrich (2008) credibility chain-ladder result.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct CredibilityClResult {
     /// Empirical volume-weighted LDFs $\hat{f}_k^{\text{CL}}$, length $n - 1$.
     pub empirical_ldf: Vec<f64>,

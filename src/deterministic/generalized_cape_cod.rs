@@ -38,13 +38,14 @@ use crate::deterministic::ldf::{DevelopmentFactors, cdf_from_ldf, pct_reported};
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_development_factor_slices,
+    MonotonicityPolicy, ValidationError, validate_development_factor_slices_with_policy,
     validate_latest_and_dev, validate_monotone_cumulative, validate_positive_finite_slice,
     validate_premium, validate_triangle,
 };
 
 /// Result of a Generalized (Decay-Weighted) Cape Cod projection.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct GeneralizedCapeCodProjection {
     /// Decay factor `delta` in `(0, 1]`.
     pub decay: f64,
@@ -68,7 +69,8 @@ pub struct GeneralizedCapeCodProjection {
 }
 
 /// Compute origin-specific Gluck (1997) decay-weighted expected loss ratios
-/// without input validation.
+/// without input validation. Shape mismatches (`premium` or `ldf` length)
+/// yield an all-`NaN` vector instead of panicking.
 pub fn elr_by_origin_unchecked(
     t: &TriangleView<'_>,
     ldf: &[f64],
@@ -77,7 +79,9 @@ pub fn elr_by_origin_unchecked(
     decay: f64,
 ) -> Vec<f64> {
     let n = t.n_origins.min(t.n_devs);
-    debug_assert_eq!(premium.len(), n);
+    if premium.len() != n || ldf.len() + 1 != n {
+        return vec![f64::NAN; n];
+    }
     let cdf = cdf_from_ldf(ldf, tail);
     let pct = pct_reported(&cdf);
     let latest = latest_diagonal(t);
@@ -158,12 +162,13 @@ impl GeneralizedCapeCodEngine {
         }
         let n = cumulative.n_origins;
         validate_premium(premium, n)?;
-        validate_development_factor_slices(
+        validate_development_factor_slices_with_policy(
             &factors.ldfs,
             &factors.cdfs,
             factors.tail,
             cumulative.n_devs,
             "Generalized Cape Cod factor",
+            policy,
         )?;
         if !decay.is_finite() {
             return Err(ValidationError::NotFinite);
@@ -188,7 +193,7 @@ impl GeneralizedCapeCodEngine {
             cumulative.n_devs,
             &mut latest,
             &mut latest_dev,
-        );
+        )?;
         validate_latest_and_dev(&latest, &latest_dev, &factors.cdfs)?;
 
         let mut reported_percentage = vec![0.0; n];

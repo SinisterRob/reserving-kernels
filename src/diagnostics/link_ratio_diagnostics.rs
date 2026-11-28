@@ -1,27 +1,27 @@
 //! Link-ratio diagnostics and fragility measures.
+//!
+//! All factor computations delegate to the shared averaging kernels used by
+//! [`crate::deterministic::ldf`], so `volume_weighted` here is bit-identical to
+//! [`crate::deterministic::ldf::DevelopmentFactorEngine::volume_weighted`]
+//! (rows with `C_{i,j} = 0` contribute their `C_{i,j+1}` mass, exactly like
+//! the engine).
 
+use crate::deterministic::averaging::{self, LinkPair};
 use crate::deterministic::ldf::LdfSelectionMethod;
-use crate::preprocessing::triangle::age_to_age;
 use crate::types::TriangleView;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct LinkRatioObservation {
-    origin: usize,
-    ratio: f64,
-    current: f64,
-    next: f64,
-}
+use crate::validate::ValidationError;
 
 /// Diagnostics for one development-age link ratio selection.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct LinkRatioDiagnostics {
     /// Development link start age `j` for `j -> j + 1`.
     pub dev_age: usize,
-    /// Factor selected by the requested method.
+    /// Factor selected by the requested method (or the caller-selected factor).
     pub selected_factor: f64,
     /// Simple average of individual observed ratios.
     pub simple_average: f64,
-    /// Volume-weighted link ratio.
+    /// Volume-weighted link ratio (same definition as the LDF engine).
     pub volume_weighted: f64,
     /// Median observed ratio.
     pub median: f64,
@@ -33,142 +33,65 @@ pub struct LinkRatioDiagnostics {
     pub std_dev: f64,
     /// Coefficient of variation of observed ratios.
     pub coeff_var: f64,
-    /// Number of observed ratios.
+    /// Number of defined individual ratios (`C_{i,j} > 0`).
     pub n_obs: usize,
-    /// Origin with the largest leave-one-out delta versus the selected factor.
+    /// Number of observed origin rows feeding the link (including rows with
+    /// `C_{i,j} = 0`, which still enter the volume-weighted factor).
+    pub n_pairs: usize,
+    /// Origin with the largest non-zero leave-one-out delta versus the
+    /// selected factor (`None` when no removal moves the factor).
     pub high_leverage_origin: Option<usize>,
-    /// Leave-one-out selected factors in ascending observed-origin order.
+    /// Leave-one-out selected factors, one per observed origin row in
+    /// ascending origin order (length `n_pairs`).
     pub leave_one_out_factors: Vec<f64>,
 }
 
-fn observations_for_dev(t: &TriangleView<'_>, dev: usize) -> Vec<LinkRatioObservation> {
-    let n = t.n_origins.min(t.n_devs);
-    if dev + 1 >= n {
-        return Vec::new();
-    }
-
-    let mut out = Vec::new();
-    for origin in 0..n - dev - 1 {
-        let current = t.get(origin, dev);
-        let next = t.get(origin, dev + 1);
-        let ratio = age_to_age(t, origin, dev);
-        if current.is_finite() && next.is_finite() && ratio.is_finite() {
-            out.push(LinkRatioObservation {
-                origin,
-                ratio,
-                current,
-                next,
-            });
-        }
-    }
-    out
-}
-
-fn mean_ratio(observations: &[LinkRatioObservation]) -> f64 {
-    if observations.is_empty() {
-        return f64::NAN;
-    }
-    observations.iter().map(|obs| obs.ratio).sum::<f64>() / observations.len() as f64
-}
-
-fn volume_weighted_ratio(observations: &[LinkRatioObservation]) -> f64 {
-    let denominator: f64 = observations.iter().map(|obs| obs.current).sum();
-    if denominator <= 0.0 {
-        return f64::NAN;
-    }
-    let numerator: f64 = observations.iter().map(|obs| obs.next).sum();
-    numerator / denominator
-}
-
-fn median_ratio(observations: &[LinkRatioObservation]) -> f64 {
-    if observations.is_empty() {
-        return f64::NAN;
-    }
-    let mut ratios: Vec<f64> = observations.iter().map(|obs| obs.ratio).collect();
-    ratios.sort_by(f64::total_cmp);
-    let n = ratios.len();
-    if n % 2 == 1 {
-        ratios[n / 2]
-    } else {
-        f64::midpoint(ratios[n / 2 - 1], ratios[n / 2])
-    }
-}
-
-fn ex_hi_lo_ratio(observations: &[LinkRatioObservation]) -> f64 {
-    if observations.len() < 3 {
-        return mean_ratio(observations);
-    }
-    let mut ratios: Vec<f64> = observations.iter().map(|obs| obs.ratio).collect();
-    ratios.sort_by(f64::total_cmp);
-    let trimmed = &ratios[1..ratios.len() - 1];
-    trimmed.iter().sum::<f64>() / trimmed.len() as f64
-}
-
-fn sample_std_dev(observations: &[LinkRatioObservation], mean: f64) -> f64 {
-    if observations.len() <= 1 || !mean.is_finite() {
-        return 0.0;
-    }
-    let variance = observations
-        .iter()
-        .map(|obs| (obs.ratio - mean).powi(2))
-        .sum::<f64>()
-        / (observations.len() as f64 - 1.0);
-    variance.sqrt()
-}
-
-fn recent_window(observations: &[LinkRatioObservation], last_n: usize) -> &[LinkRatioObservation] {
-    if observations.is_empty() {
-        return observations;
-    }
-    let take = if last_n == 0 {
-        observations.len()
-    } else {
-        observations.len().min(last_n)
-    };
-    &observations[observations.len() - take..]
-}
-
-fn select_factor(method: LdfSelectionMethod, observations: &[LinkRatioObservation]) -> f64 {
-    match method {
-        // `Selected` currently carries no per-link selected values, so the
-        // closest auditable baseline is the objective volume-weighted factor.
-        LdfSelectionMethod::VolumeWeighted | LdfSelectionMethod::Selected => {
-            volume_weighted_ratio(observations)
-        }
-        LdfSelectionMethod::SimpleAverage => mean_ratio(observations),
-        LdfSelectionMethod::Median => median_ratio(observations),
-        LdfSelectionMethod::ExHiLo => ex_hi_lo_ratio(observations),
+fn method_selector(
+    method: LdfSelectionMethod,
+) -> Result<impl Fn(&[LinkPair]) -> f64, ValidationError> {
+    let selector = move |pairs: &[LinkPair]| match method {
+        LdfSelectionMethod::VolumeWeighted => averaging::volume_weighted(pairs),
+        LdfSelectionMethod::SimpleAverage => averaging::simple_average(pairs),
+        LdfSelectionMethod::Median => averaging::median(pairs),
+        LdfSelectionMethod::ExHiLo => averaging::ex_hi_lo(pairs),
         LdfSelectionMethod::LastNVolumeWeighted { last_n } => {
-            volume_weighted_ratio(recent_window(observations, last_n))
+            averaging::volume_weighted(averaging::recent(pairs, last_n))
         }
         LdfSelectionMethod::LastNSimpleAverage { last_n } => {
-            mean_ratio(recent_window(observations, last_n))
+            averaging::simple_average(averaging::recent(pairs, last_n))
         }
+        LdfSelectionMethod::Selected => f64::NAN,
+    };
+    if method == LdfSelectionMethod::Selected {
+        return Err(ValidationError::InvalidParameter(
+            "LdfSelectionMethod::Selected has no computable factor; use diagnose_link_selected / diagnose_all_selected",
+        ));
     }
+    Ok(selector)
 }
 
-/// Diagnose one development-age link for a requested selection method.
-pub fn diagnose_link(
+fn diagnose_with(
     t: &TriangleView<'_>,
     dev_age: usize,
-    method: LdfSelectionMethod,
+    select: impl Fn(&[LinkPair]) -> f64,
 ) -> LinkRatioDiagnostics {
-    let observations = observations_for_dev(t, dev_age);
-    let simple_average = mean_ratio(&observations);
-    let volume_weighted = volume_weighted_ratio(&observations);
-    let median = median_ratio(&observations);
-    let selected_factor = select_factor(method, &observations);
-    let min = observations
+    let pairs = averaging::link_pairs(t, dev_age);
+    let ratios = averaging::ratios(&pairs);
+    let simple_average = averaging::simple_average(&pairs);
+    let volume_weighted = averaging::volume_weighted(&pairs);
+    let median = averaging::median(&pairs);
+    let selected_factor = select(&pairs);
+    let min = ratios
         .iter()
-        .map(|obs| obs.ratio)
+        .copied()
         .min_by(f64::total_cmp)
         .unwrap_or(f64::NAN);
-    let max = observations
+    let max = ratios
         .iter()
-        .map(|obs| obs.ratio)
+        .copied()
         .max_by(f64::total_cmp)
         .unwrap_or(f64::NAN);
-    let std_dev = sample_std_dev(&observations, simple_average);
+    let std_dev = averaging::ratio_sample_std_dev(&pairs, simple_average);
     let coeff_var = if simple_average.abs() > 0.0 {
         std_dev / simple_average.abs()
     } else {
@@ -176,12 +99,19 @@ pub fn diagnose_link(
     };
 
     let mut high_leverage_origin = None;
-    let mut max_delta = f64::NEG_INFINITY;
-    let mut leave_one_out_factors = Vec::with_capacity(observations.len());
-    for idx in 0..observations.len() {
-        let mut leave_one_out = observations.clone();
-        let removed = leave_one_out.remove(idx);
-        let factor = select_factor(method, &leave_one_out);
+    let mut max_delta = 0.0;
+    let mut leave_one_out_factors = Vec::with_capacity(pairs.len());
+    let mut scratch = Vec::with_capacity(pairs.len());
+    for (idx, removed) in pairs.iter().enumerate() {
+        scratch.clear();
+        scratch.extend(
+            pairs
+                .iter()
+                .enumerate()
+                .filter(|&(k, _)| k != idx)
+                .map(|(_, p)| *p),
+        );
+        let factor = select(&scratch);
         let delta = (selected_factor - factor).abs();
         if delta.is_finite() && delta > max_delta {
             max_delta = delta;
@@ -200,26 +130,77 @@ pub fn diagnose_link(
         max,
         std_dev,
         coeff_var,
-        n_obs: observations.len(),
+        n_obs: ratios.len(),
+        n_pairs: pairs.len(),
         high_leverage_origin,
         leave_one_out_factors,
     }
 }
 
-/// Diagnose all development-age links for a requested selection method.
-pub fn diagnose_all(t: &TriangleView<'_>, method: LdfSelectionMethod) -> Vec<LinkRatioDiagnostics> {
+/// Diagnose one development-age link for a computed selection method.
+///
+/// Returns `InvalidParameter` for [`LdfSelectionMethod::Selected`] (it carries
+/// no factor values); use [`diagnose_link_selected`] with the explicit factor.
+pub fn diagnose_link(
+    t: &TriangleView<'_>,
+    dev_age: usize,
+    method: LdfSelectionMethod,
+) -> Result<LinkRatioDiagnostics, ValidationError> {
+    let select = method_selector(method)?;
+    Ok(diagnose_with(t, dev_age, select))
+}
+
+/// Diagnose one development-age link against an explicit caller-selected factor.
+///
+/// Leave-one-out factors equal `selected_factor` (a judgmental selection does
+/// not move when one origin is removed), so `high_leverage_origin` is `None`.
+pub fn diagnose_link_selected(
+    t: &TriangleView<'_>,
+    dev_age: usize,
+    selected_factor: f64,
+) -> LinkRatioDiagnostics {
+    diagnose_with(t, dev_age, |_| selected_factor)
+}
+
+/// Diagnose all development-age links for a computed selection method.
+///
+/// Returns `InvalidParameter` for [`LdfSelectionMethod::Selected`]; use
+/// [`diagnose_all_selected`].
+pub fn diagnose_all(
+    t: &TriangleView<'_>,
+    method: LdfSelectionMethod,
+) -> Result<Vec<LinkRatioDiagnostics>, ValidationError> {
+    let select = method_selector(method)?;
     let n = t.n_origins.min(t.n_devs);
     if n < 2 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    (0..n - 1)
-        .map(|dev_age| diagnose_link(t, dev_age, method))
-        .collect()
+    Ok((0..n - 1)
+        .map(|dev_age| diagnose_with(t, dev_age, &select))
+        .collect())
+}
+
+/// Diagnose all development-age links against explicit caller-selected
+/// factors (`selected.len()` must equal `min(n_origins, n_devs) - 1`).
+pub fn diagnose_all_selected(
+    t: &TriangleView<'_>,
+    selected: &[f64],
+) -> Result<Vec<LinkRatioDiagnostics>, ValidationError> {
+    let n = t.n_origins.min(t.n_devs);
+    if selected.len() != n.saturating_sub(1) {
+        return Err(ValidationError::ShapeMismatch);
+    }
+    Ok(selected
+        .iter()
+        .enumerate()
+        .map(|(dev_age, &factor)| diagnose_link_selected(t, dev_age, factor))
+        .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deterministic::ldf::DevelopmentFactorEngine;
     use crate::types::Triangle;
 
     fn triangle_4x4() -> Triangle {
@@ -237,13 +218,18 @@ mod tests {
         (a - b).abs() <= 1e-12 * (1.0 + b.abs())
     }
 
+    fn vw(t: &TriangleView<'_>, dev: usize) -> LinkRatioDiagnostics {
+        diagnose_link(t, dev, LdfSelectionMethod::VolumeWeighted).expect("diagnose")
+    }
+
     #[test]
     fn diagnose_link_reports_core_statistics() {
         let tri = triangle_4x4();
-        let diagnostics = diagnose_link(&tri.view(), 0, LdfSelectionMethod::VolumeWeighted);
+        let diagnostics = vw(&tri.view(), 0);
 
         assert_eq!(diagnostics.dev_age, 0);
         assert_eq!(diagnostics.n_obs, 3);
+        assert_eq!(diagnostics.n_pairs, 3);
         assert!(close(diagnostics.simple_average, (1.5 + 1.5 + 1.4) / 3.0));
         assert!(close(diagnostics.volume_weighted, 5400.0 / 3700.0));
         assert!(close(diagnostics.median, 1.5));
@@ -255,7 +241,7 @@ mod tests {
     #[test]
     fn leave_one_out_highlights_high_leverage_origin() {
         let tri = triangle_4x4();
-        let diagnostics = diagnose_link(&tri.view(), 0, LdfSelectionMethod::VolumeWeighted);
+        let diagnostics = vw(&tri.view(), 0);
 
         assert_eq!(diagnostics.high_leverage_origin, Some(2));
         assert!(
@@ -269,11 +255,64 @@ mod tests {
     #[test]
     fn method_specific_selected_factor_changes_with_selector() {
         let tri = triangle_4x4();
-        let simple = diagnose_link(&tri.view(), 0, LdfSelectionMethod::SimpleAverage);
-        let volume = diagnose_link(&tri.view(), 0, LdfSelectionMethod::VolumeWeighted);
+        let simple =
+            diagnose_link(&tri.view(), 0, LdfSelectionMethod::SimpleAverage).expect("simple");
+        let volume = vw(&tri.view(), 0);
 
         assert!(simple.selected_factor.is_finite());
         assert!(volume.selected_factor.is_finite());
         assert_ne!(simple.selected_factor, volume.selected_factor);
+    }
+
+    #[test]
+    fn zero_denominator_row_matches_engine_volume_weighted() {
+        // Origin 2 has C_{2,0} = 0 -> 50: it has no individual ratio but its
+        // numerator mass enters the classical volume-weighted factor.
+        #[rustfmt::skip]
+        let tri = Triangle::new(4, 4, vec![
+            100.0, 150.0, 170.0, 180.0,
+            120.0, 180.0, 200.0, f64::NAN,
+              0.0,  50.0, f64::NAN, f64::NAN,
+            140.0, f64::NAN, f64::NAN, f64::NAN,
+        ]);
+        let engine = DevelopmentFactorEngine::volume_weighted(&tri.view(), 1.0).expect("engine");
+        let diag = diagnose_all(&tri.view(), LdfSelectionMethod::VolumeWeighted).expect("diag");
+        for (d, &f) in diag.iter().zip(&engine.ldfs) {
+            assert_eq!(d.volume_weighted.to_bits(), f.to_bits());
+            assert_eq!(d.selected_factor.to_bits(), f.to_bits());
+        }
+        // (150 + 180 + 50) / (100 + 120 + 0) = 380 / 220, not 330 / 220.
+        assert!(close(diag[0].volume_weighted, 380.0 / 220.0));
+        assert_eq!(diag[0].n_obs, 2);
+        assert_eq!(diag[0].n_pairs, 3);
+        assert_eq!(diag[0].leave_one_out_factors.len(), 3);
+        assert!(close(diag[0].leave_one_out_factors[2], 330.0 / 220.0));
+    }
+
+    #[test]
+    fn selected_method_requires_explicit_factors() {
+        let tri = triangle_4x4();
+        assert!(matches!(
+            diagnose_link(&tri.view(), 0, LdfSelectionMethod::Selected),
+            Err(ValidationError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            diagnose_all(&tri.view(), LdfSelectionMethod::Selected),
+            Err(ValidationError::InvalidParameter(_))
+        ));
+        let manual = diagnose_all_selected(&tri.view(), &[1.45, 1.12, 1.05]).expect("manual");
+        assert_eq!(manual.len(), 3);
+        assert!(close(manual[0].selected_factor, 1.45));
+        assert!(
+            manual[0]
+                .leave_one_out_factors
+                .iter()
+                .all(|&f| close(f, 1.45))
+        );
+        assert_eq!(manual[0].high_leverage_origin, None);
+        assert_eq!(
+            diagnose_all_selected(&tri.view(), &[1.45]),
+            Err(ValidationError::ShapeMismatch)
+        );
     }
 }

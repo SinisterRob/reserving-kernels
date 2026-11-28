@@ -22,13 +22,14 @@
 //! Î_{i, k+1} = Î_{i, k} · [ f_k^I + λ^I · (σ_k^I / τ_k^I) · (P̂_{i,k}/Î_{i,k} - q_k) ]
 //! ```
 
-use crate::deterministic::ldf::volume_weighted;
+use crate::deterministic::ldf::{mack_sigma_sq_by_link, volume_weighted};
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{ValidationError, validate_tail, validate_triangle};
 
 /// Full bivariate Munich Chain Ladder result.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct MunichChainLadder {
     /// Traditional univariate volume-weighted paid LDFs (length `n - 1`).
     pub paid_ldfs: Vec<f64>,
@@ -88,28 +89,6 @@ impl MunichChainLadder {
     }
 }
 
-fn mack_sigma_sq(t: &TriangleView<'_>, ldfs: &[f64]) -> Vec<f64> {
-    let n = t.n_origins;
-    let mut s = vec![0.0; n - 1];
-    for k in 0..(n - 1) {
-        let nk = n - k - 1;
-        if nk >= 2 {
-            let mut acc = 0.0;
-            for i in 0..nk {
-                let c_k = t.get(i, k);
-                let c_kp1 = t.get(i, k + 1);
-                let ratio = c_kp1 / c_k;
-                acc += c_k * (ratio - ldfs[k]).powi(2);
-            }
-            s[k] = acc / (nk as f64 - 1.0);
-        } else {
-            s[k] = f64::NAN;
-        }
-    }
-    extrapolate_last_sigma_sq(&mut s);
-    s
-}
-
 fn extrapolate_last_sigma_sq(s: &mut [f64]) {
     let raw: Vec<Option<f64>> = s.iter().map(|&v| v.is_finite().then_some(v)).collect();
     let extrap = crate::deterministic::ldf::extrapolate_mack_min_rule(&raw);
@@ -163,11 +142,11 @@ pub fn project(
         return Err(ValidationError::DivideByZero("univariate LDF"));
     }
 
-    let sigma_paid: Vec<f64> = mack_sigma_sq(paid, &paid_ldfs)
+    let sigma_paid: Vec<f64> = mack_sigma_sq_by_link(paid, &paid_ldfs)
         .into_iter()
         .map(|v| v.max(0.0).sqrt())
         .collect();
-    let sigma_incurred: Vec<f64> = mack_sigma_sq(incurred, &incurred_ldfs)
+    let sigma_incurred: Vec<f64> = mack_sigma_sq_by_link(incurred, &incurred_ldfs)
         .into_iter()
         .map(|v| v.max(0.0).sqrt())
         .collect();

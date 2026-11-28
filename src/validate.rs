@@ -94,7 +94,10 @@ impl fmt::Display for ValidationError {
                 f,
                 "non-monotone cumulative triangle at origin {origin}, dev {dev}: {value} < {previous}"
             ),
-            Self::InvalidTail { tail } => write!(f, "invalid tail factor {tail} (must be >= 1.0)"),
+            Self::InvalidTail { tail } => write!(
+                f,
+                "invalid tail factor {tail} (must be >= 1.0 under strict monotonicity, > 0.0 otherwise)"
+            ),
             Self::InvalidMaturity { index, value } => {
                 write!(f, "invalid maturity/probability {value} at index {index}")
             }
@@ -187,12 +190,30 @@ pub(crate) fn validate_finite_slice(values: &[f64]) -> Result<(), ValidationErro
     Ok(())
 }
 
-/// Validate a tail factor under the crate's cumulative-loss production policy.
+/// Validate a tail factor under the crate's cumulative-loss production policy
+/// (strict: `tail >= 1.0`).
 pub(crate) fn validate_tail(tail: f64) -> Result<(), ValidationError> {
+    validate_tail_with_policy(tail, MonotonicityPolicy::Strict)
+}
+
+/// Validate a tail factor under an explicit [`MonotonicityPolicy`].
+///
+/// * [`MonotonicityPolicy::Strict`] — `tail` must be finite and `>= 1.0`.
+/// * [`MonotonicityPolicy::AllowNegativeIncrements`] — `tail` must be finite
+///   and strictly positive; tails below `1.0` (expected net downward incurred
+///   development, salvage/subrogation) are permitted.
+pub(crate) fn validate_tail_with_policy(
+    tail: f64,
+    policy: MonotonicityPolicy,
+) -> Result<(), ValidationError> {
     if !tail.is_finite() {
         return Err(ValidationError::NotFinite);
     }
-    if tail < 1.0 {
+    let valid = match policy {
+        MonotonicityPolicy::Strict => tail >= 1.0,
+        MonotonicityPolicy::AllowNegativeIncrements => tail > 0.0,
+    };
+    if !valid {
         return Err(ValidationError::InvalidTail { tail });
     }
     Ok(())
@@ -238,13 +259,14 @@ pub(crate) fn validate_positive_finite_slice(
     Ok(())
 }
 
-/// Validate LDF/CDF vector shape and positivity.
-pub(crate) fn validate_development_factor_slices(
+/// Validate LDF/CDF vector shape and positivity with a policy-aware tail check.
+pub(crate) fn validate_development_factor_slices_with_policy(
     ldfs: &[f64],
     cdfs: &[f64],
     tail: f64,
     n_devs: usize,
     zero_context: &'static str,
+    policy: MonotonicityPolicy,
 ) -> Result<(), ValidationError> {
     if cdfs.len() != n_devs {
         return Err(ValidationError::ShapeMismatch);
@@ -252,7 +274,7 @@ pub(crate) fn validate_development_factor_slices(
     if ldfs.len() + 1 != cdfs.len() {
         return Err(ValidationError::ShapeMismatch);
     }
-    validate_tail(tail)?;
+    validate_tail_with_policy(tail, policy)?;
     validate_positive_finite_slice(cdfs, zero_context)?;
     validate_positive_finite_slice(ldfs, zero_context)?;
     Ok(())
@@ -278,11 +300,30 @@ pub(crate) fn validate_latest_and_dev(
     Ok(())
 }
 
-/// Validate rectangular/ragged cumulative triangle inputs keyed by per-origin observed counts.
+/// Validate rectangular/ragged cumulative triangle inputs keyed by per-origin
+/// observed counts under strict monotonicity (and strict `tail >= 1.0`).
 pub(crate) fn validate_observed_count_inputs(
     t: &TriangleView<'_>,
     observed_counts: &[usize],
     tail: f64,
+) -> Result<(), ValidationError> {
+    validate_observed_count_inputs_with_policy(t, observed_counts, tail, MonotonicityPolicy::Strict)
+}
+
+/// Validate rectangular/ragged cumulative triangle inputs keyed by per-origin
+/// observed counts under an explicit [`MonotonicityPolicy`].
+///
+/// Always enforces: flat shape, `observed_counts.len() == n_origins`,
+/// `n_devs >= 2`, every count in `1..=n_devs`, and finite non-negative
+/// observed cells. [`MonotonicityPolicy::Strict`] additionally rejects
+/// decreasing cumulative rows and tails `< 1.0`;
+/// [`MonotonicityPolicy::AllowNegativeIncrements`] permits both (tail must
+/// still be finite and `> 0`).
+pub(crate) fn validate_observed_count_inputs_with_policy(
+    t: &TriangleView<'_>,
+    observed_counts: &[usize],
+    tail: f64,
+    policy: MonotonicityPolicy,
 ) -> Result<(), ValidationError> {
     if t.data.len() != t.n_origins * t.n_devs {
         return Err(ValidationError::ShapeMismatch);
@@ -290,7 +331,8 @@ pub(crate) fn validate_observed_count_inputs(
     if observed_counts.len() != t.n_origins || t.n_devs < 2 {
         return Err(ValidationError::ShapeMismatch);
     }
-    validate_tail(tail)?;
+    validate_tail_with_policy(tail, policy)?;
+    let strict = policy == MonotonicityPolicy::Strict;
     for (origin, &count) in observed_counts.iter().enumerate() {
         if count == 0 || count > t.n_devs {
             return Err(ValidationError::ShapeMismatch);
@@ -304,7 +346,8 @@ pub(crate) fn validate_observed_count_inputs(
             if value < 0.0 {
                 return Err(ValidationError::Negative);
             }
-            if let Some(previous_value) = previous
+            if strict
+                && let Some(previous_value) = previous
                 && value < previous_value
             {
                 return Err(ValidationError::NonMonotoneCumulative {
@@ -373,5 +416,69 @@ mod tests {
             Err(ValidationError::NonPositive("premium"))
         );
         assert_eq!(validate_premium(&[100.0, 200.0], 2), Ok(()));
+    }
+
+    #[test]
+    fn tail_policy_allows_positive_sub_unity_tail_only_when_permitted() {
+        assert_eq!(
+            validate_tail_with_policy(0.97, MonotonicityPolicy::Strict),
+            Err(ValidationError::InvalidTail { tail: 0.97 })
+        );
+        assert_eq!(
+            validate_tail_with_policy(0.97, MonotonicityPolicy::AllowNegativeIncrements),
+            Ok(())
+        );
+        for bad in [0.0, -0.5] {
+            assert_eq!(
+                validate_tail_with_policy(bad, MonotonicityPolicy::AllowNegativeIncrements),
+                Err(ValidationError::InvalidTail { tail: bad })
+            );
+        }
+        assert_eq!(
+            validate_tail_with_policy(f64::INFINITY, MonotonicityPolicy::AllowNegativeIncrements),
+            Err(ValidationError::NotFinite)
+        );
+    }
+
+    #[test]
+    fn observed_count_validation_respects_policy() {
+        #[rustfmt::skip]
+        let data = [
+            100.0, 90.0, 95.0,
+            120.0, 130.0, f64::NAN,
+            140.0, f64::NAN, f64::NAN,
+        ];
+        let t = TriangleView {
+            n_origins: 3,
+            n_devs: 3,
+            data: &data,
+        };
+        let counts = [3, 2, 1];
+        assert!(matches!(
+            validate_observed_count_inputs(&t, &counts, 1.0),
+            Err(ValidationError::NonMonotoneCumulative {
+                origin: 0,
+                dev: 1,
+                ..
+            })
+        ));
+        assert_eq!(
+            validate_observed_count_inputs_with_policy(
+                &t,
+                &counts,
+                0.98,
+                MonotonicityPolicy::AllowNegativeIncrements
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_observed_count_inputs_with_policy(
+                &t,
+                &[3, 2, 0],
+                1.0,
+                MonotonicityPolicy::AllowNegativeIncrements
+            ),
+            Err(ValidationError::ShapeMismatch)
+        );
     }
 }

@@ -5,6 +5,7 @@ use crate::types::{Triangle, TriangleView};
 
 /// One held-out triangle cell and its actual value.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct HoldoutCell {
     /// Origin row index.
     pub origin: usize,
@@ -16,6 +17,7 @@ pub struct HoldoutCell {
 
 /// Training triangle plus the held-out cells removed from it.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct HoldoutSet {
     /// Triangle after replacing held-out cells with `NaN`.
     pub training: Triangle,
@@ -25,6 +27,7 @@ pub struct HoldoutSet {
 
 /// Backtest metrics for one selector on one holdout scheme.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct BacktestScore {
     /// Selector being evaluated.
     pub selector: CandidateSelector,

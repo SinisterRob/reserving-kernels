@@ -72,10 +72,11 @@ pub fn trend_to_common_level(
     apply_trend(values, years_to_level, annual_rate)
 }
 
-/// Detrend each origin row of a triangle by dividing through the supplied origin factor.
-pub fn detrend_triangle(
+/// Scale every observed cell of origin row `i` by `op(value, origin_factors[i])`.
+fn scale_origin_rows(
     triangle: &TriangleView<'_>,
     origin_factors: &[f64],
+    op: fn(f64, f64) -> f64,
 ) -> Result<Triangle, ValidationError> {
     validate_triangle(triangle)?;
     if triangle.n_origins != origin_factors.len() {
@@ -95,7 +96,7 @@ pub fn detrend_triangle(
             }
             let value = triangle.get(origin, dev);
             if value.is_finite() {
-                let scaled = value / factor;
+                let scaled = op(value, factor);
                 if !scaled.is_finite() {
                     return Err(ValidationError::NotFinite);
                 }
@@ -106,38 +107,20 @@ pub fn detrend_triangle(
     Ok(Triangle::new(triangle.n_origins, triangle.n_devs, data))
 }
 
+/// Detrend each origin row of a triangle by dividing through the supplied origin factor.
+pub fn detrend_triangle(
+    triangle: &TriangleView<'_>,
+    origin_factors: &[f64],
+) -> Result<Triangle, ValidationError> {
+    scale_origin_rows(triangle, origin_factors, |value, factor| value / factor)
+}
+
 /// Retrend each origin row of a triangle by multiplying through the supplied origin factor.
 pub fn retrend_triangle(
     triangle: &TriangleView<'_>,
     origin_factors: &[f64],
 ) -> Result<Triangle, ValidationError> {
-    validate_triangle(triangle)?;
-    if triangle.n_origins != origin_factors.len() {
-        return Err(ValidationError::ShapeMismatch);
-    }
-    validate_nonnegative_finite_slice(origin_factors)?;
-
-    let mut data = vec![f64::NAN; triangle.n_origins * triangle.n_devs];
-    for origin in 0..triangle.n_origins {
-        let factor = origin_factors[origin];
-        if factor <= 0.0 {
-            return Err(ValidationError::DivideByZero("trend factor"));
-        }
-        for dev in 0..triangle.n_devs {
-            if !triangle.is_scheduled_observed(origin, dev) {
-                continue;
-            }
-            let value = triangle.get(origin, dev);
-            if value.is_finite() {
-                let scaled = value * factor;
-                if !scaled.is_finite() {
-                    return Err(ValidationError::NotFinite);
-                }
-                data[origin * triangle.n_devs + dev] = scaled;
-            }
-        }
-    }
-    Ok(Triangle::new(triangle.n_origins, triangle.n_devs, data))
+    scale_origin_rows(triangle, origin_factors, |value, factor| value * factor)
 }
 
 #[cfg(test)]
@@ -181,5 +164,22 @@ mod tests {
                 assert!(close(*left, *right));
             }
         }
+    }
+
+    #[test]
+    fn detrend_divides_and_rejects_zero_factor() {
+        let triangle = triangle_3x3();
+        let detrended = detrend_triangle(&triangle.view(), &[2.0, 1.0, 4.0]).expect("detrend");
+        assert!(close(detrended.data()[0], 50.0));
+        assert!(close(detrended.data()[6], 35.0));
+        assert!(detrended.data()[8].is_nan());
+        assert_eq!(
+            retrend_triangle(&triangle.view(), &[1.0, 0.0, 1.0]),
+            Err(ValidationError::DivideByZero("trend factor"))
+        );
+        assert_eq!(
+            detrend_triangle(&triangle.view(), &[1.0, 1.0]),
+            Err(ValidationError::ShapeMismatch)
+        );
     }
 }

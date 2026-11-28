@@ -6,6 +6,7 @@ use crate::validate::{ValidationError, validate_triangle};
 
 /// Case-reserve diagnostic bundle by origin and development.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct CaseReserveDiagnostics {
     /// Latest case reserve by origin.
     pub latest_case_reserve: Vec<f64>,

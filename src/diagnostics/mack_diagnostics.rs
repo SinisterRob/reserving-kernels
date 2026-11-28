@@ -7,6 +7,7 @@ use crate::validate::ValidationError;
 
 /// Per-origin Mack reserve variance decomposition.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct MackOriginVariance {
     /// Origin row index.
     pub origin: usize,
@@ -24,6 +25,7 @@ pub struct MackOriginVariance {
 
 /// Full Mack diagnostic bundle.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct MackDiagnostics {
     /// Mack sigma-squared by development age.
     pub sigma_by_age: Vec<f64>,
