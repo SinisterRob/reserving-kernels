@@ -56,6 +56,8 @@ pub enum LdfSelectionMethod {
         /// Number of most recent origins to include.
         last_n: usize,
     },
+    /// Geometric average of positive individual link ratios.
+    Geometric,
     /// Caller-selected link ratios. Carries no factor values, so computed
     /// selectors (e.g. [`DevelopmentFactorEngine::select_with_policy`]) reject
     /// it; supply explicit factors via [`DevelopmentFactorEngine::from_selected_ldfs`].
@@ -676,6 +678,9 @@ impl DevelopmentFactorEngine {
             }
             LdfSelectionMethod::Median => Self::select_validated(tri, tail, policy, median),
             LdfSelectionMethod::ExHiLo => Self::select_validated(tri, tail, policy, ex_hi_lo),
+            LdfSelectionMethod::Geometric => {
+                Self::select_validated(tri, tail, policy, geometric_average)
+            }
             LdfSelectionMethod::LastNVolumeWeighted { last_n } => {
                 Self::select_validated(tri, tail, policy, |t| volume_weighted_last_n(t, last_n))
             }

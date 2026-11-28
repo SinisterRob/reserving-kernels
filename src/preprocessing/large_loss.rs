@@ -143,7 +143,7 @@ pub fn layer_triangle(
 /// For aggregate data use [`aggregate_claims_split`] (claim-level limiting)
 /// or [`remove_large_loss_excess`] (subtract a supplied excess triangle).
 #[deprecated(
-    since = "0.4.1",
+    since = "0.5.0",
     note = "cellwise cap is per-claim only; use aggregate_claims_split or remove_large_loss_excess for aggregate triangles"
 )]
 pub fn large_loss_removed_triangle(

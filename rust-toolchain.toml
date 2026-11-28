@@ -1,0 +1,11 @@
+# Pinned toolchain for local development and CI (deterministic builds).
+# - Overrides a nightly `rustup default` so local clippy/rustfmt match CI.
+# - rustup auto-installs the listed components/targets on first use.
+# - MSRV (Cargo.toml `rust-version`) is checked separately in CI via `cargo +1.97.0`.
+# - Miri runs via `cargo +nightly miri`, which overrides this file.
+# Bump `channel` deliberately (and fix new clippy lints in the same commit).
+[toolchain]
+channel = "1.100.1"
+components = ["rustfmt", "clippy", "rust-analyzer", "rust-src"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

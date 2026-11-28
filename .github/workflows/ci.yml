@@ -75,6 +75,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      # rust-toolchain.toml pins the dev toolchain; `+1.97.0` overrides it here.
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.97.0"
@@ -82,11 +83,11 @@ jobs:
         with:
           key: msrv-1.97
       - name: Check library, tests, and examples (default features)
-        run: cargo check --lib --tests --examples --no-default-features
+        run: cargo +1.97.0 check --lib --tests --examples --no-default-features
       - name: Check library, tests, and examples (all features)
-        run: cargo check --lib --tests --examples --all-features
+        run: cargo +1.97.0 check --lib --tests --examples --all-features
       - name: Unit tests on MSRV
-        run: cargo test --lib
+        run: cargo +1.97.0 test --lib
 
   docs:
     name: Rustdoc
