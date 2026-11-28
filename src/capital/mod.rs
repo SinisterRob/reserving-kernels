@@ -2,5 +2,6 @@
 
 pub mod aggregate_loss;
 pub mod capital_allocation;
+pub mod copulas;
 pub mod dependence;
 pub mod reserve_distribution;

@@ -62,7 +62,13 @@ pub mod prelude {
         euler_sd_allocation, euler_tvar_allocation, myers_read_allocation,
         myers_read_from_default_ratio,
     };
-    pub use crate::capital::dependence::{CorrelationType, ImanConoverResult, iman_conover};
+    pub use crate::capital::dependence::{
+        CopulaSampleResult, CorrelationType, GumbelHac, GumbelHacCluster, ImanConoverResult,
+        apply_copula_reordering, clayton_copula_sample, clayton_lower_tail_dependence,
+        clayton_theta_from_tau, gumbel_copula_sample, gumbel_theta_from_tau,
+        gumbel_upper_tail_dependence, iman_conover, repair_correlation_matrix, student_t_cdf,
+        student_t_copula_sample, student_t_tail_dependence,
+    };
     pub use crate::capital::reserve_distribution::{
         crps_empirical, interval_score, pit_empirical, rvar, tvar_coherent, var_least,
     };
@@ -79,9 +85,19 @@ pub mod prelude {
         CollectiveCredibilityParams, CredibilityClPrior, CredibilityClResult,
     };
     pub use crate::deterministic::double_chain_ladder::DoubleChainLadderResult;
+    pub use crate::deterministic::freq_sev::{
+        AdlerKlineOptions, AdlerKlineResult, CountProjectionMode, WrightOperationalTimeOptions,
+        WrightOperationalTimeResult, adler_kline_reserve, wright_operational_time_reserve,
+    };
     pub use crate::deterministic::incremental_additive::{
         IncrementalAdditiveOptions, IncrementalAdditiveProjection, IncrementalRatioAverage,
         project_incremental_additive,
+    };
+    pub use crate::deterministic::lae::{
+        AlaeRatioTriangleResult, AlaeRatioWeighting, ClaimCountYear, ClarkAlaeOptions,
+        ClarkAlaeResult, JohnsonUlaeResult, JohnsonUlaeWeights, UlaeOptions, UlaeRatioResult,
+        UlaeRatioSelection, alae_ratio_triangle, clark_alae_mle, expected_calendar_emergence,
+        ulae_johnson_count_based, ulae_kittel, ulae_mango_allen, ulae_paid_to_paid,
     };
     pub use crate::deterministic::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
     pub use crate::deterministic::murphy::{MurphyLinkFit, MurphyOptions, MurphyResult};
@@ -94,6 +110,10 @@ pub mod prelude {
         ExcessDevelopmentFactors, ExcessProjection, LayerDevelopmentFactors,
     };
     pub use crate::excess::severity::SeverityDistribution;
+    pub use crate::stochastic::bayesian_reserving::{
+        BayesianOdpOptions, BayesianOdpResult, BivariateCclResult, MeyersModel, MeyersOptions,
+        MeyersResult, bayesian_odp_laplace, meyers_bivariate_ccl, meyers_laplace_snis,
+    };
     pub use crate::stochastic::bootstrap_odp::{
         OdpBootstrapOptions, OdpBootstrapResult, OdpCdrBootstrapResult, OdpFit,
         ProcessDistribution, ResidualAdjustment, bootstrap_odp, bootstrap_odp_cdr, fit_odp,

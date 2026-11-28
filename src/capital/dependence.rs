@@ -28,6 +28,13 @@ use crate::stochastic::bootstrap_odp::{
 use crate::types::TriangleView;
 use crate::validate::ValidationError;
 
+pub use crate::capital::copulas::{
+    CopulaSampleResult, GumbelHac, GumbelHacCluster, apply_copula_reordering,
+    clayton_copula_sample, clayton_lower_tail_dependence, clayton_theta_from_tau,
+    gumbel_copula_sample, gumbel_theta_from_tau, gumbel_upper_tail_dependence,
+    repair_correlation_matrix, student_t_cdf, student_t_copula_sample, student_t_tail_dependence,
+};
+
 /// Semantic interpretation of the supplied target correlation matrix for
 /// [`iman_conover`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]

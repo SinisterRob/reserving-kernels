@@ -726,6 +726,92 @@ pub(crate) fn quad_form(v: &[f64], m: &[f64], dim: usize) -> f64 {
     total
 }
 
+/// Compute all eigenvalues and orthonormal eigenvectors of a real symmetric
+/// `dim × dim` matrix `A` via cyclic Jacobi rotations (`A = Q diag(lambda) Q^T`).
+///
+/// Returns `(eigenvalues, q)` where `q` is row-major `dim × dim` with column `k`
+/// (`q[row * dim + k]`) holding the unit eigenvector for `eigenvalues[k]`.
+pub(crate) fn jacobi_eigen_symmetric(
+    a: &[f64],
+    dim: usize,
+) -> Result<(Vec<f64>, Vec<f64>), ValidationError> {
+    if a.len() != dim * dim || dim == 0 {
+        return Err(ValidationError::ShapeMismatch);
+    }
+    if a.iter().any(|v| !v.is_finite()) {
+        return Err(ValidationError::NotFinite);
+    }
+    let mut mat = vec![0.0; dim * dim];
+    for i in 0..dim {
+        mat[i * dim + i] = a[i * dim + i];
+        for j in (i + 1)..dim {
+            let sym = f64::midpoint(a[i * dim + j], a[j * dim + i]);
+            mat[i * dim + j] = sym;
+            mat[j * dim + i] = sym;
+        }
+    }
+    let mut q = vec![0.0; dim * dim];
+    for i in 0..dim {
+        q[i * dim + i] = 1.0;
+    }
+
+    let max_sweeps = 64 * dim.max(1);
+    for _sweep in 0..max_sweeps {
+        let mut max_off = 0.0_f64;
+        for p in 0..dim {
+            for r in (p + 1)..dim {
+                max_off = max_off.max(mat[p * dim + r].abs());
+            }
+        }
+        if max_off <= 1e-13 {
+            break;
+        }
+        for p in 0..dim {
+            for r in (p + 1)..dim {
+                let apr = mat[p * dim + r];
+                if apr.abs() <= 1e-15 {
+                    continue;
+                }
+                let app = mat[p * dim + p];
+                let arr = mat[r * dim + r];
+                let tau = (arr - app) / (2.0 * apr);
+                let t = if tau >= 0.0 {
+                    1.0 / (tau + (1.0 + tau * tau).sqrt())
+                } else {
+                    -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                };
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                let s = t * c;
+
+                mat[p * dim + p] = app - t * apr;
+                mat[r * dim + r] = arr + t * apr;
+                mat[p * dim + r] = 0.0;
+                mat[r * dim + p] = 0.0;
+
+                for k in 0..dim {
+                    if k != p && k != r {
+                        let akp = mat[k * dim + p];
+                        let akr = mat[k * dim + r];
+                        let new_kp = c * akp - s * akr;
+                        let new_kr = s * akp + c * akr;
+                        mat[k * dim + p] = new_kp;
+                        mat[p * dim + k] = new_kp;
+                        mat[k * dim + r] = new_kr;
+                        mat[r * dim + k] = new_kr;
+                    }
+                    let qkp = q[k * dim + p];
+                    let qkr = q[k * dim + r];
+                    q[k * dim + p] = c * qkp - s * qkr;
+                    q[k * dim + r] = s * qkp + c * qkr;
+                }
+            }
+        }
+    }
+
+    let eigenvalues: Vec<f64> = (0..dim).map(|i| mat[i * dim + i]).collect();
+    Ok((eigenvalues, q))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,6 @@
 //! Stochastic reserving, 1-year Solvency II reserve run-off, GLMs, and individual-claim models.
 
+pub mod bayesian_reserving;
 pub mod bootstrap_odp;
 pub mod clark_mle;
 pub mod glm_reserving;

@@ -91,9 +91,9 @@ fn main() -> Result<(), ValidationError> {
 
 | Domain Module | Highlights |
 | --- | --- |
-| **`deterministic`** | Chain Ladder, Bornhuetter–Ferguson, Benktander, Cape Cod (standard & generalized), Berquist–Sherman, Munich & Double Chain Ladder, Schnieper, Separation, Credibility CL |
-| **`stochastic`** | Mack (uni/multivariate & BF), Merz–Wüthrich 1-yr CDR, England–Verrall–Wüthrich 1-yr run-off, ODP/Gamma/Tweedie GLMs, ODP Bootstrap, Paid–Incurred Chain, Clark MLE, PTF, Kalman & micro-reserving |
-| **`capital`** | Iman–Conover rank correlation, synchronized multi-line bootstrap, Panjer & FFT aggregate loss convolution, VaR/TVaR/RVaR, Euler & Myers–Read allocation |
+| **`deterministic`** | Chain Ladder, Bornhuetter–Ferguson, Benktander, Cape Cod (standard & generalized), Berquist–Sherman, Munich & Double Chain Ladder, Schnieper, Separation, Credibility CL, ULAE/ALAE (`lae`), Adler–Kline & Wright Operational Time (`freq_sev`) |
+| **`stochastic`** | Mack (uni/multivariate & BF), Merz–Wüthrich 1-yr CDR, England–Verrall–Wüthrich 1-yr run-off, ODP/Gamma/Tweedie GLMs, ODP Bootstrap, Paid–Incurred Chain, Clark MLE, PTF, Kalman, micro-reserving, Bayesian ODP Laplace & Meyers LCL/CCL |
+| **`capital`** | Iman–Conover rank correlation, Student-$t$ / Clayton / Gumbel / HAC tail-dependent copulas, synchronized multi-line bootstrap, Panjer & FFT aggregate loss convolution, VaR/TVaR/RVaR, Euler & Myers–Read allocation |
 | **`excess`** | Parametric severity & LEV/excess ratios, excess-layer simulation, and excess/limited loss development |
 | **`preprocessing` & `diagnostics`** | Triangle transforms, ragged helpers, large-loss capping, trending, on-leveling, holdout LDF backtesting, roll-forwards, exhibits, and Mack diagnostic tests |
 | **`subannual`** | Asymmetric grids (2:1/4:1/12:1), 7 sub-annual CDF/LDF interpolators (SWIMON, Spliced Weibull, IVF12), Bloom stubs, exact-age Clark & asymmetric ODP |
@@ -127,6 +127,8 @@ fn main() -> Result<(), ValidationError> {
 | `deterministic::munich_chain_ladder` | Bivariate paid/incurred CL closing the paid-vs-incurred gap |
 | `deterministic::schnieper` | Two-triangle True IBNR vs. IBNER separation with Mack-style MSEP |
 | `deterministic::double_chain_ladder` | Paid + count deconvolution into reporting/payment delays, severity inflation, and RBNS/IBNR |
+| `deterministic::lae` | Classical Paid-to-Paid, Kittel (1981), Mango–Allen (1995), and Johnson (1989) ULAE; paid-to-paid ALAE ratio triangles and Clark (2003) ALAE ODP-MLE |
+| `deterministic::freq_sev` | Friedland Method 2 / Adler–Kline (1988) disposal-rate × severity and Wright (1990) operational-time Gamma GLM reserving |
 
 ### `stochastic` — Stochastic Reserving, 1-Year Risk & GLMs
 
@@ -145,12 +147,14 @@ fn main() -> Result<(), ValidationError> {
 | `stochastic::ptf_regression` | Probabilistic Trend Family log-linear regression for accident, dev, and calendar trends |
 | `stochastic::glm_reserving` | Built-in Householder QR IRLS engine for ODP, Gamma, Tweedie, and Log-normal GLMs |
 | `stochastic::bootstrap_odp` | ODP GLM bootstrap with hat-matrix leverages, process variance, and 1-year CDR re-reserving |
+| `stochastic::bayesian_reserving` | Empirical Bayes / Laplace-approximated Bayesian ODP Chain Ladder and Laplace-SNIS Meyers LCL, CCL, and Bivariate CCL (CAS Monograph 1) |
 
 ### `capital` — Dependence, Aggregate Loss & Capital Allocation
 
 | Module | Capabilities |
 | --- | --- |
-| `capital::dependence` | Iman–Conover rank reordering and synchronized multi-line ODP bootstrap |
+| `capital::dependence` | Iman–Conover rank reordering, synchronized multi-line ODP bootstrap, and re-exported tail-dependent copulas |
+| `capital::copulas` | Multivariate Student-$t$ (with Jacobi non-PSD repair), $d$-dimensional Clayton & Gumbel Marshall–Olkin copulas, and Gumbel Hierarchical Archimedean Copulas (HAC) |
 | `capital::reserve_distribution` | Empirical moments, VaR, coherent TVaR, and RVaR |
 | `capital::aggregate_loss` | Panjer (a, b, 0) recursion, exponentially tilted FFT, and severity discretization |
 | `capital::capital_allocation` | Euler allocation (TVaR, RVaR, SD) and Myers–Read marginal default-put allocation |
