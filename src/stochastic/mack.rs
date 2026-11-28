@@ -404,12 +404,69 @@ pub fn analyze_with_tail_spec_unchecked(t: &TriangleView<'_>, tail_spec: MackTai
 /// `observed_counts[i]` is the number of observed development periods in
 /// origin row `i`. The latest value is taken from `observed_counts[i] - 1`, and
 /// each development link uses rows where both adjacent cells are observed.
+///
+/// Defaults to [`MonotonicityPolicy::AllowNegativeIncrements`], matching
+/// [`analyze`]; use [`analyze_observed_counts_with_policy`] with
+/// [`MonotonicityPolicy::Strict`] to reject decreasing cumulative rows.
 pub fn analyze_observed_counts(
     t: &TriangleView<'_>,
     observed_counts: &[usize],
     tail: f64,
 ) -> Result<Mack, ValidationError> {
-    validate_observed_count_inputs(t, observed_counts, tail)?;
+    analyze_observed_counts_with_policy(
+        t,
+        observed_counts,
+        tail,
+        MonotonicityPolicy::AllowNegativeIncrements,
+    )
+}
+
+/// Validate ragged observed-count inputs under a [`MonotonicityPolicy`].
+///
+/// `Strict` delegates to the crate-wide strict validator; the relaxed policy
+/// performs the same shape / finiteness / non-negativity checks without the
+/// monotone-row requirement.
+fn validate_observed_counts_with_policy(
+    t: &TriangleView<'_>,
+    observed_counts: &[usize],
+    tail: f64,
+    policy: MonotonicityPolicy,
+) -> Result<(), ValidationError> {
+    if policy == MonotonicityPolicy::Strict {
+        return validate_observed_count_inputs(t, observed_counts, tail);
+    }
+    if t.data.len() != t.n_origins * t.n_devs
+        || observed_counts.len() != t.n_origins
+        || t.n_devs < 2
+    {
+        return Err(ValidationError::ShapeMismatch);
+    }
+    validate_tail(tail)?;
+    for (origin, &count) in observed_counts.iter().enumerate() {
+        if count == 0 || count > t.n_devs {
+            return Err(ValidationError::ShapeMismatch);
+        }
+        for dev in 0..count {
+            let value = t.get(origin, dev);
+            if !value.is_finite() {
+                return Err(ValidationError::NotFinite);
+            }
+            if value < 0.0 {
+                return Err(ValidationError::Negative);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// [`analyze_observed_counts`] under an explicit [`MonotonicityPolicy`].
+pub fn analyze_observed_counts_with_policy(
+    t: &TriangleView<'_>,
+    observed_counts: &[usize],
+    tail: f64,
+    policy: MonotonicityPolicy,
+) -> Result<Mack, ValidationError> {
+    validate_observed_counts_with_policy(t, observed_counts, tail, policy)?;
 
     let n_origin = t.n_origins;
     let n_dev = t.n_devs;
@@ -620,10 +677,11 @@ pub fn analyze_with_tail_uncertainty_and_policy(
 pub struct MackOptions {
     /// Tail factor and optional Mack (1999) tail variance specification.
     pub tail_spec: MackTailSpec,
-    /// Variance weighting exponent $\alpha$:
+    /// Variance weighting exponent $\alpha$ (`mages/ChainLadder` convention):
+    /// link ratios are weighted by $C_{i,k}^{\alpha}$, so
     /// - `1.0` (default): classical volume-weighted chain ladder (Mack 1993)
-    /// - `0.0`: OLS regression through the origin
-    /// - `2.0`: unweighted simple average of individual link ratios
+    /// - `0.0`: unweighted simple average of individual link ratios
+    /// - `2.0`: OLS regression of $C_{i,k+1}$ on $C_{i,k}$ through the origin
     pub alpha: f64,
     /// Monotonicity validation policy for the cumulative input triangle.
     pub policy: MonotonicityPolicy,
@@ -715,7 +773,7 @@ pub fn analyze_with_options(
     let n_steps = n - 1;
     let mut ldf = vec![1.0; n_steps];
     let mut s_col = vec![0.0; n_steps];
-    let mut sigma_sq = vec![0.0; n_steps];
+    let mut sigma_sq_obs: Vec<Option<f64>> = vec![None; n_steps];
 
     for k in 0..n_steps {
         let nk = n - 1 - k;
@@ -759,17 +817,18 @@ pub fn analyze_with_options(
             sse += w * c0.powf(alpha) * diff * diff;
         }
         if active >= 2 {
-            sigma_sq[k] = (sse / (active - 1) as f64).max(0.0);
+            sigma_sq_obs[k] = Some((sse / (active - 1) as f64).max(0.0));
         }
     }
 
-    // Mack (1993) extrapolation for the last column when fewer than 2 active links exist.
-    if n_steps >= 3 && sigma_sq[n_steps - 1] == 0.0 {
-        let s1 = sigma_sq[n_steps - 2];
-        let s2 = sigma_sq[n_steps - 3];
-        if s2 > 0.0 {
-            sigma_sq[n_steps - 1] = (s1 * s1 / s2).min(s1.min(s2)).max(0.0);
-        }
+    // Any link with fewer than two active (unmasked, positive-denominator)
+    // pairs is treated as missing and extrapolated with Mack's (1993) min-rule,
+    // exactly as in `analyze` / `analyze_observed_counts`.
+    let sigma_sq = extrapolate_missing_sigma(&sigma_sq_obs);
+    if sigma_sq.iter().any(|v| !v.is_finite()) {
+        return Err(ValidationError::InvalidParameter(
+            "Mack sigma^2 cannot be extrapolated: the first development link has fewer than two active pairs",
+        ));
     }
 
     let tail = options.tail_spec.tail_factor;

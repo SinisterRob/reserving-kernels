@@ -40,6 +40,7 @@
 
 use crate::deterministic::ldf::{DevelopmentFactorEngine, pct_reported};
 use crate::preprocessing::triangle::{cumulative_to_incremental, latest_diagonal};
+use crate::stochastic::mack;
 use crate::types::TriangleView;
 use crate::validate::{
     MonotonicityPolicy, ValidationError, validate_monotone_cumulative,
@@ -305,6 +306,64 @@ pub fn analyze_from_components(
     })
 }
 
+/// Mack (2008, §4, p. 97) payout-pattern standard errors for the direct
+/// incremental estimator.
+///
+/// With `ŷ_j` estimated by `Σ_i S_{i,j} / V_j` and `s²(ŷ_j) = s_j² / V_j`,
+/// `ẑ_k = ŷ_0 + … + ŷ_k = 1 − (ŷ_{k+1} + … + ŷ_{n−1})`, so either partial sum
+/// is a valid variance proxy; Mack takes the smaller one:
+///
+/// `s²(ẑ_k) = min( Σ_{j ≤ k} s²(ŷ_j), Σ_{j > k} s²(ŷ_j) )`.
+fn direct_payout_se(s_sq: &[f64], vol_k: &[f64]) -> Vec<f64> {
+    let n = s_sq.len();
+    let var_y: Vec<f64> = (0..n)
+        .map(|j| {
+            if vol_k[j] > 0.0 {
+                (s_sq[j] / vol_k[j]).max(0.0)
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let total: f64 = var_y.iter().sum();
+    let mut out = vec![0.0; n];
+    let mut lower = 0.0;
+    for k in 0..n {
+        lower += var_y[k];
+        let upper = (total - lower).max(0.0);
+        out[k] = if k + 1 == n {
+            0.0
+        } else {
+            lower.min(upper).sqrt()
+        };
+    }
+    out
+}
+
+/// Delta-method standard errors of the chain-ladder implied pattern
+/// `z_k = Π_{j ≥ k} f_j^{-1}`, consistent with Mack (1993):
+/// `Var(ln ẑ_k) ≈ Σ_{j=k}^{n−2} σ_j² / (f_j² S_j)`, so
+/// `s(ẑ_k) = ẑ_k · sqrt(Σ_{j=k}^{n−2} σ_j² / (f_j² S_j))` and `s(ẑ_{n−1}) = 0`.
+fn chain_ladder_payout_se(
+    triangle: &TriangleView<'_>,
+    payout_z: &[f64],
+    policy: MonotonicityPolicy,
+) -> Result<Vec<f64>, ValidationError> {
+    let n = triangle.n_origins;
+    let mack_fit = mack::analyze_with_policy(triangle, 1.0, policy)?;
+    let mut out = vec![0.0; n];
+    let mut acc = 0.0;
+    for k in (0..(n - 1)).rev() {
+        let s_k: f64 = (0..(n - 1 - k)).map(|i| triangle.get(i, k)).sum();
+        let f_k = mack_fit.ldf[k];
+        if s_k > 0.0 && f_k > 0.0 {
+            acc += mack_fit.sigma_sq[k].max(0.0) / (f_k * f_k * s_k);
+        }
+        out[k] = payout_z[k] * acc.sqrt();
+    }
+    Ok(out)
+}
+
 /// Estimate Mack (2008) parameters (`z_k`, `s(z_k)`, `s_k^2`) directly from a
 /// cumulative loss triangle and compute the analytical BF MSEP decomposition.
 pub fn analyze_from_triangle(
@@ -404,19 +463,12 @@ pub fn analyze_from_triangle(
         s_sq[0].max(0.0)
     };
 
-    // Payout-pattern standard errors s(z_k) = sqrt(sum_{j=k+1}^{n-1} s_j^2 / V_j).
-    let mut payout_se = vec![0.0; n];
-    for k in 0..(n - 1) {
-        let mut var_z = 0.0;
-        for j in (k + 1)..n {
-            if vol_k[j] > 0.0 {
-                var_z += s_sq[j] / vol_k[j];
-            }
+    let payout_se = match options.payout_estimator {
+        BfPayoutEstimator::DirectIncremental => direct_payout_se(&s_sq, &vol_k),
+        BfPayoutEstimator::ChainLadderImplied => {
+            chain_ladder_payout_se(triangle, &payout_z, options.monotonicity_policy)?
         }
-        payout_se[k] = var_z.max(0.0).sqrt();
-    }
-    payout_se[n - 1] = 0.0;
-
+    };
     analyze_from_components(
         &latest,
         prior_ultimate,
@@ -431,7 +483,6 @@ pub fn analyze_from_triangle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stochastic::mack;
     use crate::types::Triangle;
 
     const NAN: f64 = f64::NAN;
