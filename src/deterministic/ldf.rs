@@ -608,6 +608,30 @@ pub fn weighted_volume_ldfs(
 // L2 — validated engine
 // ===========================================================================
 
+/// Extrapolate missing or final-column development variances via Mack's (1993) min-rule:
+/// `sigma_k^2 = min(sigma_{k-1}^4 / sigma_{k-2}^2, sigma_{k-1}^2, sigma_{k-2}^2)`.
+pub(crate) fn extrapolate_mack_min_rule(raw: &[Option<f64>]) -> Vec<f64> {
+    let mut out = vec![0.0; raw.len()];
+    for k in 0..raw.len() {
+        if let Some(v) = raw[k] {
+            out[k] = v.max(0.0);
+        } else if k >= 2 {
+            let a = out[k - 1];
+            let b = out[k - 2];
+            out[k] = if a > 0.0 && b > 0.0 {
+                (a * a / b).min(a).min(b).max(0.0)
+            } else {
+                0.0
+            };
+        } else if k == 1 {
+            out[k] = out[0].max(0.0);
+        } else {
+            out[k] = 0.0;
+        }
+    }
+    out
+}
+
 /// Section 2 development-factor service.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DevelopmentFactorEngine;

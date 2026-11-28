@@ -111,26 +111,9 @@ fn mack_sigma_sq(t: &TriangleView<'_>, ldfs: &[f64]) -> Vec<f64> {
 }
 
 fn extrapolate_last_sigma_sq(s: &mut [f64]) {
-    let m = s.len();
-    if m == 0 {
-        return;
-    }
-    let last = m - 1;
-    if !s[last].is_finite() {
-        s[last] = if m >= 3 {
-            let a = s[last - 1];
-            let b = s[last - 2];
-            if a > 0.0 && b > 0.0 {
-                (a * a / b).min(a).min(b).max(0.0)
-            } else {
-                0.0
-            }
-        } else if m == 2 {
-            s[0].max(0.0)
-        } else {
-            0.0
-        };
-    }
+    let raw: Vec<Option<f64>> = s.iter().map(|&v| v.is_finite().then_some(v)).collect();
+    let extrap = crate::deterministic::ldf::extrapolate_mack_min_rule(&raw);
+    s.copy_from_slice(&extrap);
 }
 
 /// Fit and project the Quarg & Mack (2004) Munich Chain Ladder model from

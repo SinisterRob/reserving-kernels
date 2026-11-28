@@ -113,25 +113,7 @@ fn validate_square_signed_triangle_from_col(
 }
 
 fn extrapolate_mack_min_rule(raw: &[Option<f64>]) -> Vec<f64> {
-    let mut out = vec![0.0; raw.len()];
-    for k in 0..raw.len() {
-        if let Some(v) = raw[k] {
-            out[k] = v.max(0.0);
-        } else if k >= 2 {
-            let a = out[k - 1];
-            let b = out[k - 2];
-            out[k] = if a > 0.0 && b > 0.0 {
-                (a * a / b).min(a).min(b).max(0.0)
-            } else {
-                0.0
-            };
-        } else if k == 1 {
-            out[k] = out[0].max(0.0);
-        } else {
-            out[k] = 0.0;
-        }
-    }
-    out
+    crate::deterministic::ldf::extrapolate_mack_min_rule(raw)
 }
 
 /// Fit Schnieper (1991) / Liu & Verrall (2009) True IBNR & IBNER separation.

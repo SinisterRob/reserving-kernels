@@ -434,3 +434,101 @@ fn adversarial_randomized_triangles_never_panic_or_return_nonfinite_ok() {
         }
     }
 }
+
+#[test]
+fn layer_spec_unifies_attachment_limit_and_attachment_top_conventions() {
+    use reserving_kernels::excess::excess_layers::LayerSpec;
+
+    let from_limit = LayerSpec::from_attachment_limit(100_000.0, 400_000.0).expect("from_limit");
+    let from_top = LayerSpec::from_attachment_top(100_000.0, 500_000.0).expect("from_top");
+    assert_eq!(from_limit, from_top);
+    assert!((from_limit.top() - 500_000.0).abs() < 1e-9);
+
+    let model = LognormalLayerModel::try_new(50_000.0, 1.5).expect("model");
+    let l1 = model.exact_layer_spec(from_limit);
+    let l2 = model.exact_layer(100_000.0, 500_000.0);
+    assert!((l1 - l2).abs() < 1e-12);
+
+    let sev = SeverityDistribution::Lognormal {
+        mu: 50_000.0_f64.ln() - 0.5 * 1.5 * 1.5,
+        sigma: 1.5,
+    };
+    let s1 = sev.layer_expected_loss_spec(from_top).expect("sev layer");
+    assert!((s1 - l1).abs() < 1e-6);
+}
+
+#[test]
+fn neumaier_compensated_summary_and_truncated_var_tvar_coherence() {
+    use reserving_kernels::capital::{
+        aggregate_loss::panjer_recursion, reserve_distribution::summarize,
+    };
+
+    // High-offset series where naive summation loses low-order digits.
+    let mut vals = vec![0.25; 20_001];
+    vals[0] = 1.0e12;
+    let summary = summarize(&vals).expect("summary");
+    let expected_mean = (1.0e12 + 5_000.0) / 20_001.0;
+    assert!((summary.mean - expected_mean).abs() < 1e-6);
+
+    // Truncated Panjer grid: both var and tvar reject alpha > total_mass and satisfy tvar >= var.
+    let agg = panjer_recursion(
+        FrequencyDistribution::Poisson { lambda: 5.0 },
+        &[0.5, 0.5],
+        1.0,
+        5,
+    )
+    .expect("panjer");
+    assert!(agg.total_mass < 0.99);
+    assert!(agg.var(0.999).is_err());
+    assert!(agg.tvar(0.999).is_err());
+    let v50 = agg.var(0.50).expect("var 50");
+    let tv50 = agg.tvar(0.50).expect("tvar 50");
+    assert!(tv50 >= v50 - 1e-12);
+}
+
+#[cfg(feature = "wasm")]
+#[test]
+fn wasm_c_abi_exports_roundtrip_and_clear_buffers_on_invalid_input() {
+    use reserving_kernels::wasm_exports::{
+        rk_ldf_ptr, rk_mack, rk_mack_total_reserve, rk_res_ptr, rk_se_ptr, rk_tri_ptr,
+        rk_tri_stride, rk_ult_ptr,
+    };
+
+    let stride = rk_tri_stride() as usize;
+    let tri_ptr = rk_tri_ptr();
+    let rows: [&[f64]; 4] = [
+        &[100.0, 160.0, 195.0, 205.0],
+        &[120.0, 190.0, 232.0],
+        &[135.0, 218.0],
+        &[150.0],
+    ];
+    // SAFETY: Single test thread writing within the N_MAX x N_MAX static WASM exchange buffer.
+    unsafe {
+        for (i, row) in rows.iter().enumerate() {
+            for j in 0..4 {
+                *tri_ptr.add(i * stride + j) = row.get(j).copied().unwrap_or(f64::NAN);
+            }
+        }
+    }
+    let se = rk_mack(4, 1.0);
+    let total_res = rk_mack_total_reserve(4);
+    assert!(se.is_finite() && se > 0.0);
+    assert!(total_res.is_finite() && total_res > 0.0);
+
+    // SAFETY: Reading back N_MAX-bounded static output buffers after rk_mack.
+    unsafe {
+        assert!((*rk_ldf_ptr()).is_finite());
+        assert!((*rk_ult_ptr()).is_finite());
+        assert!((*rk_res_ptr().add(3)).is_finite());
+        assert!((*rk_se_ptr().add(3)).is_finite());
+    }
+
+    // Invalid tail (< 1.0) must return NaN and clear stale output buffers to NaN.
+    assert!(rk_mack(4, 0.5).is_nan());
+    assert!(rk_mack_total_reserve(4).is_nan());
+    // SAFETY: Reading cleared static output buffer.
+    unsafe {
+        assert!((*rk_ult_ptr()).is_nan());
+        assert!((*rk_res_ptr()).is_nan());
+    }
+}

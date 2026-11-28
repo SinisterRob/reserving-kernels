@@ -110,6 +110,7 @@ pub mod prelude {
     pub use crate::excess::excess_development::{
         ExcessDevelopmentFactors, ExcessProjection, LayerDevelopmentFactors,
     };
+    pub use crate::excess::excess_layers::LayerSpec;
     pub use crate::excess::severity::SeverityDistribution;
     pub use crate::stochastic::bayesian_reserving::{
         BayesianOdpOptions, BayesianOdpResult, BivariateCclResult, MeyersModel, MeyersOptions,

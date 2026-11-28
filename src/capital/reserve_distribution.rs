@@ -290,24 +290,37 @@ pub(crate) fn summarize_with_scratch(
         });
     }
 
-    // 4-way unrolled sum (auto-vectorizes cleanly). By IEEE-754 arithmetic, any
-    // NaN or ±inf element poisons the accumulator irreversibly to non-finite, so
-    // a single post-loop check validates finiteness with zero per-element branches.
+    // 4-way unrolled Neumaier compensated sum: auto-vectorizes while eliminating
+    // floating-point drift on N >= 10^6 simulation draws. Any NaN/Inf poisons
+    // the sum irreversibly so a single post-loop finiteness check suffices.
     let mut s0 = 0.0;
+    let mut c0 = 0.0;
     let mut s1 = 0.0;
+    let mut c1 = 0.0;
     let mut s2 = 0.0;
+    let mut c2 = 0.0;
     let mut s3 = 0.0;
+    let mut c3 = 0.0;
+    let neumaier = |sum: &mut f64, comp: &mut f64, v: f64| {
+        let t = *sum + v;
+        if sum.abs() >= v.abs() {
+            *comp += (*sum - t) + v;
+        } else {
+            *comp += (v - t) + *sum;
+        }
+        *sum = t;
+    };
     let (chunks, rem) = values.as_chunks::<4>();
     for chunk in chunks {
-        s0 += chunk[0];
-        s1 += chunk[1];
-        s2 += chunk[2];
-        s3 += chunk[3];
+        neumaier(&mut s0, &mut c0, chunk[0]);
+        neumaier(&mut s1, &mut c1, chunk[1]);
+        neumaier(&mut s2, &mut c2, chunk[2]);
+        neumaier(&mut s3, &mut c3, chunk[3]);
     }
     for &v in rem {
-        s0 += v;
+        neumaier(&mut s0, &mut c0, v);
     }
-    let total_sum = (s0 + s1) + (s2 + s3);
+    let total_sum = ((s0 + c0) + (s1 + c1)) + ((s2 + c2) + (s3 + c3));
     if !already_finite && !total_sum.is_finite() {
         return Err(ValidationError::NotFinite);
     }

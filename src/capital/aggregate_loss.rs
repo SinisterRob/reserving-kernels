@@ -268,6 +268,11 @@ impl AggregateLossDistribution {
         if !(0.0..=1.0).contains(&alpha) {
             return Err(ValidationError::InvalidProbability { value: alpha });
         }
+        if alpha < 1.0 && alpha > self.total_mass + 1e-12 {
+            return Err(ValidationError::InvalidParameter(
+                "truncated aggregate grid has insufficient probability mass above alpha for VaR",
+            ));
+        }
         for (k, &f) in self.cdf.iter().enumerate() {
             if f >= alpha - 1e-15 {
                 return Ok(k as f64 * self.step);

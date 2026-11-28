@@ -9,6 +9,52 @@ use crate::validate::ValidationError;
 
 const INV_SQRT_TAU: f64 = 0.398_942_280_401_432_7;
 
+/// Strongly-typed excess-of-loss layer specification `(attachment, limit)`
+/// that eliminates ambiguity between `(attachment, top)` and `(attachment, limit)`.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LayerSpec {
+    /// Attachment point `A >= 0`.
+    pub attachment: f64,
+    /// Layer width (limit) `L >= 0`.
+    pub limit: f64,
+}
+
+impl LayerSpec {
+    /// Construct a validated layer from `(attachment, limit)` where `top = attachment + limit`.
+    pub fn from_attachment_limit(attachment: f64, limit: f64) -> Result<Self, ValidationError> {
+        if !attachment.is_finite() || !limit.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        if attachment < 0.0 || limit < 0.0 {
+            return Err(ValidationError::Negative);
+        }
+        if !(attachment + limit).is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        Ok(Self { attachment, limit })
+    }
+
+    /// Construct a validated layer from `(attachment, top)` where `limit = (top - attachment).max(0.0)`.
+    pub fn from_attachment_top(attachment: f64, top: f64) -> Result<Self, ValidationError> {
+        if !attachment.is_finite() || !top.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        if attachment < 0.0 || top < 0.0 {
+            return Err(ValidationError::Negative);
+        }
+        Ok(Self {
+            attachment,
+            limit: (top - attachment).max(0.0),
+        })
+    }
+
+    /// Upper exhaustion point `attachment + limit`.
+    #[inline]
+    pub fn top(self) -> f64 {
+        self.attachment + self.limit
+    }
+}
+
 /// Closed-form lognormal severity model parameterized by ground-up `mean > 0`
 /// and log-scale standard deviation `sigma > 0`.
 ///
@@ -98,6 +144,12 @@ impl LognormalLayerModel {
             return 0.0;
         }
         (self.exact_lev(top) - self.exact_lev(att)).max(0.0)
+    }
+
+    /// Closed-form expected loss in the typed [`LayerSpec`] layer.
+    #[inline]
+    pub fn exact_layer_spec(&self, layer: LayerSpec) -> f64 {
+        self.exact_layer(layer.attachment, layer.top())
     }
 
     /// Exceedance probability $P(X > \text{threshold})$.

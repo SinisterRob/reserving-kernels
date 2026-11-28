@@ -284,7 +284,7 @@ fn solve_upper_from_lower_transpose(l: &[f64], dim: usize, b: &[f64]) -> Vec<f64
     x
 }
 
-fn validate_and_convert_correlation_matrix(
+pub(crate) fn validate_and_convert_correlation_matrix(
     target_corr: &[f64],
     k: usize,
     corr_type: CorrelationType,

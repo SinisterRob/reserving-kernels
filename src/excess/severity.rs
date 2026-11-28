@@ -595,6 +595,14 @@ impl SeverityDistribution {
         Ok((upper - lower).max(0.0))
     }
 
+    /// Expected loss in the typed [`crate::excess::excess_layers::LayerSpec`] layer.
+    pub fn layer_expected_loss_spec(
+        &self,
+        layer: crate::excess::excess_layers::LayerSpec,
+    ) -> Result<f64, ValidationError> {
+        self.layer_expected_loss(layer.attachment, layer.limit)
+    }
+
     /// Excess ratio `R(retention) = E[(X - retention)_+] / E[X] = 1 - E[X ∧ retention] / E[X]`.
     pub fn excess_ratio(&self, retention: f64) -> Result<f64, ValidationError> {
         self.validate()?;

@@ -307,24 +307,8 @@ pub fn analyze(
     }
 
     // Extrapolate missing tail sigma^2 via Mack's min-rule.
-    let mut sigma_sq_extrap = vec![0.0; n_links];
-    for j in 0..n_links {
-        if let Some(s2) = raw_links[j].sigma_sq {
-            sigma_sq_extrap[j] = s2;
-        } else if j >= 2 {
-            let a = sigma_sq_extrap[j - 1];
-            let b = sigma_sq_extrap[j - 2];
-            sigma_sq_extrap[j] = if a > 0.0 && b > 0.0 {
-                (a * a / b).min(a).min(b).max(0.0)
-            } else {
-                0.0
-            };
-        } else if j == 1 {
-            sigma_sq_extrap[j] = sigma_sq_extrap[0].max(0.0);
-        } else {
-            sigma_sq_extrap[j] = 0.0;
-        }
-    }
+    let raw_sigmas: Vec<Option<f64>> = raw_links.iter().map(|r| r.sigma_sq).collect();
+    let sigma_sq_extrap = crate::deterministic::ldf::extrapolate_mack_min_rule(&raw_sigmas);
 
     let mut links = Vec::with_capacity(n_links);
     for j in 0..n_links {

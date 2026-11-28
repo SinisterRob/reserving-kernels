@@ -43,7 +43,7 @@ pub(crate) fn regularized_incomplete_beta(x: f64, a: f64, b: f64) -> f64 {
 }
 
 fn betacf(a: f64, b: f64, x: f64) -> f64 {
-    const MAX_ITER: usize = 200;
+    const MAX_ITER: usize = 400;
     const EPS: f64 = 3.0e-14;
     const FPMIN: f64 = 1.0e-300;
 
@@ -275,39 +275,11 @@ pub fn student_t_copula_sample(
         return Err(ValidationError::NonPositive("degrees of freedom nu"));
     }
 
-    let mut raw = vec![0.0; dim * dim];
-    for i in 0..dim {
-        for j in 0..dim {
-            let v = target_corr[i * dim + j];
-            if !v.is_finite() {
-                return Err(ValidationError::NotFinite);
-            }
-            if i == j {
-                if (v - 1.0).abs() > 1e-10 {
-                    return Err(ValidationError::InvalidParameter(
-                        "correlation diagonal must equal 1.0",
-                    ));
-                }
-                raw[i * dim + j] = 1.0;
-            } else {
-                if (v - target_corr[j * dim + i]).abs() > 1e-10 {
-                    return Err(ValidationError::InvalidParameter(
-                        "correlation matrix must be symmetric",
-                    ));
-                }
-                if !(-1.0..=1.0).contains(&v) {
-                    return Err(ValidationError::InvalidParameter(
-                        "correlation entries must lie in [-1, 1]",
-                    ));
-                }
-                raw[i * dim + j] = match corr_type {
-                    CorrelationType::LatentGaussian => v,
-                    CorrelationType::SpearmanTarget => 2.0 * (PI * v / 6.0).sin(),
-                    CorrelationType::KendallTarget => (PI * v / 2.0).sin(),
-                };
-            }
-        }
-    }
+    let raw = crate::capital::dependence::validate_and_convert_correlation_matrix(
+        target_corr,
+        dim,
+        corr_type,
+    )?;
 
     let (sigma, chol) = if let Ok(c) = cholesky_lower(&raw, dim) {
         (raw, c)
