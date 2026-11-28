@@ -197,6 +197,22 @@ pub struct ClarkAlaeOptions {
     pub max_iterations: usize,
     /// Parameter convergence tolerance.
     pub tolerance: f64,
+    /// Average accident-date offset within the first development period
+    /// (default `0.5`): development index `j` is evaluated at age
+    /// `(j + 1) - origin_offset`, matching
+    /// [`crate::stochastic::clark_mle::ClarkOptions::origin_offset`]. Must be
+    /// finite and `< 1.0`; `0.0` evaluates `G` at integer period ends.
+    #[serde(default = "default_origin_offset")]
+    pub origin_offset: f64,
+    /// Optional finite ultimate-age truncation `max_age >= n - origin_offset`.
+    /// When `Some`, reserves use `G(max_age) - G(x_{n-1-i})` instead of
+    /// `1 - G(x_{n-1-i})` (Clark 2003 truncated tail).
+    #[serde(default)]
+    pub max_age: Option<f64>,
+}
+
+const fn default_origin_offset() -> f64 {
+    0.5
 }
 
 impl Default for ClarkAlaeOptions {
@@ -207,6 +223,8 @@ impl Default for ClarkAlaeOptions {
             initial_theta: 2.0,
             max_iterations: 500,
             tolerance: 1e-10,
+            origin_offset: default_origin_offset(),
+            max_age: None,
         }
     }
 }
@@ -224,9 +242,14 @@ pub struct ClarkAlaeResult {
     pub elr_alae: f64,
     /// Concentrated ODP log-likelihood at the optimum (up to additive constant).
     pub log_likelihood: f64,
-    /// Fitted cumulative emergence `G(t_j; ω, θ)` at each development age `j = 1..=n`.
+    /// Development ages `x_j = (j + 1) - origin_offset` used for fitting (length `n`).
+    pub ages: Vec<f64>,
+    /// Fitted cumulative emergence `G(x_j; ω, θ)` at each development age `x_j` (length `n`).
     pub emergence_curve: Vec<f64>,
-    /// Indicated ALAE reserve per origin `L_hat_i * ELR_A * (1 - G(t_{n-i}))`.
+    /// Emergence at the ultimate horizon: `G(max_age)` when truncated, else `1.0`.
+    pub ultimate_emergence: f64,
+    /// Indicated ALAE reserve per origin
+    /// `L_hat_i * ELR_A * max(G_ult - G(x_{n-1-i}), 0)`.
     pub reserves: Vec<f64>,
     /// Projected ultimate ALAE per origin (observed paid ALAE + indicated reserve).
     pub ultimate_alae: Vec<f64>,
@@ -639,30 +662,19 @@ pub fn alae_ratio_triangle(
 // 1.5b Clark (2003) / Johnson Ratio-to-Loss ALAE ODP-MLE
 // ===========================================================================
 
-#[inline]
-fn eval_emergence(curve: GrowthCurve, t: f64, omega: f64, theta: f64) -> f64 {
-    if t <= 0.0 {
-        return 0.0;
-    }
-    match curve {
-        GrowthCurve::Loglogistic => {
-            let ratio = (t / theta).powf(omega);
-            if ratio.is_infinite() {
-                1.0
-            } else {
-                ratio / (1.0 + ratio)
-            }
-        }
-        GrowthCurve::Weibull => -((-(t / theta).powf(omega)).exp_m1()),
-    }
-}
-
 /// Clark (2003) / Johnson ratio-to-loss ALAE ODP-MLE model.
 ///
 /// Models incremental paid ALAE `a_{i,j}` with
 /// `E[a_{i,j}] = L_hat_i * ELR_A * (G(t_j; ω, θ) - G(t_{j-1}; ω, θ))`
 /// using closed-form profile MLE for `ELR_A` and deterministic Nelder–Mead
 /// optimization over `(ln ω, ln θ)`.
+///
+/// Development index `j` is evaluated at age `x_j = (j + 1) - origin_offset`
+/// (Clark 2003 average-accident-date convention, default offset `0.5`). The
+/// model is the Clark Cape Cod likelihood with `ultimate_loss` as the exposure
+/// base, so it reproduces
+/// [`crate::stochastic::clark_mle::fit_clark_cape_cod`] (premium =
+/// `ultimate_loss`) at the same ages and `max_age`.
 pub fn clark_alae_mle(
     cumulative_paid_alae: &TriangleView<'_>,
     ultimate_loss: &[f64],
@@ -691,6 +703,22 @@ pub fn clark_alae_mle(
     }
     if options.max_iterations == 0 {
         return Err(ValidationError::InvalidIterations);
+    }
+    if !options.origin_offset.is_finite() || options.origin_offset >= 1.0 {
+        return Err(ValidationError::InvalidParameter(
+            "Clark ALAE origin_offset must be finite and < 1.0",
+        ));
+    }
+    let ages: Vec<f64> = (0..n)
+        .map(|j| (j as f64 + 1.0) - options.origin_offset)
+        .collect();
+    let last_age = ages[n - 1];
+    if let Some(mx) = options.max_age
+        && (!mx.is_finite() || mx < last_age)
+    {
+        return Err(ValidationError::InvalidParameter(
+            "Clark ALAE max_age must be finite and >= largest development age",
+        ));
     }
     for &u in ultimate_loss {
         if !u.is_finite() {
@@ -726,8 +754,8 @@ pub fn clark_alae_mle(
         let omega = log_omega.exp();
         let theta = log_theta.exp();
         g_vals[0] = 0.0;
-        for j in 1..=n {
-            g_vals[j] = eval_emergence(options.curve, j as f64, omega, theta);
+        for (g, &age) in g_vals[1..].iter_mut().zip(&ages) {
+            *g = options.curve.eval(age, omega, theta);
         }
         let mut denom = 0.0;
         for &(i, j, _) in &obs {
@@ -834,9 +862,13 @@ pub fn clark_alae_mle(
 
     let omega = best_x[0].exp();
     let theta = best_x[1].exp();
-    let emergence_curve: Vec<f64> = (1..=n)
-        .map(|j| eval_emergence(options.curve, j as f64, omega, theta))
+    let emergence_curve: Vec<f64> = ages
+        .iter()
+        .map(|&age| options.curve.eval(age, omega, theta))
         .collect();
+    let ultimate_emergence = options
+        .max_age
+        .map_or(1.0, |mx| options.curve.eval(mx, omega, theta));
 
     let mut reserves = Vec::with_capacity(n);
     let mut ultimate_alae = Vec::with_capacity(n);
@@ -845,7 +877,7 @@ pub fn clark_alae_mle(
         let last_j = n - 1 - i;
         let paid_to_date = cumulative_paid_alae.get(i, last_j);
         let g_last = emergence_curve[last_j];
-        let res = ultimate_loss[i] * elr_alae * (1.0 - g_last);
+        let res = ultimate_loss[i] * elr_alae * (ultimate_emergence - g_last).max(0.0);
         reserves.push(res);
         ultimate_alae.push(paid_to_date + res);
         total_reserve += res;
@@ -857,7 +889,9 @@ pub fn clark_alae_mle(
         theta,
         elr_alae,
         log_likelihood: -neg_ll,
+        ages,
         emergence_curve,
+        ultimate_emergence,
         reserves,
         ultimate_alae,
         total_reserve,
@@ -963,9 +997,10 @@ mod tests {
         let mut loss_data = vec![f64::NAN; n * n];
         for i in 0..n {
             for j in 0..(n - i) {
-                let t = (j + 1) as f64;
-                let g_alae = eval_emergence(GrowthCurve::Loglogistic, t, omega_true, theta_true);
-                let g_loss = eval_emergence(GrowthCurve::Loglogistic, t, 1.4, 1.5);
+                // Default origin_offset = 0.5: ages 0.5, 1.5, ...
+                let t = j as f64 + 0.5;
+                let g_alae = GrowthCurve::Loglogistic.eval(t, omega_true, theta_true);
+                let g_loss = GrowthCurve::Loglogistic.eval(t, 1.4, 1.5);
                 alae_data[i * n + j] = ults[i] * elr_true * g_alae;
                 loss_data[i * n + j] = ults[i] * g_loss;
             }

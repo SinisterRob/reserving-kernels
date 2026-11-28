@@ -118,24 +118,35 @@ pub fn project_incremental_additive(
             }
         }
         if pairs.is_empty() {
-            zeta[j] = 0.0;
-            continue;
+            return Err(ValidationError::InvalidParameter(
+                "incremental additive factor unestimable: no observed incremental loss at a \
+                 development age",
+            ));
         }
         let slice = match options.last_n {
             Some(k) if k > 0 && k < pairs.len() => &pairs[pairs.len() - k..],
             _ => &pairs[..],
         };
-        zeta[j] = match options.average {
+        let z = match options.average {
             IncrementalRatioAverage::ExposureWeighted => {
                 let num: f64 = slice.iter().map(|(y, _)| *y).sum();
                 let den: f64 = slice.iter().map(|(_, e)| *e).sum();
-                if den > 0.0 { num / den } else { 0.0 }
+                if !(den > 0.0) {
+                    return Err(ValidationError::DivideByZero(
+                        "incremental additive exposure sum",
+                    ));
+                }
+                num / den
             }
             IncrementalRatioAverage::Simple => {
                 let sum: f64 = slice.iter().map(|(y, e)| *y / *e).sum();
                 sum / slice.len() as f64
             }
         };
+        if !z.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        zeta[j] = z;
     }
 
     let mut completed_incremental = inc;
@@ -159,12 +170,8 @@ pub fn project_incremental_additive(
             completed_cumulative[i * n_devs + j] = acc;
         }
         ultimate.push(acc);
-        let lp = if latest[i].is_finite() {
-            latest[i]
-        } else {
-            0.0
-        };
-        reserve.push(acc - lp);
+        // Latest diagonal cells are observed and were validated finite above.
+        reserve.push(acc - latest[i]);
     }
 
     let total_reserve: f64 = reserve.iter().sum();
