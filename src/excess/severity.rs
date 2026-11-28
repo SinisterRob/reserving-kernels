@@ -16,6 +16,7 @@
 use std::f64::consts::TAU;
 
 use crate::error::ReservingError;
+use crate::special::normal_cdf;
 use crate::validate::validate_nonnegative_finite_vector;
 
 fn divide_vectors(numerator: &[f64], denominator: &[f64]) -> Result<Vec<f64>, ReservingError> {
@@ -91,97 +92,6 @@ pub fn frequency_severity_ultimate(
 // ===========================================================================
 // Parametric Severity Distributions, Limited Expected Values & Excess Ratios
 // ===========================================================================
-
-/// High-accuracy standard normal CDF `Φ(z)` via Cody (1969) rational `erfc`
-/// approximation (max absolute error `< 1e-15`).
-pub(crate) fn normal_cdf_exact(z: f64) -> f64 {
-    0.5 * erfc_approx(-z / std::f64::consts::SQRT_2)
-}
-
-/// Complementary error function `erfc(x)` accurate to ~1e-15 (Cody 1969).
-fn erfc_approx(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
-    }
-    if x < 0.0 {
-        return 2.0 - erfc_approx(-x);
-    }
-    if x < 0.46875 {
-        const A: [f64; 5] = [
-            3.161_123_743_870_565_6e0,
-            1.138_641_541_510_501_6e2,
-            3.774_852_376_853_02e2,
-            3.209_377_589_138_469_5e3,
-            1.857_777_061_846_031_5e-1,
-        ];
-        const B: [f64; 4] = [
-            2.360_129_095_234_412_1e1,
-            2.440_246_379_344_441_7e2,
-            1.282_616_526_077_372_3e3,
-            2.844_236_833_439_171e3,
-        ];
-        let y = x * x;
-        let num = (((A[4] * y + A[0]) * y + A[1]) * y + A[2]) * y + A[3];
-        let den = (((y + B[0]) * y + B[1]) * y + B[2]) * y + B[3];
-        1.0 - x * num / den
-    } else if x <= 4.0 {
-        const C: [f64; 9] = [
-            5.641_884_969_886_701e-1,
-            8.883_149_794_388_375,
-            6.611_919_063_714_163e1,
-            2.986_351_381_974_001e2,
-            8.819_522_212_417_69e2,
-            1.712_047_612_634_070_6e3,
-            2.051_078_377_826_071_5e3,
-            1.230_339_354_797_997_2e3,
-            2.153_115_354_744_038_5e-8,
-        ];
-        const D: [f64; 8] = [
-            1.574_492_611_070_983_5e1,
-            1.176_939_508_913_125e2,
-            5.371_811_018_620_099e2,
-            1.621_389_574_566_690_2e3,
-            3.290_799_235_733_459_6e3,
-            4.362_619_090_143_247e3,
-            3.439_367_674_143_721_6e3,
-            1.230_339_354_803_749_4e3,
-        ];
-        let num = (((((((C[8] * x + C[0]) * x + C[1]) * x + C[2]) * x + C[3]) * x + C[4]) * x
-            + C[5])
-            * x
-            + C[6])
-            * x
-            + C[7];
-        let den = (((((((x + D[0]) * x + D[1]) * x + D[2]) * x + D[3]) * x + D[4]) * x + D[5]) * x
-            + D[6])
-            * x
-            + D[7];
-        (-x * x).exp() * num / den
-    } else if x < 26.5 {
-        const P: [f64; 6] = [
-            3.053_266_349_612_323_4e-1,
-            3.603_448_999_498_044_4e-1,
-            1.257_817_261_112_292_5e-1,
-            1.608_378_514_874_228e-2,
-            6.587_491_615_298_378e-4,
-            1.631_538_713_730_209_8e-2,
-        ];
-        const Q: [f64; 5] = [
-            2.568_520_192_289_822,
-            1.872_952_849_923_460_5e0,
-            5.279_051_029_514_285e-1,
-            6.051_834_131_244_132e-2,
-            2.335_204_976_268_691_9e-3,
-        ];
-        let y = 1.0 / (x * x);
-        let num = ((((P[5] * y + P[0]) * y + P[1]) * y + P[2]) * y + P[3]) * y + P[4];
-        let den = ((((y + Q[0]) * y + Q[1]) * y + Q[2]) * y + Q[3]) * y + Q[4];
-        let inv_sqrt_pi = std::f64::consts::FRAC_2_SQRT_PI * 0.5;
-        (-x * x).exp() / x * (inv_sqrt_pi - y * num / den)
-    } else {
-        0.0
-    }
-}
 
 // ===========================================================================
 // Direct Survival-Integral Closed Forms (cancellation-free layers)
@@ -270,7 +180,7 @@ fn gpd_layer(xi: f64, beta: f64, a: f64, l: f64) -> f64 {
 /// `exp(log_mean) * Q(w)` with `Q(w) = 1 − Φ(w)`, evaluated in log space so
 /// neither factor overflows or underflows on its own.
 fn lognormal_scaled_tail(log_mean: f64, w: f64) -> f64 {
-    let q = normal_cdf_exact(-w);
+    let q = normal_cdf(-w);
     let ln_q = if q > 1e-300 {
         q.ln()
     } else if w > 0.0 {
@@ -298,7 +208,7 @@ pub(crate) fn lognormal_lev(mu: f64, sigma: f64, limit: f64) -> f64 {
     }
     let z = (limit.ln() - mu) / sigma;
     let term1 = if log_mean <= 700.0 {
-        let cdf_shifted = normal_cdf_exact(z - sigma);
+        let cdf_shifted = normal_cdf(z - sigma);
         if cdf_shifted == 0.0 {
             0.0
         } else {
@@ -316,7 +226,7 @@ pub(crate) fn lognormal_lev(mu: f64, sigma: f64, limit: f64) -> f64 {
             limit
         }
     };
-    (term1 + limit * normal_cdf_exact(-z)).min(limit)
+    (term1 + limit * normal_cdf(-z)).min(limit)
 }
 
 /// Lognormal expected excess `E[(X − c)_+] = e^{μ+σ²/2} Q(z_c − σ) − c Q(z_c)`.
@@ -329,7 +239,7 @@ pub(crate) fn lognormal_excess(mu: f64, sigma: f64, c: f64) -> f64 {
         return 0.0;
     }
     let z = (c.ln() - mu) / sigma;
-    (lognormal_scaled_tail(log_mean, z - sigma) - c * normal_cdf_exact(-z)).max(0.0)
+    (lognormal_scaled_tail(log_mean, z - sigma) - c * normal_cdf(-z)).max(0.0)
 }
 
 /// Lognormal layer `∫_a^{a+l} S(x) dx` without `LEV` differencing.
@@ -342,7 +252,7 @@ pub(crate) fn lognormal_layer(mu: f64, sigma: f64, a: f64, l: f64) -> f64 {
         // accurate to ~machine precision and avoids differencing two excesses.
         let half = 0.5 * l;
         let mid = a + half;
-        let surv = |x: f64| normal_cdf_exact(-((x.ln() - mu) / sigma));
+        let surv = |x: f64| normal_cdf(-((x.ln() - mu) / sigma));
         let mut acc = 0.0;
         for (&node, &w) in GL8_NODES.iter().zip(GL8_WEIGHTS.iter()) {
             acc += w * (surv(mid - half * node) + surv(mid + half * node));
@@ -351,7 +261,7 @@ pub(crate) fn lognormal_layer(mu: f64, sigma: f64, a: f64, l: f64) -> f64 {
     }
     // Below the median LEV values are far from E[X], so differencing LEVs is
     // benign; above the median difference the (small) complementary excesses.
-    let s_a = normal_cdf_exact(-((a.ln() - mu) / sigma));
+    let s_a = normal_cdf(-((a.ln() - mu) / sigma));
     if a <= 0.0 || s_a >= 0.5 {
         (lognormal_lev(mu, sigma, a + l) - lognormal_lev(mu, sigma, a)).clamp(0.0, l)
     } else {
@@ -564,7 +474,7 @@ impl SeverityDistribution {
         match self {
             Self::Lognormal { mu, sigma } => {
                 let z = (x.ln() - mu) / sigma;
-                normal_cdf_exact(-z)
+                normal_cdf(-z)
             }
             Self::Pareto { alpha, theta } => (theta / (x + theta)).powf(*alpha),
             Self::SingleParameterPareto { alpha, theta } => {
