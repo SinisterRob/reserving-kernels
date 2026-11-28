@@ -453,7 +453,7 @@ fn clark_alae_fixture(n: usize) -> (Triangle, Vec<f64>) {
             data[i * n + j] = cum;
         }
     }
-    (Triangle::new(n, n, data), ults)
+    (Triangle::try_new(n, n, data).expect("valid triangle"), ults)
 }
 
 #[test]
@@ -586,8 +586,8 @@ fn bs_linear_fixture() -> (Triangle, Triangle, Vec<f64>, f64) {
         }
     }
     (
-        Triangle::new(n, n, paid),
-        Triangle::new(n, n, closed),
+        Triangle::try_new(n, n, paid).expect("valid triangle"),
+        Triangle::try_new(n, n, closed).expect("valid triangle"),
         ult_counts,
         k,
     )
@@ -699,10 +699,10 @@ fn berquist_sherman_paid_severity_trend_avoids_case_strengthening_bias() {
             reported[idx] = p + base_open[j] * 2_000.0 * infl * adequacy;
         }
     }
-    let paid = Triangle::new(n, n, paid);
-    let closed = Triangle::new(n, n, closed);
-    let open = Triangle::new(n, n, open);
-    let reported = Triangle::new(n, n, reported);
+    let paid = Triangle::try_new(n, n, paid).expect("valid triangle");
+    let closed = Triangle::try_new(n, n, closed).expect("valid triangle");
+    let open = Triangle::try_new(n, n, open).expect("valid triangle");
+    let reported = Triangle::try_new(n, n, reported).expect("valid triangle");
 
     let fitted = fit_severity_trend(&paid.view(), &closed.view()).expect("paid trend");
     assert!(close(fitted, r, 1e-12), "fitted={fitted}");
@@ -776,13 +776,14 @@ fn berquist_sherman_undefined_anchor_average_case_is_error() {
 fn adler_kline_fixture() -> (Triangle, Triangle, [f64; 3]) {
     // Closed counts (cumulative) and incremental paid; N_hat = 100 for every origin.
     let closed = tri(&[&[40.0, 70.0, 90.0], &[50.0, 80.0], &[45.0]]);
-    let inc_paid = Triangle::new(
+    let inc_paid = Triangle::try_new(
         3,
         3,
         vec![
             4_000.0, 6_000.0, 5_000.0, 5_500.0, 6_600.0, NAN, 4_950.0, NAN, NAN,
         ],
-    );
+    )
+    .expect("valid triangle");
     (closed, inc_paid, [100.0, 100.0, 100.0])
 }
 
@@ -857,7 +858,7 @@ fn adler_kline_anchored_and_conserving_hand_golden() {
 #[test]
 fn adler_kline_without_any_closings_is_error() {
     let closed = tri(&[&[0.0, 0.0], &[0.0]]);
-    let inc_paid = Triangle::new(2, 2, vec![10.0, 5.0, 12.0, NAN]);
+    let inc_paid = Triangle::try_new(2, 2, vec![10.0, 5.0, 12.0, NAN]).expect("valid triangle");
     assert!(matches!(
         adler_kline_reserve(
             &closed.view(),
@@ -875,7 +876,8 @@ fn adler_kline_lag_without_closings_carries_prior_severity() {
     // severity: (100 + 100)/2 = 100. AY1 projects 50 future claims at lag 1
     // (selected d1 = 0.5 = d0, so all 50 open claims go to the tail at 100).
     let closed = tri(&[&[50.0, 50.0], &[50.0]]);
-    let inc_paid = Triangle::new(2, 2, vec![5_000.0, 0.0, 5_000.0, NAN]);
+    let inc_paid =
+        Triangle::try_new(2, 2, vec![5_000.0, 0.0, 5_000.0, NAN]).expect("valid triangle");
     let res = adler_kline_reserve(
         &closed.view(),
         &inc_paid.view(),

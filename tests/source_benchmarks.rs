@@ -1320,7 +1320,13 @@ fn pure_reserving_extension_kernels_benchmarks() {
         1e-12
     ));
 
-    let br_gen = brosius::project(&genins.view(), 1.0).unwrap();
+    let br_gen = brosius::project_with_fit_rule(
+        &genins.view(),
+        1.0,
+        MonotonicityPolicy::Strict,
+        brosius::BrosiusFitRule::RawOls,
+    )
+    .unwrap();
     let mu_br =
         murphy::analyze(&genins.view(), murphy::MurphyOptions::brosius_equivalent()).unwrap();
     for i in 0..10 {
