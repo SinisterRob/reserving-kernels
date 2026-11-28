@@ -447,7 +447,9 @@ fn layer_spec_unifies_attachment_limit_and_attachment_top_conventions() {
     let model = LognormalLayerModel::try_new(50_000.0, 1.5).expect("model");
     let l1 = model.exact_layer_spec(from_limit);
     let l2 = model.exact_layer(100_000.0, 500_000.0);
-    assert!((l1 - l2).abs() < 1e-12);
+    // Relative tolerance: Miri injects libm (ln/exp/erfc) imprecision, so the
+    // two construction paths need not be bit-identical there.
+    assert!((l1 - l2).abs() <= 1e-12 * l1.abs().max(1.0), "{l1} vs {l2}");
 
     let sev = SeverityDistribution::Lognormal {
         mu: 50_000.0_f64.ln() - 0.5 * 1.5 * 1.5,

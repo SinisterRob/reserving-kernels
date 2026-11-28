@@ -29,7 +29,7 @@
 
 ---
 
-`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). It is part of a four-crate pure-Rust actuarial kernel suite alongside [`pricing-kernels`](https://github.com/SinisterRob/pricing-kernels) (prospective ratemaking and underwriting risk), [`reinsurance-kernels`](https://github.com/SinisterRob/reinsurance-kernels) (treaty pricing and structuring), and [`esg-kernels`](https://github.com/SinisterRob/esg-kernels) (economic scenario generation). Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs)).
+`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). Its companion crate [`pricing-kernels`](https://github.com/SinisterRob/pricing-kernels) covers prospective ratemaking and underwriting risk. Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs)).
 
 ## Why `reserving-kernels`?
 
