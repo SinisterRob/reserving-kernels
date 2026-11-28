@@ -36,9 +36,10 @@
 //! * Exact analytical MSEP (per-origin and aggregate with cross-origin
 //!   log-normal covariance `E[P_i] E[P_k] (exp(t_{ik}) - 1)`).
 
+use crate::error::ReservingError;
 use crate::linalg::{invert_spd, quad_form};
 use crate::types::TriangleView;
-use crate::validate::{ValidationError, validate_positive_finite_slice, validate_triangle};
+use crate::validate::{validate_positive_finite_slice, validate_triangle};
 
 /// Optional informative diagonal Gaussian prior on `Theta = (Phi, Psi)`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -146,20 +147,20 @@ pub fn analyze(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
     options: &PicOptions,
-) -> Result<PaidIncurredChainResult, ValidationError> {
+) -> Result<PaidIncurredChainResult, ReservingError> {
     validate_triangle(paid)?;
     validate_triangle(incurred)?;
 
     let n = paid.n_origins;
     if n < 3 || incurred.n_origins != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     // Verify strict positivity of all observed cells (required by log-normal model).
     for i in 0..n {
         for j in 0..(n - i) {
             if paid.get(i, j) <= 0.0 || incurred.get(i, j) <= 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Paid-Incurred Chain requires strictly positive observed paid and incurred cells",
                 ));
             }
@@ -170,7 +171,7 @@ pub fn analyze(
     let var_floor = match options.variance_floor {
         Some(v) => {
             if !v.is_finite() || v <= 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "variance_floor must be finite and strictly positive",
                 ));
             }
@@ -196,7 +197,7 @@ pub fn analyze(
     let sigma_sq = match &options.incurred_variances {
         Some(v) => {
             if v.len() != n {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             validate_positive_finite_slice(v, "incurred_variances")?;
             v.clone()
@@ -206,7 +207,7 @@ pub fn analyze(
     let tau_sq = match &options.paid_variances {
         Some(v) => {
             if v.len() != n - 1 {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             validate_positive_finite_slice(v, "paid_variances")?;
             v.clone()
@@ -241,13 +242,13 @@ pub fn analyze(
             || prior.psi_mean.len() != n - 1
             || prior.psi_var.len() != n - 1
         {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         validate_positive_finite_slice(&prior.phi_var, "prior.phi_var")?;
         validate_positive_finite_slice(&prior.psi_var, "prior.psi_var")?;
         for j in 0..n {
             if !prior.phi_mean[j].is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             let inv_v = 1.0 / prior.phi_var[j];
             prec[j * p_dim + j] += inv_v;
@@ -255,7 +256,7 @@ pub fn analyze(
         }
         for k in 0..(n - 1) {
             if !prior.psi_mean[k].is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             let inv_v = 1.0 / prior.psi_var[k];
             let idx = psi_offset + k;
@@ -386,7 +387,7 @@ pub fn analyze(
             0.0
         };
         if !ult.is_finite() || !var_i.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         ultimates[i] = ult;
         reserves[i] = res;
@@ -439,7 +440,7 @@ pub fn analyze(
     let total_ultimate: f64 = ultimates.iter().sum();
     let total_reserve: f64 = reserves.iter().sum();
     if !total_ultimate.is_finite() || !total_reserve.is_finite() || !total_msep.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     let total_standard_error = total_msep.max(0.0).sqrt();
     let total_cv = if total_reserve > 0.0 {

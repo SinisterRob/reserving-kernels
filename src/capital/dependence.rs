@@ -23,12 +23,12 @@ use crate::capital::correlation::{
     validate_and_convert_correlation_matrix,
 };
 use crate::capital::reserve_distribution::{ReserveDistributionSummary, summarize_with_scratch};
+use crate::error::ReservingError;
 use crate::stochastic::bootstrap_odp::{
     DeterministicRng, OdpBootstrapOptions, OdpBootstrapScratch, OdpFit, ResidualAdjustment,
     build_adjusted_residual_pool, cholesky_lower, fit_odp, run_odp_iteration_with_scratch,
 };
 use crate::types::TriangleView;
-use crate::validate::ValidationError;
 
 pub use crate::capital::copulas::{
     CopulaSampleResult, GumbelHac, GumbelHacCluster, apply_copula_reordering,
@@ -179,7 +179,7 @@ pub fn iman_conover(
     target_corr: &[f64],
     corr_type: CorrelationType,
     seed: u64,
-) -> Result<ImanConoverResult, ValidationError> {
+) -> Result<ImanConoverResult, ReservingError> {
     iman_conover_with_repair(
         columns,
         target_corr,
@@ -204,25 +204,25 @@ pub fn iman_conover_with_repair(
     corr_type: CorrelationType,
     seed: u64,
     repair: CorrelationRepair,
-) -> Result<ImanConoverResult, ValidationError> {
+) -> Result<ImanConoverResult, ReservingError> {
     let k = columns.len();
     if k < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Iman-Conover requires at least 2 variables",
         ));
     }
     let n = columns[0].len();
     if n <= k {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Iman-Conover requires more scenarios than variables (N > K)",
         ));
     }
     for col in columns {
         if col.len() != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if col.iter().any(|v| !v.is_finite()) {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
     }
 
@@ -267,7 +267,7 @@ pub fn iman_conover_with_repair(
             break;
         }
     }
-    let l_e = l_e_opt.ok_or(ValidationError::InvalidParameter(
+    let l_e = l_e_opt.ok_or(ReservingError::InvalidParameter(
         "failed to generate full-rank normal score matrix E",
     ))?;
 
@@ -335,21 +335,21 @@ pub fn synchronized_odp_bootstrap(
     triangles: &[TriangleView<'_>],
     tails: &[f64],
     options: OdpBootstrapOptions,
-) -> Result<SynchronizedBootstrapResult, ValidationError> {
+) -> Result<SynchronizedBootstrapResult, ReservingError> {
     let k = triangles.len();
     if k < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "synchronized ODP bootstrap requires at least 2 triangles",
         ));
     }
     if tails.len() != k || options.iterations == 0 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     let n0 = triangles[0].n_origins;
     for t in triangles {
         if t.n_origins != n0 || t.n_devs != n0 {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
     }
 
@@ -372,7 +372,7 @@ pub fn synchronized_odp_bootstrap(
         };
         if let Some(ref expected) = coord_signature {
             if &coords != expected {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "synchronized bootstrap requires identical eligible residual coordinates across lines",
                 ));
             }
@@ -447,7 +447,7 @@ pub fn synchronized_odp_bootstrap(
     }
 
     if aggregate_totals.is_empty() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let mut summary_buf = Vec::with_capacity(aggregate_totals.len());
@@ -559,7 +559,7 @@ mod tests {
         ];
         assert!(matches!(
             iman_conover(&[&a, &b, &c], &bad, CorrelationType::LatentGaussian, 1),
-            Err(ValidationError::InvalidParameter(_))
+            Err(ReservingError::InvalidParameter(_))
         ));
     }
 

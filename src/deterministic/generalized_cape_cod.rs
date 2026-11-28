@@ -35,12 +35,13 @@ use crate::deterministic::bf::{
 };
 use crate::deterministic::chain_ladder::latest_observed_by_origin;
 use crate::deterministic::ldf::{DevelopmentFactors, cdf_from_ldf, pct_reported};
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_development_factor_slices,
-    validate_latest_and_dev, validate_monotone_cumulative, validate_positive_finite_slice,
-    validate_premium, validate_triangle,
+    MonotonicityPolicy, validate_development_factor_slices, validate_latest_and_dev,
+    validate_monotone_cumulative, validate_positive_finite_slice, validate_premium,
+    validate_triangle,
 };
 
 /// Result of a Generalized (Decay-Weighted) Cape Cod projection.
@@ -130,7 +131,7 @@ impl GeneralizedCapeCodEngine {
         factors: &DevelopmentFactors,
         premium: &[f64],
         decay: f64,
-    ) -> Result<GeneralizedCapeCodProjection, ValidationError> {
+    ) -> Result<GeneralizedCapeCodProjection, ReservingError> {
         Self::project_with_options(
             cumulative,
             factors,
@@ -151,7 +152,7 @@ impl GeneralizedCapeCodEngine {
         decay: f64,
         loss_trend_to_base: Option<&[f64]>,
         policy: MonotonicityPolicy,
-    ) -> Result<GeneralizedCapeCodProjection, ValidationError> {
+    ) -> Result<GeneralizedCapeCodProjection, ReservingError> {
         validate_triangle(cumulative)?;
         if policy == MonotonicityPolicy::Strict {
             validate_monotone_cumulative(cumulative)?;
@@ -166,16 +167,16 @@ impl GeneralizedCapeCodEngine {
             "Generalized Cape Cod factor",
         )?;
         if !decay.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if !(decay > 0.0 && decay <= 1.0) {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "Generalized Cape Cod decay factor must lie in (0, 1]",
             ));
         }
         if let Some(trend) = loss_trend_to_base {
             if trend.len() != n {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             validate_positive_finite_slice(trend, "loss_trend_to_base")?;
         }
@@ -220,7 +221,7 @@ impl GeneralizedCapeCodEngine {
                 den += eff_w;
             }
             if !den.is_finite() || den <= 0.0 {
-                return Err(ValidationError::DivideByZero(
+                return Err(ReservingError::DivideByZero(
                     "Generalized Cape Cod used premium",
                 ));
             }
@@ -230,7 +231,7 @@ impl GeneralizedCapeCodEngine {
             let tau_i = loss_trend_to_base.map_or(1.0, |t| t[i]);
             let elr_i = (num / den) / tau_i;
             if !elr_i.is_finite() || elr_i < 0.0 {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             elr_by_origin[i] = elr_i;
             expected_ultimate[i] = premium[i] * elr_i;

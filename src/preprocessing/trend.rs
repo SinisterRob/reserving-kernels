@@ -1,23 +1,24 @@
 //! Deterministic trend transforms for vectors and triangles.
 
+use crate::error::ReservingError;
 use crate::types::{Triangle, TriangleView};
-use crate::validate::{ValidationError, validate_nonnegative_finite_slice, validate_triangle};
+use crate::validate::{validate_nonnegative_finite_slice, validate_triangle};
 
-fn validate_years(years: &[f64]) -> Result<(), ValidationError> {
+fn validate_years(years: &[f64]) -> Result<(), ReservingError> {
     for &value in years {
         if !value.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
     }
     Ok(())
 }
 
-fn validate_rate(rate: f64) -> Result<(), ValidationError> {
+fn validate_rate(rate: f64) -> Result<(), ReservingError> {
     if !rate.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if rate <= -1.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     Ok(())
 }
@@ -26,9 +27,9 @@ fn trend_factor(rate: f64, years: f64) -> f64 {
     (1.0 + rate).powf(years)
 }
 
-fn apply_trend(values: &[f64], years: &[f64], rate: f64) -> Result<Vec<f64>, ValidationError> {
+fn apply_trend(values: &[f64], years: &[f64], rate: f64) -> Result<Vec<f64>, ReservingError> {
     if values.len() != years.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_nonnegative_finite_slice(values)?;
     validate_years(years)?;
@@ -38,7 +39,7 @@ fn apply_trend(values: &[f64], years: &[f64], rate: f64) -> Result<Vec<f64>, Val
     for (&value, &elapsed_years) in values.iter().zip(years.iter()) {
         let trended = value * trend_factor(rate, elapsed_years);
         if !trended.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         out.push(trended);
     }
@@ -50,7 +51,7 @@ pub fn apply_loss_trend(
     losses: &[f64],
     years_to_level: &[f64],
     annual_rate: f64,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     apply_trend(losses, years_to_level, annual_rate)
 }
 
@@ -59,7 +60,7 @@ pub fn apply_premium_trend(
     premium: &[f64],
     years_to_level: &[f64],
     annual_rate: f64,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     apply_trend(premium, years_to_level, annual_rate)
 }
 
@@ -68,7 +69,7 @@ pub fn trend_to_common_level(
     values: &[f64],
     years_to_level: &[f64],
     annual_rate: f64,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     apply_trend(values, years_to_level, annual_rate)
 }
 
@@ -76,10 +77,10 @@ pub fn trend_to_common_level(
 pub fn detrend_triangle(
     triangle: &TriangleView<'_>,
     origin_factors: &[f64],
-) -> Result<Triangle, ValidationError> {
+) -> Result<Triangle, ReservingError> {
     validate_triangle(triangle)?;
     if triangle.n_origins != origin_factors.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_nonnegative_finite_slice(origin_factors)?;
 
@@ -87,7 +88,7 @@ pub fn detrend_triangle(
     for origin in 0..triangle.n_origins {
         let factor = origin_factors[origin];
         if factor <= 0.0 {
-            return Err(ValidationError::DivideByZero("trend factor"));
+            return Err(ReservingError::DivideByZero("trend factor"));
         }
         for dev in 0..triangle.n_devs {
             if !triangle.is_scheduled_observed(origin, dev) {
@@ -97,7 +98,7 @@ pub fn detrend_triangle(
             if value.is_finite() {
                 let scaled = value / factor;
                 if !scaled.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 data[origin * triangle.n_devs + dev] = scaled;
             }
@@ -110,10 +111,10 @@ pub fn detrend_triangle(
 pub fn retrend_triangle(
     triangle: &TriangleView<'_>,
     origin_factors: &[f64],
-) -> Result<Triangle, ValidationError> {
+) -> Result<Triangle, ReservingError> {
     validate_triangle(triangle)?;
     if triangle.n_origins != origin_factors.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_nonnegative_finite_slice(origin_factors)?;
 
@@ -121,7 +122,7 @@ pub fn retrend_triangle(
     for origin in 0..triangle.n_origins {
         let factor = origin_factors[origin];
         if factor <= 0.0 {
-            return Err(ValidationError::DivideByZero("trend factor"));
+            return Err(ReservingError::DivideByZero("trend factor"));
         }
         for dev in 0..triangle.n_devs {
             if !triangle.is_scheduled_observed(origin, dev) {
@@ -131,7 +132,7 @@ pub fn retrend_triangle(
             if value.is_finite() {
                 let scaled = value * factor;
                 if !scaled.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 data[origin * triangle.n_devs + dev] = scaled;
             }

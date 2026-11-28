@@ -26,8 +26,9 @@
 //! whenever $C_j^{\text{lim}}(L) = (1 - R_j(L)) C_j^{\text{GU}}$ and
 //! $C_j^{\text{xs}}(L) = R_j(L) C_j^{\text{GU}}$.
 
+use crate::error::ReservingError;
 use crate::excess::severity::SeverityDistribution;
-use crate::validate::{ValidationError, validate_positive_finite_slice};
+use crate::validate::validate_positive_finite_slice;
 
 /// Excess and limited development factors derived at a single retention $L$.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -106,27 +107,27 @@ pub fn from_excess_ratios(
     ground_up_cdf: &[f64],
     excess_ratios: &[f64],
     ultimate_excess_ratio: f64,
-) -> Result<ExcessDevelopmentFactors, ValidationError> {
+) -> Result<ExcessDevelopmentFactors, ReservingError> {
     if !limit.is_finite() || limit < 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "limit must be finite and non-negative",
         ));
     }
     if ground_up_cdf.is_empty() || ground_up_cdf.len() != excess_ratios.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(ground_up_cdf, "ground_up_cdf")?;
     if !ultimate_excess_ratio.is_finite()
         || ultimate_excess_ratio <= 0.0
         || ultimate_excess_ratio >= 1.0
     {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "ultimate_excess_ratio must be strictly in (0, 1)",
         ));
     }
     for &r in excess_ratios {
         if !r.is_finite() || r <= 0.0 || r >= 1.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "each excess ratio must be strictly in (0, 1)",
             ));
         }
@@ -171,9 +172,9 @@ pub fn from_severity_schedule(
     ground_up_cdf: &[f64],
     age_severities: &[SeverityDistribution],
     ultimate_severity: &SeverityDistribution,
-) -> Result<ExcessDevelopmentFactors, ValidationError> {
+) -> Result<ExcessDevelopmentFactors, ReservingError> {
     if ground_up_cdf.len() != age_severities.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let mut ratios = Vec::with_capacity(age_severities.len());
     for dist in age_severities {
@@ -191,25 +192,25 @@ pub fn layer_from_severity_schedule(
     ground_up_cdf: &[f64],
     age_severities: &[SeverityDistribution],
     ultimate_severity: &SeverityDistribution,
-) -> Result<LayerDevelopmentFactors, ValidationError> {
+) -> Result<LayerDevelopmentFactors, ReservingError> {
     if !attachment.is_finite() || attachment < 0.0 || !limit.is_finite() || limit <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "attachment must be >= 0 and limit must be > 0",
         ));
     }
     if ground_up_cdf.is_empty() || ground_up_cdf.len() != age_severities.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(ground_up_cdf, "ground_up_cdf")?;
 
     if !(attachment + limit).is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     // Layer shares R(A) - R(A + W) are evaluated directly as E[layer] / E[X]
     // (no difference of two nearly equal excess ratios for high layers).
     let ult_share = ultimate_severity.layer_ratio(attachment, limit)?;
     if !ult_share.is_finite() || ult_share <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "ultimate layer share must be strictly positive",
         ));
     }
@@ -219,7 +220,7 @@ pub fn layer_from_severity_schedule(
     for (j, dist) in age_severities.iter().enumerate() {
         let share = dist.layer_ratio(attachment, limit)?;
         if !share.is_finite() || share <= 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "age layer share must be strictly positive",
             ));
         }
@@ -249,7 +250,7 @@ pub fn project_split_losses(
     latest_limited: &[f64],
     latest_excess: &[f64],
     factors: &ExcessDevelopmentFactors,
-) -> Result<ExcessProjection, ValidationError> {
+) -> Result<ExcessProjection, ReservingError> {
     let n = latest_limited.len();
     if n == 0
         || latest_excess.len() != n
@@ -257,13 +258,13 @@ pub fn project_split_losses(
         || factors.limited_cdf.len() != n
         || factors.excess_cdf.len() != n
     {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if factors.ground_up_cdf.iter().any(|v| !v.is_finite())
         || factors.limited_cdf.iter().any(|v| !v.is_finite())
         || factors.excess_cdf.iter().any(|v| !v.is_finite())
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let mut ground_up_ultimate = Vec::with_capacity(n);
@@ -278,7 +279,7 @@ pub fn project_split_losses(
         let lim_lat = latest_limited[i];
         let xs_lat = latest_excess[i];
         if !lim_lat.is_finite() || !xs_lat.is_finite() || lim_lat < 0.0 || xs_lat < 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "latest losses must be finite and non-negative",
             ));
         }
@@ -321,12 +322,12 @@ pub fn pinto_gogol_power_scale(
     ground_up_ldf: &[f64],
     leverage: &[f64],
     excess_tail: f64,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     if ground_up_ldf.len() != leverage.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if !excess_tail.is_finite() || excess_tail < 1.0 {
-        return Err(ValidationError::InvalidTail { tail: excess_tail });
+        return Err(ReservingError::InvalidTail { tail: excess_tail });
     }
     let m = ground_up_ldf.len();
     let mut excess_ldf = Vec::with_capacity(m);
@@ -334,7 +335,7 @@ pub fn pinto_gogol_power_scale(
         let f = ground_up_ldf[j];
         let lev = leverage[j];
         if !f.is_finite() || f < 1.0 || !lev.is_finite() || lev < 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "ground_up_ldf must be >= 1 and leverage must be >= 0",
             ));
         }

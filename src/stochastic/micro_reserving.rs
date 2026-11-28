@@ -24,8 +24,8 @@
 //!    open RBNS claims to settlement and thinned-NHPP IBNR claims from
 //!    occurrence through reporting to settlement.
 
+use crate::error::ReservingError;
 use crate::stochastic::bootstrap_odp::DeterministicRng;
-use crate::validate::ValidationError;
 
 /// A single payment transaction on an individual claim.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -76,31 +76,31 @@ pub struct MicroReservingModel {
 
 impl MicroReservingModel {
     /// Validate all model parameters.
-    pub fn validate(&self) -> Result<(), ValidationError> {
+    pub fn validate(&self) -> Result<(), ReservingError> {
         if self.occurrence_intensities.is_empty() {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "occurrence_intensities must not be empty",
             ));
         }
         for &lam in &self.occurrence_intensities {
             if !lam.is_finite() || lam < 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "occurrence intensities must be finite and non-negative",
                 ));
             }
         }
         if !self.reporting_delay_rate.is_finite() || self.reporting_delay_rate <= 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "reporting_delay_rate must be finite and positive",
             ));
         }
         if !self.interim_payment_hazard.is_finite() || self.interim_payment_hazard < 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "interim_payment_hazard must be finite and non-negative",
             ));
         }
         if !self.settlement_hazard.is_finite() || self.settlement_hazard <= 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "settlement_hazard must be finite and positive",
             ));
         }
@@ -114,7 +114,7 @@ impl MicroReservingModel {
             || self.settlement_payment_prob < 0.0
             || self.settlement_payment_prob > 1.0
         {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "invalid severity or settlement payment probability parameter",
             ));
         }
@@ -196,9 +196,9 @@ pub fn fit_from_claims(
     claims: &[ClaimRecord],
     valuation_time: f64,
     n_periods: usize,
-) -> Result<MicroReservingModel, ValidationError> {
+) -> Result<MicroReservingModel, ReservingError> {
     if claims.is_empty() || n_periods == 0 || !valuation_time.is_finite() || valuation_time <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "non-empty claims, positive valuation_time, and n_periods >= 1 required",
         ));
     }
@@ -217,7 +217,7 @@ pub fn fit_from_claims(
         }
     }
     if delays.is_empty() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "no valid reported claims before valuation_time",
         ));
     }
@@ -311,7 +311,7 @@ pub fn fit_from_claims(
     }
 
     if total_exposure_open <= 0.0 || n_settled == 0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "insufficient settled claim exposure to estimate settlement hazard",
         ));
     }
@@ -384,10 +384,10 @@ pub fn simulate_reserves(
     valuation_time: f64,
     n_simulations: usize,
     seed: u64,
-) -> Result<MicroReservingResult, ValidationError> {
+) -> Result<MicroReservingResult, ReservingError> {
     model.validate()?;
     if n_simulations == 0 || !valuation_time.is_finite() || valuation_time <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "n_simulations must be >= 1 and valuation_time > 0",
         ));
     }
@@ -464,10 +464,10 @@ pub fn simulate_synthetic_portfolio(
     model: &MicroReservingModel,
     valuation_time: f64,
     seed: u64,
-) -> Result<(Vec<ClaimRecord>, f64, f64), ValidationError> {
+) -> Result<(Vec<ClaimRecord>, f64, f64), ReservingError> {
     model.validate()?;
     if !valuation_time.is_finite() || valuation_time <= 0.0 {
-        return Err(ValidationError::NonPositive("valuation_time"));
+        return Err(ReservingError::NonPositive("valuation_time"));
     }
     let mut rng = DeterministicRng::from_seed(seed);
     let mut observed = Vec::new();
@@ -478,7 +478,7 @@ pub fn simulate_synthetic_portfolio(
     let total_rate = model.interim_payment_hazard + model.settlement_hazard;
     let p_interim = model.interim_payment_hazard / total_rate;
     if !(p_interim < 1.0) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "interim_payment_hazard / settlement_hazard ratio is too large to simulate",
         ));
     }
@@ -491,7 +491,7 @@ pub fn simulate_synthetic_portfolio(
         }
         let expected_occ = lam * (b - a);
         if !expected_occ.is_finite() || expected_occ > 1.0e9 {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         let n_occ = rng.sample_poisson(expected_occ).round() as usize;
         for _ in 0..n_occ {

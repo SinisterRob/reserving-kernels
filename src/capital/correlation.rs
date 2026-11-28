@@ -26,9 +26,9 @@
 
 use std::f64::consts::PI;
 
+use crate::error::ReservingError;
 use crate::linalg::{cholesky_lower, jacobi_eigen_symmetric};
 use crate::stochastic::bootstrap_odp::DeterministicRng;
-use crate::validate::ValidationError;
 
 /// Semantic interpretation of a supplied target correlation matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -179,20 +179,20 @@ pub(crate) fn validate_and_convert_correlation_matrix(
     target_corr: &[f64],
     k: usize,
     corr_type: CorrelationType,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     if target_corr.len() != k * k {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let mut s = vec![0.0; k * k];
     for i in 0..k {
         for j in 0..k {
             let v = target_corr[i * k + j];
             if !v.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             if i == j {
                 if (v - 1.0).abs() > 1e-10 {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "correlation matrix diagonal entries must equal 1.0",
                     ));
                 }
@@ -200,12 +200,12 @@ pub(crate) fn validate_and_convert_correlation_matrix(
             } else {
                 let sym = target_corr[j * k + i];
                 if (v - sym).abs() > 1e-10 {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "correlation matrix must be symmetric",
                     ));
                 }
                 if !(-1.0..=1.0).contains(&v) {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "correlation matrix entries must lie in [-1, 1]",
                     ));
                 }
@@ -324,7 +324,7 @@ pub struct NearestCorrelationResult {
 #[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum CorrelationRepair {
     /// Reject non-positive-definite targets with
-    /// [`ValidationError::InvalidParameter`] (default for every sampler).
+    /// [`ReservingError::InvalidParameter`] (default for every sampler).
     #[default]
     Reject,
     /// Repair via Higham (2002) nearest correlation matrix and report the
@@ -345,7 +345,7 @@ fn frobenius_norm(a: &[f64]) -> f64 {
 }
 
 /// Project symmetric `r` onto `{X : λ_min(X) >= floor}` by eigenvalue clipping.
-fn project_psd(r: &[f64], dim: usize, floor: f64) -> Result<Vec<f64>, ValidationError> {
+fn project_psd(r: &[f64], dim: usize, floor: f64) -> Result<Vec<f64>, ReservingError> {
     let (eigvals, q) = jacobi_eigen_symmetric(r, dim)?;
     let clipped: Vec<f64> = eigvals.iter().map(|&v| v.max(floor)).collect();
     let mut x = vec![0.0; dim * dim];
@@ -371,19 +371,19 @@ fn project_psd(r: &[f64], dim: usize, floor: f64) -> Result<Vec<f64>, Validation
 ///
 /// where `P_S` clips eigenvalues at `options.min_eigenvalue` and `P_U` resets
 /// the diagonal to one. Fully deterministic (cyclic Jacobi eigensolver, fixed
-/// iteration order). Returns [`ValidationError::InvalidParameter`] when the
+/// iteration order). Returns [`ReservingError::InvalidParameter`] when the
 /// iteration does not reach `options.tolerance` within
 /// `options.max_iterations`.
 pub fn nearest_correlation_matrix(
     corr: &[f64],
     dim: usize,
     options: &HighamOptions,
-) -> Result<NearestCorrelationResult, ValidationError> {
+) -> Result<NearestCorrelationResult, ReservingError> {
     if dim == 0 || dim.checked_mul(dim) != Some(corr.len()) {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if corr.iter().any(|v| !v.is_finite()) {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if !options.tolerance.is_finite()
         || !(options.tolerance > 0.0)
@@ -392,7 +392,7 @@ pub fn nearest_correlation_matrix(
         || options.min_eigenvalue >= 1.0
         || options.max_iterations == 0
     {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Higham options require tolerance > 0, max_iterations >= 1 and min_eigenvalue in [0, 1)",
         ));
     }
@@ -448,7 +448,7 @@ pub fn nearest_correlation_matrix(
             });
         }
     }
-    Err(ValidationError::InvalidParameter(
+    Err(ReservingError::InvalidParameter(
         "Higham nearest-correlation iteration did not converge within max_iterations",
     ))
 }
@@ -459,7 +459,7 @@ pub fn nearest_correlation_matrix(
 ///
 /// Use [`nearest_correlation_matrix`] to control tolerances and to obtain the
 /// Frobenius repair distance.
-pub fn repair_correlation_matrix(corr: &[f64], dim: usize) -> Result<Vec<f64>, ValidationError> {
+pub fn repair_correlation_matrix(corr: &[f64], dim: usize) -> Result<Vec<f64>, ReservingError> {
     nearest_correlation_matrix(corr, dim, &HighamOptions::default()).map(|r| r.matrix)
 }
 
@@ -473,7 +473,7 @@ pub(crate) fn prepare_latent_correlation(
     latent: Vec<f64>,
     dim: usize,
     repair: CorrelationRepair,
-) -> Result<PreparedCorrelation, ValidationError> {
+) -> Result<PreparedCorrelation, ReservingError> {
     match cholesky_lower(&latent, dim) {
         Ok(chol) => Ok((latent, chol, None)),
         Err(err) => match repair {

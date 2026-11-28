@@ -24,18 +24,18 @@
 //! origin has a finite, strictly positive prior case reserve `O_{i,j-1}`.
 //! When a ratio is unestimable but some origin still carries a non-zero
 //! (projected) case reserve into that transition, the projection returns
-//! [`ValidationError::InvalidParameter`] instead of silently dropping the
+//! [`ReservingError::InvalidParameter`] instead of silently dropping the
 //! case reserve. Unestimable ratios that no projection needs are reported
 //! as `NaN`.
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ReservingError,
     preprocessing::triangle::{cumulative_to_incremental, latest_diagonal},
     types::TriangleView,
     validate::{
-        MonotonicityPolicy, ValidationError, validate_finite_slice, validate_monotone_cumulative,
-        validate_triangle,
+        MonotonicityPolicy, validate_finite_slice, validate_monotone_cumulative, validate_triangle,
     },
 };
 
@@ -144,7 +144,7 @@ pub fn project_case_outstanding(
     paid: &TriangleView<'_>,
     case_outstanding: &TriangleView<'_>,
     options: &CaseOutstandingOptions,
-) -> Result<CaseOutstandingProjection, ValidationError> {
+) -> Result<CaseOutstandingProjection, ReservingError> {
     validate_triangle(paid)?;
     if options.paid_policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(paid)?;
@@ -153,17 +153,17 @@ pub fn project_case_outstanding(
         || paid.n_devs != case_outstanding.n_devs
         || case_outstanding.data.len() != case_outstanding.n_origins * case_outstanding.n_devs
     {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let n_origins = paid.n_origins;
     let n_devs = paid.n_devs;
     if n_origins < 2 || n_devs < 2 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for i in 0..n_origins {
         for j in 0..(n_origins - i) {
             if !case_outstanding.get(i, j).is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
         }
     }
@@ -216,7 +216,7 @@ pub fn project_case_outstanding(
             }
             let (Some(r_p), Some(r_c)) = (paid_to_case_ratios[j - 1], case_to_case_ratios[j - 1])
             else {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "case outstanding ratio unestimable (no observed origin with positive prior \
                      case reserve) at a development age where a non-zero case reserve must be \
                      projected",
@@ -251,7 +251,7 @@ pub fn project_case_outstanding(
     let total_reserve: f64 = reserve.iter().sum();
     let total_ibnr: f64 = ibnr.iter().sum();
     if !total_reserve.is_finite() || !total_ibnr.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     validate_finite_slice(&ultimate)?;
     let paid_to_case_ratios: Vec<f64> = paid_to_case_ratios
@@ -282,11 +282,11 @@ pub fn project_from_paid_incurred(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
     options: &CaseOutstandingOptions,
-) -> Result<CaseOutstandingProjection, ValidationError> {
+) -> Result<CaseOutstandingProjection, ReservingError> {
     validate_triangle(paid)?;
     validate_triangle(incurred)?;
     if paid.n_origins != incurred.n_origins || paid.n_devs != incurred.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let case_data: Vec<f64> = incurred
         .data

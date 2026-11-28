@@ -13,12 +13,13 @@
 //!   and the v0.1 unchecked surface.
 //! * **L2 service / engine** — [`ChainLadderEngine`] performs the same
 //!   projection from a validated [`DevelopmentFactors`] and returns
-//!   `Result<ChainLadderProjection, ValidationError>`.
+//!   `Result<ChainLadderProjection, ReservingError>`.
 
 use crate::deterministic::ldf::{DevelopmentFactors, cdf_from_ldf};
+use crate::error::ReservingError;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_development_factor_slices, validate_finite_slice,
+    MonotonicityPolicy, validate_development_factor_slices, validate_finite_slice,
     validate_latest_and_dev, validate_monotone_cumulative, validate_triangle,
 };
 
@@ -205,7 +206,7 @@ impl ChainLadderEngine {
     pub fn project(
         cumulative: &TriangleView<'_>,
         factors: &DevelopmentFactors,
-    ) -> Result<ChainLadderProjection, ValidationError> {
+    ) -> Result<ChainLadderProjection, ReservingError> {
         Self::project_with_policy(cumulative, factors, MonotonicityPolicy::Strict)
     }
 
@@ -214,7 +215,7 @@ impl ChainLadderEngine {
         cumulative: &TriangleView<'_>,
         factors: &DevelopmentFactors,
         policy: MonotonicityPolicy,
-    ) -> Result<ChainLadderProjection, ValidationError> {
+    ) -> Result<ChainLadderProjection, ReservingError> {
         validate_projection_inputs_with_policy(cumulative, factors, policy)?;
 
         let n = cumulative.n_origins;
@@ -242,7 +243,7 @@ impl ChainLadderEngine {
         let total_reserve: f64 = reserve_values.iter().sum();
 
         if !total_latest.is_finite() || !total_ultimate.is_finite() || !total_reserve.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
 
         Ok(ChainLadderProjection {
@@ -261,7 +262,7 @@ fn validate_projection_inputs_with_policy(
     cumulative: &TriangleView<'_>,
     factors: &DevelopmentFactors,
     policy: MonotonicityPolicy,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     validate_triangle(cumulative)?;
     if policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(cumulative)?;
@@ -385,7 +386,7 @@ mod tests {
 
         assert_eq!(
             ChainLadderEngine::project(&tri.view(), &factors),
-            Err(ValidationError::ShapeMismatch)
+            Err(ReservingError::ShapeMismatch)
         );
     }
 
@@ -405,7 +406,7 @@ mod tests {
 
         assert_eq!(
             ChainLadderEngine::project(&tri.view(), &factors),
-            Err(ValidationError::NonMonotoneCumulative {
+            Err(ReservingError::NonMonotoneCumulative {
                 origin: 0,
                 dev: 1,
                 previous: 100.0,
@@ -425,7 +426,7 @@ mod tests {
 
         assert_eq!(
             ChainLadderEngine::project(&tri.view(), &factors),
-            Err(ValidationError::NotFinite)
+            Err(ReservingError::NotFinite)
         );
     }
 
@@ -445,7 +446,7 @@ mod tests {
 
         assert_eq!(
             ChainLadderEngine::project(&tri.view(), &factors),
-            Err(ValidationError::NotFinite)
+            Err(ReservingError::NotFinite)
         );
     }
 }

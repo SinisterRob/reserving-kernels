@@ -18,12 +18,13 @@
 //!   residual correlation `ρ_12 ∈ (-1, 1)`.
 
 use crate::deterministic::ldf::{cdfs_from_ldfs, volume_weighted_ldfs};
+use crate::error::ReservingError;
 use crate::linalg::{
     cholesky_lower, invert_spd, jacobi_eigen_symmetric, quad_form, solve_lower_into,
 };
 use crate::stochastic::bootstrap_odp::DeterministicRng;
 use crate::types::TriangleView;
-use crate::validate::{ValidationError, validate_triangle};
+use crate::validate::validate_triangle;
 
 // ===========================================================================
 // 4.1 Empirical Bayes / Laplace-Approximated Bayesian Chain Ladder
@@ -89,7 +90,7 @@ pub struct BayesianOdpResult {
     pub converged: bool,
 }
 
-fn solve_spd_system(a: &[f64], b: &[f64], dim: usize) -> Result<Vec<f64>, ValidationError> {
+fn solve_spd_system(a: &[f64], b: &[f64], dim: usize) -> Result<Vec<f64>, ReservingError> {
     let l = cholesky_lower(a, dim)?;
     let mut y = vec![0.0; dim];
     solve_lower_into(&l, dim, b, &mut y);
@@ -119,7 +120,7 @@ fn fit_odp_map(
     prior_prec: f64,
     max_iter: usize,
     tol: f64,
-) -> Result<OdpMapFit, ValidationError> {
+) -> Result<OdpMapFit, ReservingError> {
     let p = 2 * n - 1;
     let mut theta = vec![0.0; p];
     // Initialize alphas from log row sums / n for fast convergence.
@@ -237,7 +238,7 @@ fn fit_odp_map(
     })
 }
 
-fn log_det_spd(a: &[f64], dim: usize) -> Result<f64, ValidationError> {
+fn log_det_spd(a: &[f64], dim: usize) -> Result<f64, ReservingError> {
     let l = cholesky_lower(a, dim)?;
     let mut sum = 0.0;
     for i in 0..dim {
@@ -254,32 +255,32 @@ fn log_det_spd(a: &[f64], dim: usize) -> Result<f64, ValidationError> {
 pub fn bayesian_odp_laplace(
     cumulative: &TriangleView<'_>,
     options: &BayesianOdpOptions,
-) -> Result<BayesianOdpResult, ValidationError> {
+) -> Result<BayesianOdpResult, ReservingError> {
     validate_triangle(cumulative)?;
     let n = cumulative.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Bayesian ODP Laplace requires at least a 3x3 triangle",
         ));
     }
     if !options.prior_sd.is_finite() || options.prior_sd <= 0.0 {
-        return Err(ValidationError::NonPositive("prior_sd"));
+        return Err(ReservingError::NonPositive("prior_sd"));
     }
     if options.max_iterations == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
     if !options.tolerance.is_finite() || options.tolerance <= 0.0 {
-        return Err(ValidationError::NonPositive("tolerance"));
+        return Err(ReservingError::NonPositive("tolerance"));
     }
 
     let p = 2 * n - 1;
     let mu0 = match &options.prior_mean {
         Some(v) => {
             if v.len() != p {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             if v.iter().any(|x| !x.is_finite()) {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             v.clone()
         }
@@ -298,7 +299,7 @@ pub fn bayesian_odp_laplace(
     }
     let n_obs = obs.len();
     if n_obs <= p {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "insufficient degrees of freedom (n_obs <= 2n - 1)",
         ));
     }
@@ -851,10 +852,7 @@ where
 /// differences of the exact analytic gradient (O(eps^(1/2)) accuracy, ~15x faster
 /// than 2p^2 scalar differences), applying a Levenberg–Marquardt spectral shift if
 /// `A` is indefinite or near-singular.
-fn safe_neg_hessian_and_inverse<F>(
-    fg: F,
-    x: &[f64],
-) -> Result<(Vec<f64>, Vec<f64>), ValidationError>
+fn safe_neg_hessian_and_inverse<F>(fg: F, x: &[f64]) -> Result<(Vec<f64>, Vec<f64>), ReservingError>
 where
     F: Fn(&[f64]) -> (f64, Vec<f64>),
 {
@@ -924,24 +922,24 @@ struct MeyersInitData {
 fn prepare_log_triangle_and_init(
     cumulative: &TriangleView<'_>,
     options: &MeyersOptions,
-) -> Result<MeyersInitData, ValidationError> {
+) -> Result<MeyersInitData, ReservingError> {
     validate_triangle(cumulative)?;
     let n = cumulative.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Meyers LCL/CCL requires at least a 3x3 triangle",
         ));
     }
     if options.n_samples == 0 || options.max_map_iterations == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
     if !options.proposal_nu.is_finite() || options.proposal_nu <= 2.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "proposal_nu must be finite and > 2.0",
         ));
     }
     if !options.log_elr.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let mut log_y = vec![f64::NAN; n * n];
@@ -949,7 +947,7 @@ fn prepare_log_triangle_and_init(
         for j in 0..(n - i) {
             let v = cumulative.get(i, j);
             if v <= 0.0 {
-                return Err(ValidationError::NonPositive(
+                return Err(ReservingError::NonPositive(
                     "cumulative triangle cell for log-loss Meyers model",
                 ));
             }
@@ -968,15 +966,15 @@ fn prepare_log_triangle_and_init(
     let alpha_prior_mean = match &options.earned_premium {
         Some(prem) => {
             if prem.len() != n {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             let mut m = Vec::with_capacity(n);
             for &p_i in prem {
                 if !p_i.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if p_i <= 0.0 {
-                    return Err(ValidationError::NonPositive("earned_premium"));
+                    return Err(ReservingError::NonPositive("earned_premium"));
                 }
                 m.push(p_i.ln() + options.log_elr);
             }
@@ -1015,7 +1013,7 @@ fn prepare_log_triangle_and_init(
 pub fn meyers_laplace_snis(
     cumulative: &TriangleView<'_>,
     options: &MeyersOptions,
-) -> Result<MeyersResult, ValidationError> {
+) -> Result<MeyersResult, ReservingError> {
     let (res, _, _, _) = meyers_laplace_snis_internal(cumulative, options)?;
     Ok(res)
 }
@@ -1024,7 +1022,7 @@ pub fn meyers_laplace_snis(
 fn meyers_laplace_snis_internal(
     cumulative: &TriangleView<'_>,
     options: &MeyersOptions,
-) -> Result<(MeyersResult, Vec<f64>, Vec<f64>, Vec<f64>), ValidationError> {
+) -> Result<(MeyersResult, Vec<f64>, Vec<f64>, Vec<f64>), ReservingError> {
     let n = cumulative.n_origins;
     let is_ccl = options.model == MeyersModel::Ccl;
     let MeyersInitData {
@@ -1189,7 +1187,7 @@ fn meyers_laplace_snis_internal(
         .copied()
         .fold(f64::NEG_INFINITY, f64::max);
     if !max_lw.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     let mut weights = vec![0.0; m_draws];
     let mut sum_w = 0.0;
@@ -1243,7 +1241,7 @@ fn meyers_laplace_snis_internal(
     let mut beta_map = psi_map[n..(2 * n - 1)].to_vec();
     beta_map.push(0.0);
     let (sigma_map, _) =
-        unpack_sigmas(&psi_map[(2 * n - 1)..(3 * n - 1)]).ok_or(ValidationError::NotFinite)?;
+        unpack_sigmas(&psi_map[(2 * n - 1)..(3 * n - 1)]).ok_or(ReservingError::NotFinite)?;
     let rho_map = if is_ccl {
         psi_map[3 * n - 1].clamp(-10.0, 10.0).tanh()
     } else {
@@ -1463,9 +1461,9 @@ pub fn meyers_bivariate_ccl(
     line1: &TriangleView<'_>,
     line2: &TriangleView<'_>,
     options: &MeyersOptions,
-) -> Result<BivariateCclResult, ValidationError> {
+) -> Result<BivariateCclResult, ReservingError> {
     if line1.n_origins != line2.n_origins || line1.n_devs != line2.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let (fit1, log_y1, prior1, psi1_map) = meyers_laplace_snis_internal(line1, options)?;
     let (fit2, log_y2, prior2, psi2_map) = meyers_laplace_snis_internal(line2, options)?;
@@ -1630,7 +1628,7 @@ pub fn meyers_bivariate_ccl(
         .copied()
         .fold(f64::NEG_INFINITY, f64::max);
     if !max_lw.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     let mut weights = vec![0.0; m];
     let mut sum_w = 0.0;

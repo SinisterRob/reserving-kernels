@@ -32,8 +32,9 @@
 
 use std::f64::consts::TAU;
 
+use crate::error::ReservingError;
 use crate::excess::severity::SeverityDistribution;
-use crate::validate::{ValidationError, validate_nonnegative_finite_slice};
+use crate::validate::validate_nonnegative_finite_slice;
 
 /// Claim-count frequency distribution in the Panjer `(a, b, 0)` class.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -85,7 +86,7 @@ impl FrequencyDistribution {
         severity_pmf: &[f64],
         step: f64,
         n_steps: usize,
-    ) -> Result<AggregateLossDistribution, ValidationError> {
+    ) -> Result<AggregateLossDistribution, ReservingError> {
         panjer_recursion(self, severity_pmf, step, n_steps)
     }
 
@@ -96,7 +97,7 @@ impl FrequencyDistribution {
         step: f64,
         fft_size: usize,
         tilt: Option<f64>,
-    ) -> Result<AggregateLossDistribution, ValidationError> {
+    ) -> Result<AggregateLossDistribution, ReservingError> {
         fft_aggregate_loss(self, severity_pmf, step, fft_size, tilt)
     }
 
@@ -105,52 +106,52 @@ impl FrequencyDistribution {
     pub fn negative_binomial_from_mean_variance(
         mean: f64,
         variance: f64,
-    ) -> Result<Self, ValidationError> {
+    ) -> Result<Self, ReservingError> {
         if !mean.is_finite() || !variance.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if !(mean > 0.0) || !(variance > mean) {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "Negative Binomial requires 0 < mean < variance",
             ));
         }
         let beta = (variance - mean) / mean;
         let r = mean / beta;
         if !beta.is_finite() || !(beta > 0.0) || !r.is_finite() || !(r > 0.0) {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         Ok(Self::NegativeBinomial { r, beta })
     }
 
     /// Validate distribution parameters.
-    pub fn validate(&self) -> Result<(), ValidationError> {
+    pub fn validate(&self) -> Result<(), ReservingError> {
         match *self {
             Self::Poisson { lambda } => {
                 if !lambda.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if !(lambda > 0.0) {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "Poisson lambda must be strictly positive",
                     ));
                 }
             }
             Self::Binomial { m, q } => {
                 if !q.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if m == 0 || !(q > 0.0 && q < 1.0) {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "Binomial requires m >= 1 and 0 < q < 1",
                     ));
                 }
             }
             Self::NegativeBinomial { r, beta } => {
                 if !r.is_finite() || !beta.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if !(r > 0.0) || !(beta > 0.0) {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "Negative Binomial requires r > 0 and beta > 0",
                     ));
                 }
@@ -360,12 +361,12 @@ impl AggregateLossDistribution {
     }
 
     /// Top of the captured support: `max { k * step : g_k > 0 }`.
-    fn top_of_support(&self) -> Result<f64, ValidationError> {
+    fn top_of_support(&self) -> Result<f64, ReservingError> {
         self.pmf
             .iter()
             .rposition(|&p| p > 0.0)
             .map(|k| k as f64 * self.step)
-            .ok_or(ValidationError::InvalidParameter(
+            .ok_or(ReservingError::InvalidParameter(
                 "aggregate loss distribution has zero captured probability mass",
             ))
     }
@@ -377,30 +378,30 @@ impl AggregateLossDistribution {
         alpha: f64,
         max_missing_tail_fraction: f64,
         check_missing: bool,
-    ) -> Result<(), ValidationError> {
+    ) -> Result<(), ReservingError> {
         let budget = (max_missing_tail_fraction * (1.0 - alpha)).max(MASS_ROUNDOFF_FLOOR);
         if check_missing && self.missing_mass() > budget {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "truncated aggregate grid: missing probability mass beyond the grid exceeds the admissible fraction of the tail 1 - alpha; extend the grid",
             ));
         }
         if self.aliasing_error_estimate > budget {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "FFT wrap-around aliasing bound exceeds the admissible fraction of the tail 1 - alpha; enlarge fft_size or increase the tilt",
             ));
         }
         Ok(())
     }
 
-    fn validate_alpha_and_fraction(alpha: f64, fraction: f64) -> Result<(), ValidationError> {
+    fn validate_alpha_and_fraction(alpha: f64, fraction: f64) -> Result<(), ReservingError> {
         if !alpha.is_finite() || !fraction.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if !(0.0..=1.0).contains(&alpha) {
-            return Err(ValidationError::InvalidProbability { value: alpha });
+            return Err(ReservingError::InvalidProbability { value: alpha });
         }
         if fraction < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
         Ok(())
     }
@@ -409,7 +410,7 @@ impl AggregateLossDistribution {
     /// with the default [`DEFAULT_MAX_MISSING_TAIL_FRACTION`] aliasing budget.
     ///
     /// See [`Self::var_with_tolerance`].
-    pub fn var(&self, alpha: f64) -> Result<f64, ValidationError> {
+    pub fn var(&self, alpha: f64) -> Result<f64, ReservingError> {
         self.var_with_tolerance(alpha, DEFAULT_MAX_MISSING_TAIL_FRACTION)
     }
 
@@ -425,7 +426,7 @@ impl AggregateLossDistribution {
         &self,
         alpha: f64,
         max_missing_tail_fraction: f64,
-    ) -> Result<f64, ValidationError> {
+    ) -> Result<f64, ReservingError> {
         Self::validate_alpha_and_fraction(alpha, max_missing_tail_fraction)?;
         let top = self.top_of_support()?;
         if alpha >= 1.0 {
@@ -433,7 +434,7 @@ impl AggregateLossDistribution {
             return Ok(top);
         }
         if alpha > self.total_mass + MASS_ROUNDOFF_FLOOR {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "truncated aggregate grid has insufficient probability mass above alpha for VaR",
             ));
         }
@@ -450,7 +451,7 @@ impl AggregateLossDistribution {
     /// with the default [`DEFAULT_MAX_MISSING_TAIL_FRACTION`] (1% of the tail).
     ///
     /// See [`Self::tvar_with_tolerance`].
-    pub fn tvar(&self, alpha: f64) -> Result<f64, ValidationError> {
+    pub fn tvar(&self, alpha: f64) -> Result<f64, ReservingError> {
         self.tvar_with_tolerance(alpha, DEFAULT_MAX_MISSING_TAIL_FRACTION)
     }
 
@@ -470,7 +471,7 @@ impl AggregateLossDistribution {
         &self,
         alpha: f64,
         max_missing_tail_fraction: f64,
-    ) -> Result<f64, ValidationError> {
+    ) -> Result<f64, ReservingError> {
         Self::validate_alpha_and_fraction(alpha, max_missing_tail_fraction)?;
         let top = self.top_of_support()?;
         if alpha >= 1.0 {
@@ -496,12 +497,12 @@ impl AggregateLossDistribution {
     }
 
     /// Exact net stop-loss premium `E[(S - retention)_+] = sum_k max(0, k*h - retention) * g_k`.
-    pub fn stop_loss_premium(&self, retention: f64) -> Result<f64, ValidationError> {
+    pub fn stop_loss_premium(&self, retention: f64) -> Result<f64, ReservingError> {
         if !retention.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if retention < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
         let mut premium = 0.0;
         for (k, &pk) in self.pmf.iter().enumerate() {
@@ -522,7 +523,7 @@ pub fn panjer_recursion(
     severity_pmf: &[f64],
     step: f64,
     n_steps: usize,
-) -> Result<AggregateLossDistribution, ValidationError> {
+) -> Result<AggregateLossDistribution, ReservingError> {
     panjer_recursion_with_options(
         frequency,
         severity_pmf,
@@ -556,7 +557,7 @@ pub fn panjer_recursion_with_options(
     step: f64,
     n_steps: usize,
     options: &PanjerOptions,
-) -> Result<AggregateLossDistribution, ValidationError> {
+) -> Result<AggregateLossDistribution, ReservingError> {
     validate_compound_inputs(frequency, severity_pmf, step, n_steps)?;
     if !options.max_clipped_negative_mass.is_finite()
         || options.max_clipped_negative_mass < 0.0
@@ -564,14 +565,14 @@ pub fn panjer_recursion_with_options(
         || !(options.min_ln_g0 < 0.0)
         || options.min_ln_g0 < LN_MIN_POSITIVE
     {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Panjer options require max_clipped_negative_mass >= 0 and ln(f64::MIN_POSITIVE) <= min_ln_g0 < 0",
         ));
     }
     let f0 = severity_pmf[0];
     let ln_g0 = frequency.ln_pgf_real(f0);
     if ln_g0.is_nan() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let mut squarings = 0u32;
@@ -580,7 +581,7 @@ pub fn panjer_recursion_with_options(
         match frequency {
             FrequencyDistribution::Binomial { .. } => {
                 if ln_g0 < LN_MIN_POSITIVE {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "Panjer recursion g_0 underflowed for Binomial frequency (not split by scaling-and-squaring); use fft_aggregate_loss instead",
                     ));
                 }
@@ -616,11 +617,11 @@ pub fn panjer_recursion_with_options(
 const LN_MIN_POSITIVE: f64 = -708.396_418_532_264_1;
 
 /// Smallest `k` with `ln_g0 / 2^k >= options.min_ln_g0`.
-fn scaling_steps(ln_g0: f64, options: &PanjerOptions) -> Result<u32, ValidationError> {
+fn scaling_steps(ln_g0: f64, options: &PanjerOptions) -> Result<u32, ReservingError> {
     let ratio = ln_g0 / options.min_ln_g0;
     let k = ratio.log2().ceil().max(1.0);
     if !k.is_finite() || k > f64::from(options.max_scaling_squaring_steps) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Panjer scaling-and-squaring would exceed max_scaling_squaring_steps",
         ));
     }
@@ -651,12 +652,12 @@ fn panjer_core(
     severity_pmf: &[f64],
     n_steps: usize,
     options: &PanjerOptions,
-) -> Result<(Vec<f64>, f64), ValidationError> {
+) -> Result<(Vec<f64>, f64), ReservingError> {
     let (a, b) = frequency.panjer_ab();
     let f0 = severity_pmf[0];
     let denom = 1.0 - a * f0;
     if !denom.is_finite() || denom <= 1e-15 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Panjer recursion denominator 1 - a * f_0 is non-positive",
         ));
     }
@@ -664,7 +665,7 @@ fn panjer_core(
 
     let g0 = frequency.pgf_real(f0);
     if !g0.is_finite() || g0 < f64::MIN_POSITIVE {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Panjer recursion g_0 underflowed normal f64 range; use fft_aggregate_loss instead",
         ));
     }
@@ -708,12 +709,12 @@ fn panjer_core(
         };
         let gx = acc * inv_denom;
         if !gx.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if gx < 0.0 {
             clipped += -gx;
             if clipped > options.max_clipped_negative_mass {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Panjer recursion clipped negative mass exceeds max_clipped_negative_mass (numerically unstable, e.g. high-q Binomial); use fft_aggregate_loss",
                 ));
             }
@@ -743,7 +744,7 @@ pub fn fft_aggregate_loss(
     step: f64,
     fft_size: usize,
     tilt: Option<f64>,
-) -> Result<AggregateLossDistribution, ValidationError> {
+) -> Result<AggregateLossDistribution, ReservingError> {
     fft_aggregate_loss_core(frequency, severity_pmf, step, fft_size, tilt)
 }
 
@@ -756,15 +757,15 @@ pub fn fft_aggregate_loss_with_options(
     step: f64,
     fft_size: usize,
     options: &FftOptions,
-) -> Result<AggregateLossDistribution, ValidationError> {
+) -> Result<AggregateLossDistribution, ReservingError> {
     if !options.max_aliasing_error.is_finite() || options.max_aliasing_error < 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "max_aliasing_error must be finite and >= 0",
         ));
     }
     let out = fft_aggregate_loss_core(frequency, severity_pmf, step, fft_size, options.tilt)?;
     if out.aliasing_error_estimate > options.max_aliasing_error {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "FFT grid is undersized: wrap-around aliasing bound exceeds max_aliasing_error; enlarge fft_size or increase the tilt",
         ));
     }
@@ -777,22 +778,22 @@ fn fft_aggregate_loss_core(
     step: f64,
     fft_size: usize,
     tilt: Option<f64>,
-) -> Result<AggregateLossDistribution, ValidationError> {
+) -> Result<AggregateLossDistribution, ReservingError> {
     validate_compound_inputs(frequency, severity_pmf, step, fft_size)?;
     if fft_size < 2 || !fft_size.is_power_of_two() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "fft_size must be a power of two >= 2",
         ));
     }
     if fft_size < severity_pmf.len() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "fft_size must be >= severity_pmf.len()",
         ));
     }
     let theta = match tilt {
         Some(t) => {
             if !t.is_finite() || t < 0.0 || t * (fft_size - 1) as f64 > 700.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "exponential tilt must be finite, >= 0, and satisfy tilt * (fft_size - 1) <= 700",
                 ));
             }
@@ -828,7 +829,7 @@ fn fft_aggregate_loss_core(
     for u in 0..fft_size {
         let (gr, gi) = frequency.pgf_complex(re[u], im[u]);
         if !gr.is_finite() || !gi.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         re[u] = gr;
         im[u] = gi;
@@ -912,10 +913,10 @@ pub fn discretize_rounding(
     step: f64,
     max_index: usize,
     capture_upper_tail: bool,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     dist.validate()?;
     if !step.is_finite() || step <= 0.0 || max_index == 0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "discretization requires step > 0 and max_index >= 1",
         ));
     }
@@ -952,10 +953,10 @@ pub fn discretize_mean_preserving(
     dist: &SeverityDistribution,
     step: f64,
     max_index: usize,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     dist.validate()?;
     if !step.is_finite() || step <= 0.0 || max_index < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "mean-preserving discretization requires step > 0 and max_index >= 2",
         ));
     }
@@ -978,20 +979,20 @@ fn validate_compound_inputs(
     severity_pmf: &[f64],
     step: f64,
     n_steps: usize,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     frequency.validate()?;
     if severity_pmf.is_empty() || n_steps < 2 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if !step.is_finite() || step <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "lattice step size must be finite and strictly positive",
         ));
     }
     validate_nonnegative_finite_slice(severity_pmf)?;
     let sum_f: f64 = severity_pmf.iter().sum();
     if (sum_f - 1.0).abs() > 1e-6 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "severity PMF must sum to 1.0 within 1e-6",
         ));
     }

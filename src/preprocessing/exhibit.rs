@@ -11,10 +11,11 @@ use crate::deterministic::brosius::{self, Brosius};
 use crate::deterministic::cape_cod::{CapeCodEngine, CapeCodProjection};
 use crate::deterministic::chain_ladder::ChainLadderEngine;
 use crate::deterministic::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::cumulative_to_incremental;
 use crate::stochastic::mack::{self, Mack};
 use crate::types::TriangleView;
-use crate::validate::{ValidationError, validate_monotone_cumulative, validate_triangle};
+use crate::validate::{validate_monotone_cumulative, validate_triangle};
 
 /// Full exhibit payload for a visualization workbench.
 #[derive(Debug, Clone, Serialize)]
@@ -277,7 +278,7 @@ pub fn build_exhibit_bundle(
     premium: Option<&[f64]>,
     expected_ultimate: Option<&[f64]>,
     tail: f64,
-) -> Result<ExhibitBundle, ValidationError> {
+) -> Result<ExhibitBundle, ReservingError> {
     validate_triangle(triangle)?;
     validate_monotone_cumulative(triangle)?;
 

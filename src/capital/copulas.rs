@@ -21,8 +21,8 @@ use crate::capital::correlation::{
     CorrelationRepair, CorrelationType, PreparedCorrelation, prepare_latent_correlation,
     rank_match_reorder, validate_and_convert_correlation_matrix,
 };
+use crate::error::ReservingError;
 use crate::stochastic::bootstrap_odp::{DeterministicRng, ln_gamma};
-use crate::validate::ValidationError;
 
 pub use crate::capital::correlation::repair_correlation_matrix;
 
@@ -116,15 +116,15 @@ pub fn student_t_cdf(x: f64, nu: f64) -> f64 {
 /// Exact analytical symmetric upper/lower tail-dependence coefficient
 /// `λ_U = λ_L = 2 * F_{t_{ν+1}}(-sqrt((ν + 1)(1 - ρ) / (1 + ρ)))`
 /// for a bivariate Student-$t$ copula with `ν > 0` and `ρ ∈ (-1, 1)`.
-pub fn student_t_tail_dependence(nu: f64, rho: f64) -> Result<f64, ValidationError> {
+pub fn student_t_tail_dependence(nu: f64, rho: f64) -> Result<f64, ReservingError> {
     if !nu.is_finite() || !rho.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if nu <= 0.0 {
-        return Err(ValidationError::NonPositive("degrees of freedom nu"));
+        return Err(ReservingError::NonPositive("degrees of freedom nu"));
     }
     if !(-1.0..=1.0).contains(&rho) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "correlation rho must lie in [-1, 1]",
         ));
     }
@@ -222,29 +222,29 @@ pub struct CopulaSampleResult {
 pub fn apply_copula_reordering(
     marginals: &[&[f64]],
     copula_uniforms: &[Vec<f64>],
-) -> Result<Vec<Vec<f64>>, ValidationError> {
+) -> Result<Vec<Vec<f64>>, ReservingError> {
     let d = marginals.len();
     if d == 0 || copula_uniforms.len() != d {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let n = marginals[0].len();
     if n == 0 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for col in marginals {
         if col.len() != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if col.iter().any(|v| !v.is_finite()) {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
     }
     for u in copula_uniforms {
         if u.len() != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if u.iter().any(|v| !v.is_finite()) {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
     }
 
@@ -274,7 +274,7 @@ pub fn student_t_copula_sample(
     corr_type: CorrelationType,
     n_samples: usize,
     seed: u64,
-) -> Result<CopulaSampleResult, ValidationError> {
+) -> Result<CopulaSampleResult, ReservingError> {
     student_t_copula_sample_with_repair(
         target_corr,
         dim,
@@ -307,21 +307,21 @@ pub fn student_t_copula_sample_with_repair(
     n_samples: usize,
     seed: u64,
     repair: CorrelationRepair,
-) -> Result<CopulaSampleResult, ValidationError> {
+) -> Result<CopulaSampleResult, ReservingError> {
     if dim < 2 || target_corr.len() != dim * dim {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if n_samples == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
     if !nu.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if nu <= 0.0 {
-        return Err(ValidationError::NonPositive("degrees of freedom nu"));
+        return Err(ReservingError::NonPositive("degrees of freedom nu"));
     }
     if corr_type == CorrelationType::SpearmanTarget {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Spearman targets are not supported for the Student-t copula (the Gaussian map 2 sin(pi rho_S / 6) is inexact for t_nu); use CorrelationType::KendallTarget, which is exact for elliptical copulas",
         ));
     }
@@ -368,12 +368,12 @@ pub fn student_t_copula_sample_with_repair(
 // ===========================================================================
 
 /// Convert Kendall's `τ ∈ (0, 1)` to Clayton parameter `θ = 2τ / (1 - τ)`.
-pub fn clayton_theta_from_tau(tau: f64) -> Result<f64, ValidationError> {
+pub fn clayton_theta_from_tau(tau: f64) -> Result<f64, ReservingError> {
     if !tau.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if !(0.0..1.0).contains(&tau) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Clayton Kendall tau must lie in [0, 1)",
         ));
     }
@@ -381,12 +381,12 @@ pub fn clayton_theta_from_tau(tau: f64) -> Result<f64, ValidationError> {
 }
 
 /// Analytical lower tail-dependence coefficient `λ_L = 2^{-1/θ}` for Clayton (`θ > 0`).
-pub fn clayton_lower_tail_dependence(theta: f64) -> Result<f64, ValidationError> {
+pub fn clayton_lower_tail_dependence(theta: f64) -> Result<f64, ReservingError> {
     if !theta.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if theta < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     if theta < 1e-12 {
         return Ok(0.0);
@@ -395,12 +395,12 @@ pub fn clayton_lower_tail_dependence(theta: f64) -> Result<f64, ValidationError>
 }
 
 /// Convert Kendall's `τ ∈ [0, 1)` to Gumbel parameter `θ = 1 / (1 - τ)`.
-pub fn gumbel_theta_from_tau(tau: f64) -> Result<f64, ValidationError> {
+pub fn gumbel_theta_from_tau(tau: f64) -> Result<f64, ReservingError> {
     if !tau.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if !(0.0..1.0).contains(&tau) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Gumbel Kendall tau must lie in [0, 1)",
         ));
     }
@@ -408,12 +408,12 @@ pub fn gumbel_theta_from_tau(tau: f64) -> Result<f64, ValidationError> {
 }
 
 /// Analytical upper tail-dependence coefficient `λ_U = 2 - 2^{1/θ}` for Gumbel (`θ >= 1`).
-pub fn gumbel_upper_tail_dependence(theta: f64) -> Result<f64, ValidationError> {
+pub fn gumbel_upper_tail_dependence(theta: f64) -> Result<f64, ReservingError> {
     if !theta.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if theta < 1.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Gumbel parameter theta must be >= 1.0",
         ));
     }
@@ -443,20 +443,20 @@ pub fn clayton_copula_sample(
     theta: f64,
     n_samples: usize,
     seed: u64,
-) -> Result<CopulaSampleResult, ValidationError> {
+) -> Result<CopulaSampleResult, ReservingError> {
     if dim < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Clayton copula requires dim >= 2",
         ));
     }
     if n_samples == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
     if !theta.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if theta < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
 
     let mut rng = DeterministicRng::from_seed(seed);
@@ -507,20 +507,20 @@ pub fn gumbel_copula_sample(
     theta: f64,
     n_samples: usize,
     seed: u64,
-) -> Result<CopulaSampleResult, ValidationError> {
+) -> Result<CopulaSampleResult, ReservingError> {
     if dim < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Gumbel copula requires dim >= 2",
         ));
     }
     if n_samples == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
     if !theta.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if theta < 1.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Gumbel parameter theta must be >= 1.0",
         ));
     }
@@ -591,39 +591,39 @@ impl GumbelHac {
     pub fn try_new(
         root_theta: f64,
         clusters: Vec<GumbelHacCluster>,
-    ) -> Result<Self, ValidationError> {
+    ) -> Result<Self, ReservingError> {
         if !root_theta.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if root_theta < 1.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "Gumbel HAC root_theta must be >= 1.0",
             ));
         }
         if clusters.is_empty() {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "Gumbel HAC requires at least one cluster",
             ));
         }
         let mut total_dim = 0usize;
         for c in &clusters {
             if !c.theta.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             if c.size == 0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Gumbel HAC cluster size must be >= 1",
                 ));
             }
             if c.theta < root_theta {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "nesting condition violated: child theta must be >= parent root_theta",
                 ));
             }
             total_dim += c.size;
         }
         if total_dim < 2 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "Gumbel HAC requires at least 2 total variables",
             ));
         }
@@ -654,9 +654,9 @@ impl GumbelHac {
         &self,
         n_samples: usize,
         seed: u64,
-    ) -> Result<CopulaSampleResult, ValidationError> {
+    ) -> Result<CopulaSampleResult, ReservingError> {
         if n_samples == 0 {
-            return Err(ValidationError::InvalidIterations);
+            return Err(ReservingError::InvalidIterations);
         }
         let mut rng = DeterministicRng::from_seed(seed);
         let mut columns: Vec<Vec<f64>> = (0..self.total_dim)

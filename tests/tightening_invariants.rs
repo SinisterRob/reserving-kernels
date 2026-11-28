@@ -2,7 +2,7 @@
 //! and numerical-stability invariants across the crate.
 
 use reserving_kernels::{
-    Triangle, TriangleView,
+    ReservingError, Triangle, TriangleView,
     capital::{
         aggregate_loss::{FrequencyDistribution, fft_aggregate_loss},
         capital_allocation::{euler_rvar_allocation, euler_tvar_allocation},
@@ -37,7 +37,7 @@ use reserving_kernels::{
         ClarkExactAgeOptions, asymmetric_age_grid, calendar_diagonal_index, clark_mle_exact_age,
         interp_swimon, subannual_product_parity,
     },
-    validate::{MonotonicityPolicy, ValidationError},
+    validate::MonotonicityPolicy,
 };
 
 #[test]
@@ -207,17 +207,17 @@ fn numerical_stability_identities_crps_student_t_rvar_and_fft() {
     // Capital allocation invalid probability returns InvalidProbability.
     assert_eq!(
         euler_tvar_allocation(&[&vals], 1.5),
-        Err(ValidationError::InvalidProbability { value: 1.5 })
+        Err(ReservingError::InvalidProbability { value: 1.5 })
     );
     assert_eq!(
         euler_rvar_allocation(&[&vals], -0.1, 0.9),
-        Err(ValidationError::InvalidProbability { value: -0.1 })
+        Err(ReservingError::InvalidProbability { value: -0.1 })
     );
 
     // apply_copula_reordering rejects NaN uniforms.
     assert_eq!(
         apply_copula_reordering(&[&[1.0, 2.0]], &[vec![0.5, f64::NAN]]),
-        Err(ValidationError::NotFinite)
+        Err(ReservingError::NotFinite)
     );
 
     // FFT aggregate loss handles extreme NB parameters without panicking.

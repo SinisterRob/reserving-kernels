@@ -19,7 +19,8 @@
 //!   (12-month basis): monotone-cubic interpolation of the log 12-month factor
 //!   function in age, chained to reconstruct a `C¹` CDF that preserves knots.
 
-use crate::validate::{ValidationError, validate_positive_finite_slice};
+use crate::error::ReservingError;
+use crate::validate::validate_positive_finite_slice;
 
 /// Sub-annual CDF/LDF interpolation method selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -79,7 +80,7 @@ pub fn interpolate_pattern(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     match method {
         SubannualInterpMethod::LinearCdf => {
             interp_linear_cdf(anchor_ages, anchor_cdfs, target_ages)
@@ -105,16 +106,16 @@ fn validate_anchors_and_targets(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if anchor_ages.len() < 2 || anchor_ages.len() != anchor_cdfs.len() || target_ages.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(anchor_ages, "anchor_ages")?;
     validate_positive_finite_slice(anchor_cdfs, "anchor_cdfs")?;
     validate_positive_finite_slice(target_ages, "target_ages")?;
     for k in 1..anchor_ages.len() {
         if anchor_ages[k] <= anchor_ages[k - 1] {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "anchor_ages must be strictly increasing",
             ));
         }
@@ -170,7 +171,7 @@ pub fn interp_linear_cdf(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_min = anchor_ages[0];
     let t_max = anchor_ages[anchor_ages.len() - 1];
@@ -179,7 +180,7 @@ pub fn interp_linear_cdf(
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t < t_min - tol || t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age outside [anchor_ages[0], anchor_ages[last]] for linear CDF interpolation",
             ));
         }
@@ -188,7 +189,7 @@ pub fn interp_linear_cdf(
         let w = (tc - anchor_ages[k]) / (anchor_ages[k + 1] - anchor_ages[k]);
         let cdf = (1.0 - w) * anchor_cdfs[k] + w * anchor_cdfs[k + 1];
         if !cdf.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         cdfs.push(cdf);
     }
@@ -212,7 +213,7 @@ pub fn interp_linear_pct_reported(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_max = anchor_ages[anchor_ages.len() - 1];
     let tol = 1e-9 * t_max;
@@ -220,7 +221,7 @@ pub fn interp_linear_pct_reported(
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age exceeds maximum anchor age",
             ));
         }
@@ -235,7 +236,7 @@ pub fn interp_linear_pct_reported(
             (1.0 - w) * p0 + w * p1
         };
         if !(p > 0.0) || !p.is_finite() {
-            return Err(ValidationError::DivideByZero("percent reported"));
+            return Err(ReservingError::DivideByZero("percent reported"));
         }
         cdfs.push(1.0 / p);
     }
@@ -259,7 +260,7 @@ pub fn interp_exponential(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_min = anchor_ages[0];
     let t_max = anchor_ages[anchor_ages.len() - 1];
@@ -268,7 +269,7 @@ pub fn interp_exponential(
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t < t_min - tol || t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age outside [anchor_ages[0], anchor_ages[last]] for exponential interpolation",
             ));
         }
@@ -340,7 +341,7 @@ pub fn interp_inverse_power(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InversePowerInterpResult, ValidationError> {
+) -> Result<InversePowerInterpResult, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
 
     // Collect (ln t_k, ln(f_k - 1)) for annual links where f_k = CDF_k / CDF_{k+1} > 1.
@@ -354,7 +355,7 @@ pub fn interp_inverse_power(
         }
     }
     if xs.len() < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "interp_inverse_power requires at least two anchor links with LDF > 1.0",
         ));
     }
@@ -373,7 +374,7 @@ pub fn interp_inverse_power(
         syy += dy * dy;
     }
     if sxx <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "degenerate anchor ages in inverse power fit",
         ));
     }
@@ -382,7 +383,7 @@ pub fn interp_inverse_power(
     let b = -slope;
     let a = intercept.exp();
     if !(a > 0.0) || !a.is_finite() || !(b > 0.0) || !b.is_finite() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "inverse power fit requires decaying development factors (b > 0)",
         ));
     }
@@ -418,7 +419,7 @@ pub fn interp_inverse_power(
             ((1.0 - w) * anchor_cdfs[k].ln() + w * anchor_cdfs[k + 1].ln()).exp()
         };
         if !cdf.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         cdfs.push(cdf);
     }
@@ -468,7 +469,7 @@ pub fn interp_swimon(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_max = anchor_ages[anchor_ages.len() - 1];
     let tol = 1e-9 * t_max;
@@ -584,7 +585,7 @@ pub fn interp_swimon(
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age exceeds maximum anchor age for SWIMON interpolation",
             ));
         }
@@ -592,7 +593,7 @@ pub fn interp_swimon(
         let k = find_bracket(&xs, tc);
         let p = eval_cubic_hermite(xs[k], xs[k + 1], ys[k], ys[k + 1], m[k], m[k + 1], tc);
         if !(p > 0.0) || !p.is_finite() {
-            return Err(ValidationError::DivideByZero("SWIMON percent reported"));
+            return Err(ReservingError::DivideByZero("SWIMON percent reported"));
         }
         cdfs.push(1.0 / p);
     }
@@ -621,7 +622,7 @@ pub fn interp_spliced_weibull(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
     let t_max = anchor_ages[anchor_ages.len() - 1];
     let tol = 1e-9 * t_max;
@@ -650,7 +651,7 @@ pub fn interp_spliced_weibull(
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age exceeds maximum anchor age for spliced Weibull interpolation",
             ));
         }
@@ -674,7 +675,7 @@ pub fn interp_spliced_weibull(
             }
         };
         if !(p > 0.0) || !p.is_finite() {
-            return Err(ValidationError::DivideByZero("Weibull percent reported"));
+            return Err(ReservingError::DivideByZero("Weibull percent reported"));
         }
         cdfs.push(1.0 / p);
     }
@@ -796,14 +797,14 @@ pub fn interp_ivf12(
     anchor_ages: &[f64],
     anchor_cdfs: &[f64],
     target_ages: &[f64],
-) -> Result<InterpolatedPattern, ValidationError> {
+) -> Result<InterpolatedPattern, ReservingError> {
     validate_anchors_and_targets(anchor_ages, anchor_cdfs, target_ages)?;
 
     let m = anchor_ages.len();
     let step = anchor_ages[1] - anchor_ages[0];
     for k in 1..m {
         if ((anchor_ages[k] - anchor_ages[k - 1]) - step).abs() > 1e-6 * step {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "interp_ivf12 requires equally spaced anchor ages (e.g. 12, 24, 36, ...)",
             ));
         }
@@ -821,7 +822,7 @@ pub fn interp_ivf12(
     }
     phi.push(0.0);
     if phi.iter().any(|v| !v.is_finite()) {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     let tan = ivf12_pchip_tangents(&phi, step);
 
@@ -846,7 +847,7 @@ pub fn interp_ivf12(
     let mut cdfs = Vec::with_capacity(target_ages.len());
     for &t in target_ages {
         if t < t_min - tol || t > t_max + tol {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "target age outside [anchor_ages[0], anchor_ages[last]] for IVF12 interpolation",
             ));
         }
@@ -862,7 +863,7 @@ pub fn interp_ivf12(
         }
         let cdf = ln_cdf.exp();
         if !cdf.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         cdfs.push(cdf);
     }

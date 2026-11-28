@@ -29,7 +29,7 @@
 
 ---
 
-`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). For prospective ratemaking, reinsurance layering, and underwriting risk, see its sibling crate [`pricing-kernels`](https://github.com/SinisterRob/pricing-kernels). Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs)).
+`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). It is part of a four-crate pure-Rust actuarial kernel suite alongside [`pricing-kernels`](https://github.com/SinisterRob/pricing-kernels) (prospective ratemaking and underwriting risk), [`reinsurance-kernels`](https://github.com/SinisterRob/reinsurance-kernels) (treaty pricing and structuring), and [`esg-kernels`](https://github.com/SinisterRob/esg-kernels) (economic scenario generation). Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs)).
 
 ## Why `reserving-kernels`?
 
@@ -51,7 +51,7 @@ Basic triangle reserving and aggregate loss convolution:
 ```rust
 use reserving_kernels::{prelude::*, triangle};
 
-fn main() -> Result<(), ValidationError> {
+fn main() -> Result<(), ReservingError> {
     // Build from upper-triangle rows (no manual NaN padding needed)
     let triangle = triangle![
         [100, 160, 195, 205],
@@ -87,7 +87,7 @@ fn main() -> Result<(), ValidationError> {
 
 ## Implemented Modules
 
-`reserving-kernels` is organized into clean domain modules (`deterministic`, `stochastic`, `capital`, `excess`, `preprocessing`, `diagnostics`, `subannual`, `datasets`, `types`, `validate`, plus the zero-dep `triangle!` macro and optional `wasm_exports` behind `--features wasm`).
+`reserving-kernels` is organized into clean domain modules (`deterministic`, `stochastic`, `capital`, `excess`, `preprocessing`, `diagnostics`, `subannual`, `datasets`, `types`, `error`, `validate`, plus the zero-dep `triangle!` macro and optional `wasm_exports` behind `--features wasm`).
 
 | Domain Module | Highlights |
 | --- | --- |
@@ -101,11 +101,11 @@ fn main() -> Result<(), ValidationError> {
 <details>
 <summary><strong>Full module directory</strong></summary>
 
-### Core (`types`, `validate`, `datasets`, `triangle!`)
+### Core (`types`, `error`, `validate`, `datasets`, `triangle!`)
 
 | Module | Capabilities |
 | --- | --- |
-| `types`, `validate` | Pure row-major `Triangle` / `TriangleView`, monotonicity policies, validation errors, and `triangle!` literal macro |
+| `types`, `error`, `validate` | Pure row-major `Triangle` / `TriangleView`, `ReservingError` / `Result`, monotonicity policies, input validation, and `triangle!` literal macro |
 | `datasets` | Zero-I/O benchmark triangles (RAA, GenIns, Quarg & Mack, Friedland Auto) |
 
 ### `deterministic` — Loss Development & Point Estimators

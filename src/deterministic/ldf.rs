@@ -23,11 +23,12 @@
 //! Each LDF vector has length `n − 1`; the trailing tail factor (dev `n − 1`
 //! → ultimate) is supplied by the caller.
 
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::age_to_age;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_monotone_cumulative,
-    validate_positive_finite_slice, validate_triangle,
+    MonotonicityPolicy, validate_monotone_cumulative, validate_positive_finite_slice,
+    validate_triangle,
 };
 
 // ===========================================================================
@@ -562,16 +563,16 @@ pub fn geometric_average(t: &TriangleView<'_>) -> Vec<f64> {
 pub fn weighted_volume_ldfs(
     t: &TriangleView<'_>,
     weights: &[f64],
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     if t.data.len() != t.n_origins * t.n_devs || weights.len() != t.n_origins * t.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for &w in weights {
         if !w.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if w < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
     }
     let m = t.n_devs.saturating_sub(1);
@@ -595,7 +596,7 @@ pub fn weighted_volume_ldfs(
             }
         }
         if den <= 0.0 {
-            return Err(ValidationError::DivideByZero(
+            return Err(ReservingError::DivideByZero(
                 "weighted development denominator",
             ));
         }
@@ -641,13 +642,13 @@ impl DevelopmentFactorEngine {
         n_devs: usize,
         tail: f64,
         ldfs: Vec<f64>,
-    ) -> Result<DevelopmentFactors, ValidationError> {
+    ) -> Result<DevelopmentFactors, ReservingError> {
         validate_positive_finite_slice(&ldfs, "development denominator")?;
 
         let mut cdfs = vec![0.0; n_devs];
         cdfs_from_ldfs(&ldfs, tail, &mut cdfs);
         if cdfs.iter().any(|cdf| !cdf.is_finite()) {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
 
         Ok(DevelopmentFactors { ldfs, cdfs, tail })
@@ -657,7 +658,7 @@ impl DevelopmentFactorEngine {
     pub fn volume_weighted(
         tri: &TriangleView<'_>,
         tail: f64,
-    ) -> Result<DevelopmentFactors, ValidationError> {
+    ) -> Result<DevelopmentFactors, ReservingError> {
         Self::volume_weighted_with_policy(tri, tail, MonotonicityPolicy::Strict)
     }
 
@@ -666,7 +667,7 @@ impl DevelopmentFactorEngine {
         tri: &TriangleView<'_>,
         tail: f64,
         policy: MonotonicityPolicy,
-    ) -> Result<DevelopmentFactors, ValidationError> {
+    ) -> Result<DevelopmentFactors, ReservingError> {
         validate_development_inputs_with_policy(tri, tail, policy)?;
         let mut ldfs = vec![0.0; tri.n_devs - 1];
         volume_weighted_ldfs(tri.data, tri.n_origins, tri.n_devs, &mut ldfs);
@@ -677,16 +678,13 @@ impl DevelopmentFactorEngine {
     pub fn simple_average(
         tri: &TriangleView<'_>,
         tail: f64,
-    ) -> Result<DevelopmentFactors, ValidationError> {
+    ) -> Result<DevelopmentFactors, ReservingError> {
         validate_development_inputs(tri, tail)?;
         Self::factors_from_validated_ldfs(tri.n_devs, tail, simple_average(tri))
     }
 
     /// Select median factors and CDFs from a validated cumulative triangle.
-    pub fn median(
-        tri: &TriangleView<'_>,
-        tail: f64,
-    ) -> Result<DevelopmentFactors, ValidationError> {
+    pub fn median(tri: &TriangleView<'_>, tail: f64) -> Result<DevelopmentFactors, ReservingError> {
         validate_development_inputs(tri, tail)?;
         Self::factors_from_validated_ldfs(tri.n_devs, tail, median(tri))
     }
@@ -695,7 +693,7 @@ impl DevelopmentFactorEngine {
     pub fn ex_hi_lo(
         tri: &TriangleView<'_>,
         tail: f64,
-    ) -> Result<DevelopmentFactors, ValidationError> {
+    ) -> Result<DevelopmentFactors, ReservingError> {
         validate_development_inputs(tri, tail)?;
         Self::factors_from_validated_ldfs(tri.n_devs, tail, ex_hi_lo(tri))
     }
@@ -705,7 +703,7 @@ impl DevelopmentFactorEngine {
         tri: &TriangleView<'_>,
         tail: f64,
         last_n: usize,
-    ) -> Result<DevelopmentFactors, ValidationError> {
+    ) -> Result<DevelopmentFactors, ReservingError> {
         validate_development_inputs(tri, tail)?;
         Self::factors_from_validated_ldfs(tri.n_devs, tail, volume_weighted_last_n(tri, last_n))
     }
@@ -715,7 +713,7 @@ impl DevelopmentFactorEngine {
         tri: &TriangleView<'_>,
         tail: f64,
         last_n: usize,
-    ) -> Result<DevelopmentFactors, ValidationError> {
+    ) -> Result<DevelopmentFactors, ReservingError> {
         validate_development_inputs(tri, tail)?;
         Self::factors_from_validated_ldfs(tri.n_devs, tail, simple_average_last_n(tri, last_n))
     }
@@ -724,7 +722,7 @@ impl DevelopmentFactorEngine {
     pub fn geometric_average(
         tri: &TriangleView<'_>,
         tail: f64,
-    ) -> Result<DevelopmentFactors, ValidationError> {
+    ) -> Result<DevelopmentFactors, ReservingError> {
         validate_development_inputs(tri, tail)?;
         Self::factors_from_validated_ldfs(tri.n_devs, tail, geometric_average(tri))
     }
@@ -737,7 +735,7 @@ impl DevelopmentFactorEngine {
         weights: &[f64],
         tail: f64,
         policy: MonotonicityPolicy,
-    ) -> Result<DevelopmentFactors, ValidationError> {
+    ) -> Result<DevelopmentFactors, ReservingError> {
         validate_development_inputs_with_policy(tri, tail, policy)?;
         let ldfs = weighted_volume_ldfs(tri, weights)?;
         Self::factors_from_validated_ldfs(tri.n_devs, tail, ldfs)
@@ -747,7 +745,7 @@ impl DevelopmentFactorEngine {
     pub fn volume_weighted_diagnostics(
         tri: &TriangleView<'_>,
         tail: f64,
-    ) -> Result<Vec<LinkRatioDiagnostic>, ValidationError> {
+    ) -> Result<Vec<LinkRatioDiagnostic>, ReservingError> {
         validate_development_inputs(tri, tail)?;
 
         let mut diagnostics = Vec::with_capacity(tri.n_devs - 1);
@@ -755,7 +753,7 @@ impl DevelopmentFactorEngine {
             let diagnostic =
                 volume_weighted_link_diagnostic(tri.data, tri.n_origins, tri.n_devs, dev);
             if !diagnostic.selected_ldf.is_finite() {
-                return Err(ValidationError::DivideByZero("development denominator"));
+                return Err(ReservingError::DivideByZero("development denominator"));
             }
             diagnostics.push(diagnostic);
         }
@@ -763,7 +761,7 @@ impl DevelopmentFactorEngine {
     }
 }
 
-fn validate_development_inputs(tri: &TriangleView<'_>, tail: f64) -> Result<(), ValidationError> {
+fn validate_development_inputs(tri: &TriangleView<'_>, tail: f64) -> Result<(), ReservingError> {
     validate_development_inputs_with_policy(tri, tail, MonotonicityPolicy::Strict)
 }
 
@@ -771,16 +769,16 @@ fn validate_development_inputs_with_policy(
     tri: &TriangleView<'_>,
     tail: f64,
     policy: MonotonicityPolicy,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     validate_triangle(tri)?;
     if tri.n_devs < 2 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if !tail.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if tail < 1.0 {
-        return Err(ValidationError::InvalidTail { tail });
+        return Err(ReservingError::InvalidTail { tail });
     }
     if policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(tri)?;
@@ -957,7 +955,7 @@ mod tests {
 
         assert_eq!(
             DevelopmentFactorEngine::volume_weighted(&tri.view(), 0.99),
-            Err(ValidationError::InvalidTail { tail: 0.99 })
+            Err(ReservingError::InvalidTail { tail: 0.99 })
         );
     }
 
@@ -972,7 +970,7 @@ mod tests {
 
         assert_eq!(
             DevelopmentFactorEngine::volume_weighted(&tri.view(), 1.0),
-            Err(ValidationError::NonMonotoneCumulative {
+            Err(ReservingError::NonMonotoneCumulative {
                 origin: 0,
                 dev: 1,
                 previous: 100.0,

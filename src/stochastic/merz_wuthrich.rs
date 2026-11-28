@@ -44,10 +44,11 @@
 //! of calendar-year CDR MSEPs equals Mack's (1993) ultimate MSEP exactly:
 //! `sum_{t=1}^{n-1} msep(CDR_t) == msep_Mack(Ultimate)`.
 
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::stochastic::mack;
 use crate::types::TriangleView;
-use crate::validate::{MonotonicityPolicy, ValidationError};
+use crate::validate::MonotonicityPolicy;
 
 /// Result of the Merz & Wüthrich (2008) 1-year CDR MSEP calculation.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -122,7 +123,7 @@ pub struct RunoffCdrDecomposition {
 ///
 /// Defaults to [`MonotonicityPolicy::AllowNegativeIncrements`] to match Mack (1993).
 /// Use [`analyze_with_policy`] with [`MonotonicityPolicy::Strict`] to enforce monotone rows.
-pub fn analyze(t: &TriangleView<'_>) -> Result<MerzWuthrichResult, ValidationError> {
+pub fn analyze(t: &TriangleView<'_>) -> Result<MerzWuthrichResult, ReservingError> {
     analyze_with_policy(t, MonotonicityPolicy::AllowNegativeIncrements)
 }
 
@@ -130,11 +131,11 @@ pub fn analyze(t: &TriangleView<'_>) -> Result<MerzWuthrichResult, ValidationErr
 pub fn analyze_with_policy(
     t: &TriangleView<'_>,
     policy: MonotonicityPolicy,
-) -> Result<MerzWuthrichResult, ValidationError> {
+) -> Result<MerzWuthrichResult, ReservingError> {
     let m = mack::analyze_with_policy(t, 1.0, policy)?;
     let n = t.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Merz & Wuthrich CDR requires at least a 3x3 triangle",
         ));
     }
@@ -260,11 +261,11 @@ pub fn analyze_with_policy(
 pub fn runoff_decomposition(
     t: &TriangleView<'_>,
     policy: MonotonicityPolicy,
-) -> Result<RunoffCdrDecomposition, ValidationError> {
+) -> Result<RunoffCdrDecomposition, ReservingError> {
     let m = mack::analyze_with_policy(t, 1.0, policy)?;
     let n = t.n_origins;
     if n < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "run-off decomposition requires at least a 2x2 triangle",
         ));
     }

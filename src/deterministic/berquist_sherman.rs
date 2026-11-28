@@ -40,10 +40,10 @@
 
 use crate::deterministic::chain_ladder::ChainLadderEngine;
 use crate::deterministic::ldf::DevelopmentFactorEngine;
+use crate::error::ReservingError;
 use crate::types::{Triangle, TriangleView};
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_positive_finite_slice, validate_tail,
-    validate_triangle,
+    MonotonicityPolicy, validate_positive_finite_slice, validate_tail, validate_triangle,
 };
 
 // ===========================================================================
@@ -116,7 +116,7 @@ pub fn adjust_case_reserves(
     trend: CaseReserveTrend,
     tail: f64,
     policy: MonotonicityPolicy,
-) -> Result<CaseReserveAdjustmentResult, ValidationError> {
+) -> Result<CaseReserveAdjustmentResult, ReservingError> {
     validate_triangle(reported)?;
     validate_triangle(paid)?;
     validate_triangle(open_counts)?;
@@ -124,7 +124,7 @@ pub fn adjust_case_reserves(
 
     let n = reported.n_origins;
     if n < 2 || paid.n_origins != n || open_counts.n_origins != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     let mut raw_case = vec![f64::NAN; n * n];
@@ -134,7 +134,7 @@ pub fn adjust_case_reserves(
             let idx = i * n + j;
             let case_val = reported.data[idx] - paid.data[idx];
             if case_val < -1e-9 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "reported loss must be >= paid loss for case-reserve adjustment",
                 ));
             }
@@ -144,7 +144,7 @@ pub fn adjust_case_reserves(
             raw_avg[idx] = if open > 0.0 {
                 case_clamped / open
             } else if case_clamped > 1e-9 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "case reserves are positive where open claim counts are zero",
                 ));
             } else {
@@ -156,16 +156,16 @@ pub fn adjust_case_reserves(
     let rate = match trend {
         CaseReserveTrend::ExponentialRate(r) => {
             if !r.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             r
         }
         CaseReserveTrend::AnnualCompoundRate(g) => {
             if !g.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             if g <= -1.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "annual compound trend must be > -1.0",
                 ));
             }
@@ -174,7 +174,7 @@ pub fn adjust_case_reserves(
         CaseReserveTrend::FitFromAverageCase => fit_pooled_log_linear_trend(&raw_avg, n)?,
     };
     if !rate.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let mut adj_avg = vec![f64::NAN; n * n];
@@ -189,7 +189,7 @@ pub fn adjust_case_reserves(
             // The latest-diagonal average case is undefined (no open claims), so
             // earlier rows with open claims cannot be restated without silently
             // zeroing their case reserves.
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "latest-diagonal open count is zero at a development age where earlier \
                  origins have open claims; average case reserve anchor is undefined",
             ));
@@ -223,7 +223,7 @@ pub fn adjust_case_reserves(
 
     let annual_compound_rate = rate.exp_m1();
     if !annual_compound_rate.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(CaseReserveAdjustmentResult {
@@ -255,17 +255,17 @@ pub fn adjust_case_reserves(
 /// # Errors
 ///
 /// Shape/validation errors for the triangles, or
-/// [`ValidationError::InvalidParameter`] when no development column has at
+/// [`ReservingError::InvalidParameter`] when no development column has at
 /// least two positive severities.
 pub fn fit_severity_trend(
     loss: &TriangleView<'_>,
     counts: &TriangleView<'_>,
-) -> Result<f64, ValidationError> {
+) -> Result<f64, ReservingError> {
     validate_triangle(loss)?;
     validate_triangle(counts)?;
     let n = loss.n_origins;
     if counts.n_origins != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let mut sev = vec![f64::NAN; n * n];
     for i in 0..n {
@@ -280,7 +280,7 @@ pub fn fit_severity_trend(
 }
 
 /// Fit pooled within-column log-linear trend `r` from `ln(A_{i,j}) = alpha_j + r * i`.
-fn fit_pooled_log_linear_trend(raw_avg: &[f64], n: usize) -> Result<f64, ValidationError> {
+fn fit_pooled_log_linear_trend(raw_avg: &[f64], n: usize) -> Result<f64, ReservingError> {
     let mut num = 0.0;
     let mut den = 0.0;
     for j in 0..n {
@@ -306,7 +306,7 @@ fn fit_pooled_log_linear_trend(raw_avg: &[f64], n: usize) -> Result<f64, Validat
         }
     }
     if den <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "insufficient positive average case reserves to estimate severity trend",
         ));
     }
@@ -375,14 +375,14 @@ pub fn adjust_paid_disposal_rate(
     target_disposal_rates: Option<&[f64]>,
     interpolation: DisposalInterpolation,
     tail: f64,
-) -> Result<PaidDisposalAdjustmentResult, ValidationError> {
+) -> Result<PaidDisposalAdjustmentResult, ReservingError> {
     validate_triangle(paid)?;
     validate_triangle(closed_counts)?;
     validate_tail(tail)?;
 
     let n = paid.n_origins;
     if n < 2 || closed_counts.n_origins != n || ultimate_counts.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(ultimate_counts, "ultimate_counts")?;
 
@@ -393,7 +393,7 @@ pub fn adjust_paid_disposal_rate(
         for j in 0..(n - i) {
             let c = closed_counts.get(i, j);
             if c < prev_c - 1e-12 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "closed_counts must be non-decreasing across development periods",
                 ));
             }
@@ -405,20 +405,20 @@ pub fn adjust_paid_disposal_rate(
     let targets: Vec<f64> = match target_disposal_rates {
         Some(custom) => {
             if custom.len() != n {
-                return Err(ValidationError::ShapeMismatch);
+                return Err(ReservingError::ShapeMismatch);
             }
             for (idx, &d) in custom.iter().enumerate() {
                 if !d.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if !(0.0..=1.0 + 1e-9).contains(&d) {
-                    return Err(ValidationError::InvalidMaturity {
+                    return Err(ReservingError::InvalidMaturity {
                         index: idx,
                         value: d,
                     });
                 }
                 if idx > 0 && d < custom[idx - 1] - 1e-12 {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "target disposal rates must be non-decreasing across development ages",
                     ));
                 }
@@ -473,7 +473,7 @@ pub fn adjust_paid_disposal_rate(
     }
     let total_reserve: f64 = reserves.iter().sum();
     if !total_reserve.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(PaidDisposalAdjustmentResult {

@@ -16,11 +16,12 @@ use crate::deterministic::bf::{
 };
 use crate::deterministic::chain_ladder::latest_observed_by_origin;
 use crate::deterministic::ldf::{DevelopmentFactors, cdf_from_ldf, pct_reported};
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_development_factor_slices,
-    validate_latest_and_dev, validate_monotone_cumulative, validate_premium, validate_triangle,
+    MonotonicityPolicy, validate_development_factor_slices, validate_latest_and_dev,
+    validate_monotone_cumulative, validate_premium, validate_triangle,
 };
 
 /// Cape Cod ELR (scalar). Returns `NaN` when the used-premium total is zero.
@@ -88,7 +89,7 @@ impl CapeCodEngine {
         cumulative: &TriangleView<'_>,
         factors: &DevelopmentFactors,
         premium: &[f64],
-    ) -> Result<CapeCodProjection, ValidationError> {
+    ) -> Result<CapeCodProjection, ReservingError> {
         Self::project_with_policy(cumulative, factors, premium, MonotonicityPolicy::Strict)
     }
 
@@ -99,7 +100,7 @@ impl CapeCodEngine {
         factors: &DevelopmentFactors,
         premium: &[f64],
         policy: MonotonicityPolicy,
-    ) -> Result<CapeCodProjection, ValidationError> {
+    ) -> Result<CapeCodProjection, ReservingError> {
         validate_cape_cod_inputs(cumulative, factors, premium, policy)?;
 
         let n = cumulative.n_origins;
@@ -120,7 +121,7 @@ impl CapeCodEngine {
             let cdf = factors.cdfs[latest_dev[i]];
             reported_percentage[i] = if cdf > 0.0 { 1.0 / cdf } else { f64::NAN };
             if !reported_percentage[i].is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             used_premium[i] = premium[i] * reported_percentage[i];
         }
@@ -128,15 +129,15 @@ impl CapeCodEngine {
         let total_latest: f64 = latest.iter().sum();
         let total_used_premium: f64 = used_premium.iter().sum();
         if !total_latest.is_finite() || !total_used_premium.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if total_used_premium <= 0.0 {
-            return Err(ValidationError::DivideByZero("Cape Cod used premium"));
+            return Err(ReservingError::DivideByZero("Cape Cod used premium"));
         }
 
         let elr = total_latest / total_used_premium;
         if !elr.is_finite() || elr < 0.0 {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
 
         let expected_ultimate: Vec<f64> = premium.iter().map(|&p| p * elr).collect();
@@ -166,7 +167,7 @@ fn validate_cape_cod_inputs(
     factors: &DevelopmentFactors,
     premium: &[f64],
     policy: MonotonicityPolicy,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     validate_triangle(cumulative)?;
     if policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(cumulative)?;
@@ -215,7 +216,7 @@ mod tests {
         let factors = DevelopmentFactorEngine::volume_weighted(&tri.view(), 1.0).expect("factors");
         assert_eq!(
             CapeCodEngine::project(&tri.view(), &factors, &[300.0, 0.0, 380.0]),
-            Err(ValidationError::NonPositive("premium"))
+            Err(ReservingError::NonPositive("premium"))
         );
     }
 }

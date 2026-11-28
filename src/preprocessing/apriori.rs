@@ -1,8 +1,7 @@
 //! Shared a priori expected-ultimate builders for BF-style methods.
 
-use crate::validate::{
-    ValidationError, validate_nonnegative_finite_slice, validate_nonnegative_finite_vector,
-};
+use crate::error::ReservingError;
+use crate::validate::{validate_nonnegative_finite_slice, validate_nonnegative_finite_vector};
 
 /// Provenance for a built a priori vector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,17 +54,17 @@ pub struct AprioriVector {
     pub source: AprioriSource,
 }
 
-fn validate_scalar_nonnegative(value: f64) -> Result<(), ValidationError> {
+fn validate_scalar_nonnegative(value: f64) -> Result<(), ReservingError> {
     if !value.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if value < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     Ok(())
 }
 
-fn multiply_two(a: &[f64], b: &[f64], expected_len: usize) -> Result<Vec<f64>, ValidationError> {
+fn multiply_two(a: &[f64], b: &[f64], expected_len: usize) -> Result<Vec<f64>, ReservingError> {
     validate_nonnegative_finite_vector(a, expected_len)?;
     validate_nonnegative_finite_vector(b, expected_len)?;
     Ok(a.iter().zip(b.iter()).map(|(x, y)| x * y).collect())
@@ -76,7 +75,7 @@ fn multiply_three(
     b: &[f64],
     c: &[f64],
     expected_len: usize,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     validate_nonnegative_finite_vector(a, expected_len)?;
     validate_nonnegative_finite_vector(b, expected_len)?;
     validate_nonnegative_finite_vector(c, expected_len)?;
@@ -91,7 +90,7 @@ fn multiply_three(
 pub fn build_apriori(
     premium_or_exposure: &[f64],
     input: AprioriInput<'_>,
-) -> Result<AprioriVector, ValidationError> {
+) -> Result<AprioriVector, ReservingError> {
     let n = premium_or_exposure.len();
     validate_nonnegative_finite_vector(premium_or_exposure, n)?;
 
@@ -218,7 +217,7 @@ mod tests {
         let premiums = [100.0, 200.0, 300.0];
         assert_eq!(
             build_apriori(&premiums, AprioriInput::ScalarElr(-0.1)),
-            Err(ValidationError::Negative)
+            Err(ReservingError::Negative)
         );
     }
 }

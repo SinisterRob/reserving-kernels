@@ -22,11 +22,11 @@
 //!
 //! All grid/map types validate on deserialization (`#[serde(try_from)]`) and
 //! every accessor is bounds-checked, so malformed JSON or hand-mutated values
-//! surface as [`ValidationError`] instead of panicking.
+//! surface as [`ReservingError`] instead of panicking.
 
 use serde::Deserialize;
 
-use crate::validate::ValidationError;
+use crate::error::ReservingError;
 
 /// Deserialize a `Vec<f64>` where JSON `null` values map back to `f64::NAN`
 /// (enabling lossless `serde_json` roundtrips for grids containing `NaN` sentinels).
@@ -69,7 +69,7 @@ struct RawAsymmetricAgeGrid {
 }
 
 impl TryFrom<RawAsymmetricAgeGrid> for AsymmetricAgeGrid {
-    type Error = ValidationError;
+    type Error = ReservingError;
 
     fn try_from(raw: RawAsymmetricAgeGrid) -> Result<Self, Self::Error> {
         let grid = Self {
@@ -98,7 +98,7 @@ impl TryFrom<RawAsymmetricAgeGrid> for AsymmetricAgeGrid {
 /// but the struct is `#[non_exhaustive]` (no external struct literals),
 /// deserialization runs [`AsymmetricAgeGrid::validate`], every accessor is
 /// bounds-checked, and every consuming kernel re-validates, so a hand-mutated
-/// grid yields a [`ValidationError`] rather than a panic.
+/// grid yields a [`ReservingError`] rather than a panic.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "RawAsymmetricAgeGrid")]
 #[non_exhaustive]
@@ -143,14 +143,14 @@ impl AsymmetricAgeGrid {
     /// length `n_origins * n_devs` (overflow-checked); `observed_counts[i] <= n_devs`;
     /// finite positive period lengths; finite origin starts and valuation month;
     /// and finite, strictly positive ages on every observed cell.
-    pub fn validate(&self) -> Result<(), ValidationError> {
+    pub fn validate(&self) -> Result<(), ReservingError> {
         if self.n_origins == 0 || self.n_devs == 0 {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         let n_cells = self
             .n_origins
             .checked_mul(self.n_devs)
-            .ok_or(ValidationError::ShapeMismatch)?;
+            .ok_or(ReservingError::ShapeMismatch)?;
         if self.dev_ages_months.len() != self.n_devs
             || self.origin_start_months.len() != self.n_origins
             || self.origin_durations_months.len() != self.n_origins
@@ -158,20 +158,20 @@ impl AsymmetricAgeGrid {
             || self.cell_ages_months.len() != n_cells
             || self.cell_average_ages_months.len() != n_cells
         {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if self.observed_counts.iter().any(|&c| c > self.n_devs) {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if !self.origin_months.is_finite()
             || !self.dev_months.is_finite()
             || !self.valuation_month.is_finite()
             || self.origin_start_months.iter().any(|v| !v.is_finite())
         {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if self.origin_months <= 0.0 || self.dev_months <= 0.0 {
-            return Err(ValidationError::NonPositive("grid period months"));
+            return Err(ReservingError::NonPositive("grid period months"));
         }
         for (row, &cnt) in self
             .cell_ages_months
@@ -179,7 +179,7 @@ impl AsymmetricAgeGrid {
             .zip(self.observed_counts.iter())
         {
             if row.iter().take(cnt).any(|&a| !a.is_finite() || a <= 0.0) {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "observed cell ages must be finite and strictly positive",
                 ));
             }
@@ -230,7 +230,7 @@ impl AsymmetricAgeGrid {
     ///
     /// Returns an error (instead of panicking) when the grid fails
     /// [`AsymmetricAgeGrid::validate`].
-    pub fn latest_ages_months(&self) -> Result<Vec<f64>, ValidationError> {
+    pub fn latest_ages_months(&self) -> Result<Vec<f64>, ReservingError> {
         self.validate()?;
         Ok(self
             .observed_counts
@@ -276,28 +276,28 @@ pub fn asymmetric_age_grid(
     dev_months: f64,
     first_dev_age_months: f64,
     stub_months: Option<f64>,
-) -> Result<AsymmetricAgeGrid, ValidationError> {
+) -> Result<AsymmetricAgeGrid, ReservingError> {
     if n_origins == 0 || n_devs == 0 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let n_cells = n_origins
         .checked_mul(n_devs)
-        .ok_or(ValidationError::ShapeMismatch)?;
+        .ok_or(ReservingError::ShapeMismatch)?;
     if !origin_months.is_finite() || !dev_months.is_finite() || !first_dev_age_months.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if origin_months <= 0.0 || dev_months <= 0.0 || first_dev_age_months <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "origin_months, dev_months, and first_dev_age_months must be positive",
         ));
     }
     let latest_duration = match stub_months {
         Some(s) => {
             if !s.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             if s <= 0.0 || s > origin_months + 1e-9 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "stub_months must be in (0, origin_months]",
                 ));
             }
@@ -374,12 +374,12 @@ pub fn asymmetric_age_grid(
 pub fn stub_average_age(
     valuation_age_months: f64,
     origin_duration_months: f64,
-) -> Result<f64, ValidationError> {
+) -> Result<f64, ReservingError> {
     if !valuation_age_months.is_finite() || !origin_duration_months.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if valuation_age_months <= 0.0 || origin_duration_months <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "valuation_age_months and origin_duration_months must be positive",
         ));
     }
@@ -397,27 +397,27 @@ pub fn stub_average_age_weighted(
     valuation_age_months: f64,
     slice_months: f64,
     exposure_weights: &[f64],
-) -> Result<f64, ValidationError> {
+) -> Result<f64, ReservingError> {
     if !valuation_age_months.is_finite() || !slice_months.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if valuation_age_months <= 0.0 || slice_months <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "valuation_age_months and slice_months must be positive",
         ));
     }
     if exposure_weights.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     let mut weighted_accident_time = 0.0;
     let mut total_weight = 0.0;
     for (k, &w) in exposure_weights.iter().enumerate() {
         if !w.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if w < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
         let t_start = (k as f64) * slice_months;
         if t_start >= valuation_age_months {
@@ -432,7 +432,7 @@ pub fn stub_average_age_weighted(
     }
 
     if total_weight <= 0.0 {
-        return Err(ValidationError::DivideByZero("exposure_weights"));
+        return Err(ReservingError::DivideByZero("exposure_weights"));
     }
     let avg_accident_time = weighted_accident_time / total_weight;
     Ok(valuation_age_months - avg_accident_time)
@@ -467,7 +467,7 @@ struct RawCalendarDiagonalMap {
 }
 
 impl TryFrom<RawCalendarDiagonalMap> for CalendarDiagonalMap {
-    type Error = ValidationError;
+    type Error = ReservingError;
 
     fn try_from(raw: RawCalendarDiagonalMap) -> Result<Self, Self::Error> {
         let map = Self {
@@ -513,32 +513,32 @@ impl CalendarDiagonalMap {
     /// (overflow-checked), `diagonals.len() == diagonal_months.len()`, every
     /// `cell_diagonal` entry `< n_diagonals`, and every listed cell in bounds
     /// with `diagonal_index` equal to its bucket.
-    pub fn validate(&self) -> Result<(), ValidationError> {
+    pub fn validate(&self) -> Result<(), ReservingError> {
         let n_cells = self
             .n_origins
             .checked_mul(self.n_devs)
-            .ok_or(ValidationError::ShapeMismatch)?;
+            .ok_or(ReservingError::ShapeMismatch)?;
         let n_diag = self.diagonal_months.len();
         if self.cell_diagonal.len() != n_cells
             || self.cell_calendar_months.len() != n_cells
             || self.diagonals.len() != n_diag
         {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         if self.cell_diagonal.iter().flatten().any(|&d| d >= n_diag) {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "cell_diagonal entry out of range of diagonal_months",
             ));
         }
         for (d, bucket) in self.diagonals.iter().enumerate() {
             for cell in bucket {
                 if flat_index(self.n_origins, self.n_devs, cell.origin, cell.dev).is_none() {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "calendar diagonal cell (origin, dev) out of bounds",
                     ));
                 }
                 if cell.diagonal_index != d {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "calendar diagonal cell listed under the wrong bucket",
                     ));
                 }
@@ -571,7 +571,7 @@ impl CalendarDiagonalMap {
 /// annual × semiannual grid, `(0, 2)` and `(1, 0)` share calendar month `18.0`).
 pub fn calendar_diagonal_index(
     grid: &AsymmetricAgeGrid,
-) -> Result<CalendarDiagonalMap, ValidationError> {
+) -> Result<CalendarDiagonalMap, ReservingError> {
     grid.validate()?;
     let n_devs = grid.n_devs;
     let tol = 1e-6 * grid.dev_months.max(1.0);
@@ -592,7 +592,7 @@ pub fn calendar_diagonal_index(
         for (j, &age) in row.iter().take(count).enumerate() {
             let cal_m = origin_start + age;
             if !cal_m.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             observed.push((i, j, cal_m));
         }
@@ -620,7 +620,7 @@ pub fn calendar_diagonal_index(
         let diag_idx = diagonal_months
             .iter()
             .position(|&dm| (dm - cal_m).abs() <= tol)
-            .ok_or(ValidationError::InvalidParameter(
+            .ok_or(ReservingError::InvalidParameter(
                 "calendar month failed to match any diagonal bucket",
             ))?;
         let cal_period = ((cal_m - 1e-9).max(0.0) / grid.origin_months).floor() as usize;
@@ -672,10 +672,10 @@ pub struct AsymmetricCalendarDiagnostics {
 pub fn diagnose_asymmetric_calendar_effects(
     map: &CalendarDiagonalMap,
     residuals: &[f64],
-) -> Result<AsymmetricCalendarDiagnostics, ValidationError> {
+) -> Result<AsymmetricCalendarDiagnostics, ReservingError> {
     map.validate()?;
     if Some(residuals.len()) != map.n_origins.checked_mul(map.n_devs) {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let n_diag = map.n_diagonals();
     let mut diagonal_means = Vec::with_capacity(n_diag);
@@ -687,7 +687,7 @@ pub fn diagnose_asymmetric_calendar_effects(
         for cell in bucket {
             let r = flat_index(map.n_origins, map.n_devs, cell.origin, cell.dev)
                 .and_then(|k| residuals.get(k).copied())
-                .ok_or(ValidationError::ShapeMismatch)?;
+                .ok_or(ReservingError::ShapeMismatch)?;
             if r.is_finite() {
                 sum += r;
                 cnt += 1;

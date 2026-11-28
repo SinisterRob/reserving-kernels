@@ -47,10 +47,11 @@
 //! log-normal bias correction, and exact analytical log-normal reserve MSEP
 //! including full cross-cell parameter covariance.
 
+use crate::error::ReservingError;
 use crate::linalg::{quad_form, weighted_least_squares_qr};
 use crate::preprocessing::triangle::cumulative_to_incremental;
 use crate::types::TriangleView;
-use crate::validate::{ValidationError, validate_positive_finite_slice, validate_triangle};
+use crate::validate::{validate_positive_finite_slice, validate_triangle};
 
 /// Accident-year direction specification for PTF regression.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -249,31 +250,31 @@ pub struct PtfResult {
 pub fn fit_ptf(
     triangle: &TriangleView<'_>,
     options: &PtfOptions,
-) -> Result<PtfResult, ValidationError> {
+) -> Result<PtfResult, ReservingError> {
     validate_triangle(triangle)?;
     let n = triangle.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "PTF regression requires at least a 3x3 triangle",
         ));
     }
 
     if let Some(exp) = &options.exposure {
         if exp.len() != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         validate_positive_finite_slice(exp, "exposure")?;
     }
     if let Some(dw) = &options.dev_weights {
         if dw.len() != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         validate_positive_finite_slice(dw, "dev_weights")?;
     }
     if let Some(fcr) = options.future_calendar_rate
         && !fcr.is_finite()
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let inc = cumulative_to_incremental(triangle);
@@ -298,7 +299,7 @@ pub fn fit_ptf(
         for j in 0..(n - i) {
             let val = inc[i * n + j];
             if !(val > 0.0) || !val.is_finite() {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "PTF log-linear regression requires strictly positive observed incremental losses",
                 ));
             }
@@ -312,7 +313,7 @@ pub fn fit_ptf(
 
     let n_obs = obs_cells.len();
     if n_obs <= p {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "PTF model has non-positive residual degrees of freedom",
         ));
     }
@@ -387,7 +388,7 @@ pub fn fit_ptf(
             };
             let mu = (eta + 0.5 * mean_var).exp();
             if !mu.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             fitted_incremental[i * n + j] = mu;
 
@@ -427,7 +428,7 @@ pub fn fit_ptf(
         let xa = &future_x[a * p..(a + 1) * p];
         let var_a = mu_a * mu_a * (vp_a + v_est_a).exp_m1();
         if !var_a.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         origin_msep[ia] += var_a;
         total_msep += var_a;
@@ -441,7 +442,7 @@ pub fn fit_ptf(
             }
             let cov_y = mu_a * mu_b * cov_eta.exp_m1();
             if !cov_y.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             total_msep += 2.0 * cov_y;
             if ia == ib {
@@ -451,7 +452,7 @@ pub fn fit_ptf(
     }
 
     if !total_msep.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     let ultimates: Vec<f64> = latest_cum
@@ -510,7 +511,7 @@ impl PtfDesignSchema {
         accident: &AccidentSpec,
         development: &DevelopmentSpec,
         calendar: &CalendarSpec,
-    ) -> Result<Self, ValidationError> {
+    ) -> Result<Self, ReservingError> {
         let mut names = vec!["intercept".to_string()];
 
         match accident {
@@ -690,20 +691,16 @@ impl PtfDesignSchema {
     }
 }
 
-fn validate_knots(
-    knots: &[usize],
-    max_exclusive: usize,
-    _ctx: &str,
-) -> Result<(), ValidationError> {
+fn validate_knots(knots: &[usize], max_exclusive: usize, _ctx: &str) -> Result<(), ReservingError> {
     let mut prev = 0usize;
     for &k in knots {
         if k == 0 || k >= max_exclusive {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "PTF knot index must lie strictly inside (0, n - 1)",
             ));
         }
         if k <= prev {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "PTF knots must be strictly increasing",
             ));
         }

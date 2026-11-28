@@ -33,9 +33,10 @@
 //! Returns `(a, b, next_projection)` per link, and per-origin ultimates by
 //! chaining projections forward from each origin's latest observation.
 
+use crate::error::ReservingError;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_finite_slice, validate_monotone_cumulative,
+    MonotonicityPolicy, validate_finite_slice, validate_monotone_cumulative,
     validate_observed_count_inputs, validate_tail, validate_triangle,
 };
 
@@ -275,7 +276,7 @@ fn fit_and_project(
     }
 }
 
-fn validate_projection(projection: &Brosius) -> Result<(), ValidationError> {
+fn validate_projection(projection: &Brosius) -> Result<(), ReservingError> {
     validate_finite_slice(&projection.intercept)?;
     validate_finite_slice(&projection.slope)?;
     validate_finite_slice(&projection.latest)?;
@@ -289,7 +290,7 @@ fn validate_projection(projection: &Brosius) -> Result<(), ValidationError> {
             || !d.intercept.is_finite()
             || !d.slope.is_finite()
         {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
     }
     Ok(())
@@ -318,7 +319,7 @@ pub fn project_observed_counts(
     t: &TriangleView<'_>,
     observed_counts: &[usize],
     tail: f64,
-) -> Result<Brosius, ValidationError> {
+) -> Result<Brosius, ReservingError> {
     validate_observed_count_inputs(t, observed_counts, tail)?;
     let projection = fit_and_project(
         t,
@@ -339,7 +340,7 @@ pub fn project_observed_counts(
 /// The checked path enforces square-triangle shape, finite non-negative
 /// observed cells, monotone cumulative rows, `tail >= 1`, and finite projected
 /// parameters and outputs. Uses [`BrosiusFitRule::Brosius1993`] fallbacks.
-pub fn project(t: &TriangleView<'_>, tail: f64) -> Result<Brosius, ValidationError> {
+pub fn project(t: &TriangleView<'_>, tail: f64) -> Result<Brosius, ReservingError> {
     project_with_policy(t, tail, MonotonicityPolicy::Strict)
 }
 
@@ -349,7 +350,7 @@ pub fn project_with_policy(
     t: &TriangleView<'_>,
     tail: f64,
     policy: MonotonicityPolicy,
-) -> Result<Brosius, ValidationError> {
+) -> Result<Brosius, ReservingError> {
     project_with_fit_rule(t, tail, policy, BrosiusFitRule::Brosius1993)
 }
 
@@ -360,7 +361,7 @@ pub fn project_with_fit_rule(
     tail: f64,
     policy: MonotonicityPolicy,
     rule: BrosiusFitRule,
-) -> Result<Brosius, ValidationError> {
+) -> Result<Brosius, ReservingError> {
     validate_triangle(t)?;
     if policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(t)?;
@@ -389,7 +390,7 @@ mod tests {
 
         assert!(matches!(
             project(&triangle.view(), 1.0),
-            Err(ValidationError::NonMonotoneCumulative {
+            Err(ReservingError::NonMonotoneCumulative {
                 origin: 1,
                 dev: 1,
                 previous: 120.0,
@@ -409,7 +410,7 @@ mod tests {
 
         assert!(matches!(
             project(&triangle.view(), 0.99),
-            Err(ValidationError::InvalidTail { tail: 0.99 })
+            Err(ReservingError::InvalidTail { tail: 0.99 })
         ));
     }
 

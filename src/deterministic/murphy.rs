@@ -23,11 +23,11 @@
 //! * $\alpha_j \ne 0, \delta = 0$: Unweighted linear regression — **exact
 //!   equivalence to [`crate::deterministic::brosius`]** point estimates, plus analytical MSE.
 
+use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_monotone_cumulative, validate_tail,
-    validate_triangle,
+    MonotonicityPolicy, validate_monotone_cumulative, validate_tail, validate_triangle,
 };
 
 /// Options controlling the Murphy (1994) weighted-regression model.
@@ -174,11 +174,11 @@ struct RawLink {
 pub fn analyze(
     t: &TriangleView<'_>,
     options: MurphyOptions,
-) -> Result<MurphyResult, ValidationError> {
+) -> Result<MurphyResult, ReservingError> {
     validate_triangle(t)?;
     validate_tail(options.tail)?;
     if !options.variance_power.is_finite() || options.variance_power < 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "variance_power must be finite and non-negative",
         ));
     }
@@ -212,7 +212,7 @@ pub fn analyze(
                 ys.push(y);
                 ws.push(1.0);
             } else {
-                return Err(ValidationError::DivideByZero(
+                return Err(ReservingError::DivideByZero(
                     "zero prior cumulative with positive variance_power",
                 ));
             }
@@ -220,7 +220,7 @@ pub fn analyze(
 
         let m = xs.len();
         if m == 0 {
-            return Err(ValidationError::DivideByZero(
+            return Err(ReservingError::DivideByZero(
                 "no valid observations for development link",
             ));
         }
@@ -234,7 +234,7 @@ pub fn analyze(
                 den += ws[k] * xs[k] * xs[k];
             }
             if den <= 0.0 {
-                return Err(ValidationError::DivideByZero("weighted sum of squares"));
+                return Err(ReservingError::DivideByZero("weighted sum of squares"));
             }
             let beta = num / den;
             let sigma_sq = if m >= 2 {
@@ -401,7 +401,7 @@ pub fn analyze(
         || ultimate.iter().any(|v| !v.is_finite())
         || reserve.iter().any(|v| !v.is_finite())
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     let total_cv = if total_reserve > 0.0 {
         total_standard_error / total_reserve

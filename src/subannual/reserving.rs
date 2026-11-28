@@ -13,14 +13,15 @@
 use crate::deterministic::ldf::{
     LdfSelectionMethod, cdfs_from_ldfs, volume_weighted_ldfs_observed_counts,
 };
+use crate::error::ReservingError;
 use crate::preprocessing::ragged::{
     ex_hi_lo_observed_counts, simple_average_observed_counts,
     volume_weighted_last_n_observed_counts,
 };
 use crate::subannual::grid::AsymmetricAgeGrid;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_nonnegative_finite_slice,
-    validate_positive_finite_slice, validate_tail,
+    MonotonicityPolicy, validate_nonnegative_finite_slice, validate_positive_finite_slice,
+    validate_tail,
 };
 
 /// Result of [`asymmetric_chain_ladder`] on a rectangular/staggered triangle.
@@ -58,30 +59,30 @@ pub(crate) fn validate_asymmetric_cumulative(
     cum: &[f64],
     grid: &AsymmetricAgeGrid,
     policy: MonotonicityPolicy,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     grid.validate()?;
     if grid.n_devs < 2 || cum.len() != grid.cell_ages_months.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for i in 0..grid.n_origins {
         let cnt = grid.observed_counts[i];
         if cnt == 0 || cnt > grid.n_devs {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         let mut prev = None;
         for j in 0..cnt {
             let v = cum[i * grid.n_devs + j];
             if !v.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             if v < 0.0 {
-                return Err(ValidationError::Negative);
+                return Err(ReservingError::Negative);
             }
             if policy == MonotonicityPolicy::Strict
                 && let Some(p) = prev
                 && v < p
             {
-                return Err(ValidationError::NonMonotoneCumulative {
+                return Err(ReservingError::NonMonotoneCumulative {
                     origin: i,
                     dev: j,
                     previous: p,
@@ -137,7 +138,7 @@ pub fn asymmetric_chain_ladder(
     method: LdfSelectionMethod,
     tail: f64,
     policy: MonotonicityPolicy,
-) -> Result<AsymmetricChainLadderProjection, ValidationError> {
+) -> Result<AsymmetricChainLadderProjection, ReservingError> {
     validate_asymmetric_cumulative(cum, grid, policy)?;
     validate_tail(tail)?;
 
@@ -147,7 +148,7 @@ pub fn asymmetric_chain_ladder(
     let counts = &grid.observed_counts;
     let max_obs = counts.iter().copied().max().unwrap_or(0);
     if max_obs < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "asymmetric_chain_ladder requires at least one origin with >= 2 observed cells",
         ));
     }
@@ -168,18 +169,18 @@ pub fn asymmetric_chain_ladder(
         }
         LdfSelectionMethod::LastNVolumeWeighted { last_n } => {
             if last_n == 0 {
-                return Err(ValidationError::InvalidParameter("last_n must be >= 1"));
+                return Err(ReservingError::InvalidParameter("last_n must be >= 1"));
             }
             volume_weighted_last_n_observed_counts(cum, n_o, n_d, counts, last_n, &mut ldfs);
         }
         LdfSelectionMethod::LastNSimpleAverage { last_n } => {
             if last_n == 0 {
-                return Err(ValidationError::InvalidParameter("last_n must be >= 1"));
+                return Err(ReservingError::InvalidParameter("last_n must be >= 1"));
             }
             simple_average_observed_counts(cum, n_o, n_d, counts, Some(last_n), &mut ldfs);
         }
         LdfSelectionMethod::Selected => {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "Selected method requires explicit LDFs; use a computed LdfSelectionMethod",
             ));
         }
@@ -211,7 +212,7 @@ pub fn asymmetric_chain_ladder(
         let ult = lat * cdf;
         latest.push(lat);
         latest_dev_indices.push(d_i);
-        latest_ages_months.push(grid.cell_age(i, d_i).ok_or(ValidationError::NotFinite)?);
+        latest_ages_months.push(grid.cell_age(i, d_i).ok_or(ReservingError::NotFinite)?);
         origin_cdfs.push(cdf);
         ultimates.push(ult);
         ibnr.push(ult - lat);
@@ -275,21 +276,21 @@ pub fn interim_bf(
     cdfs_at_origin: &[f64],
     full_period_expected_ultimate: &[f64],
     exposure_fractions: &[f64],
-) -> Result<InterimBfProjection, ValidationError> {
+) -> Result<InterimBfProjection, ReservingError> {
     let n = latest.len();
     if n == 0
         || cdfs_at_origin.len() != n
         || full_period_expected_ultimate.len() != n
         || exposure_fractions.len() != n
     {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_nonnegative_finite_slice(latest)?;
     validate_positive_finite_slice(cdfs_at_origin, "origin CDF")?;
     validate_nonnegative_finite_slice(full_period_expected_ultimate)?;
     validate_positive_finite_slice(exposure_fractions, "exposure_fractions")?;
     if exposure_fractions.iter().any(|&e| e > 1.0 + 1e-9) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "exposure_fractions must lie in (0, 1]",
         ));
     }
@@ -362,21 +363,21 @@ pub fn interim_cape_cod(
     cdfs_at_origin: &[f64],
     full_period_premium: &[f64],
     exposure_fractions: &[f64],
-) -> Result<InterimCapeCodProjection, ValidationError> {
+) -> Result<InterimCapeCodProjection, ReservingError> {
     let n = latest.len();
     if n == 0
         || cdfs_at_origin.len() != n
         || full_period_premium.len() != n
         || exposure_fractions.len() != n
     {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_nonnegative_finite_slice(latest)?;
     validate_positive_finite_slice(cdfs_at_origin, "origin CDF")?;
     validate_positive_finite_slice(full_period_premium, "premium")?;
     validate_positive_finite_slice(exposure_fractions, "exposure_fractions")?;
     if exposure_fractions.iter().any(|&e| e > 1.0 + 1e-9) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "exposure_fractions must lie in (0, 1]",
         ));
     }
@@ -393,7 +394,7 @@ pub fn interim_cape_cod(
     let total_latest: f64 = latest.iter().sum();
     let total_uup: f64 = used_up_premium.iter().sum();
     if !(total_uup > 0.0) || !total_uup.is_finite() {
-        return Err(ValidationError::DivideByZero("used-up premium"));
+        return Err(ReservingError::DivideByZero("used-up premium"));
     }
     let elr = total_latest / total_uup;
 

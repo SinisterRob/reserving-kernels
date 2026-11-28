@@ -27,12 +27,13 @@
 
 use crate::deterministic::chain_ladder::latest_observed_by_origin;
 use crate::deterministic::ldf::{DevelopmentFactors, cdf_from_ldf, pct_reported};
+use crate::error::ReservingError;
 use crate::preprocessing::apriori::{AprioriInput, build_apriori};
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_development_factor_slices,
-    validate_latest_and_dev, validate_monotone_cumulative, validate_nonnegative_finite_slice,
+    MonotonicityPolicy, validate_development_factor_slices, validate_latest_and_dev,
+    validate_monotone_cumulative, validate_nonnegative_finite_slice,
     validate_nonnegative_finite_vector, validate_triangle,
 };
 
@@ -185,7 +186,7 @@ pub fn project_unchecked(
 ///     &[200.0, 235.0, 260.0],
 /// )?;
 /// assert!(bf.total_reserve > 0.0);
-/// # Ok::<(), ValidationError>(())
+/// # Ok::<(), ReservingError>(())
 /// ```
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BornhuetterFergusonEngine;
@@ -197,7 +198,7 @@ impl BornhuetterFergusonEngine {
         factors: &DevelopmentFactors,
         premium_or_exposure: &[f64],
         apriori: AprioriInput<'_>,
-    ) -> Result<BornhuetterFergusonProjection, ValidationError> {
+    ) -> Result<BornhuetterFergusonProjection, ReservingError> {
         let apriori_vector = build_apriori(premium_or_exposure, apriori)?;
         Self::project_from_expected_ultimate(cumulative, factors, &apriori_vector.expected_ultimate)
     }
@@ -208,13 +209,13 @@ impl BornhuetterFergusonEngine {
         factors: &DevelopmentFactors,
         earned_premium: &[f64],
         expected_loss_ratio: f64,
-    ) -> Result<BornhuetterFergusonProjection, ValidationError> {
+    ) -> Result<BornhuetterFergusonProjection, ReservingError> {
         validate_nonnegative_finite_vector(earned_premium, cumulative.n_origins)?;
         if !expected_loss_ratio.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if expected_loss_ratio < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
 
         let expected_ultimate = expected_from_premium(earned_premium, expected_loss_ratio);
@@ -228,7 +229,7 @@ impl BornhuetterFergusonEngine {
         cumulative: &TriangleView<'_>,
         factors: &DevelopmentFactors,
         expected_ultimate: &[f64],
-    ) -> Result<BornhuetterFergusonProjection, ValidationError> {
+    ) -> Result<BornhuetterFergusonProjection, ReservingError> {
         Self::project_from_expected_ultimate_with_policy(
             cumulative,
             factors,
@@ -244,7 +245,7 @@ impl BornhuetterFergusonEngine {
         factors: &DevelopmentFactors,
         expected_ultimate: &[f64],
         policy: MonotonicityPolicy,
-    ) -> Result<BornhuetterFergusonProjection, ValidationError> {
+    ) -> Result<BornhuetterFergusonProjection, ReservingError> {
         validate_bf_inputs_with_policy(cumulative, factors, policy)?;
         validate_nonnegative_finite_vector(expected_ultimate, cumulative.n_origins)?;
 
@@ -281,7 +282,7 @@ impl BornhuetterFergusonEngine {
             || !total_reserve.is_finite()
             || !total_ultimate.is_finite()
         {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
 
         Ok(BornhuetterFergusonProjection {
@@ -304,7 +305,7 @@ impl BornhuetterFergusonEngine {
         factors: &DevelopmentFactors,
         earned_premium: &[f64],
         expected_loss_ratio: &[f64],
-    ) -> Result<BornhuetterFergusonProjection, ValidationError> {
+    ) -> Result<BornhuetterFergusonProjection, ReservingError> {
         validate_nonnegative_finite_vector(earned_premium, cumulative.n_origins)?;
         validate_nonnegative_finite_vector(expected_loss_ratio, cumulative.n_origins)?;
 
@@ -325,7 +326,7 @@ struct LatestMaturity {
 fn latest_and_maturity(
     cumulative: &TriangleView<'_>,
     factors: &DevelopmentFactors,
-) -> Result<LatestMaturity, ValidationError> {
+) -> Result<LatestMaturity, ReservingError> {
     let n = cumulative.n_origins;
     let mut latest = vec![0.0; n];
     let mut latest_dev = vec![0; n];
@@ -355,7 +356,7 @@ fn validate_bf_inputs_with_policy(
     cumulative: &TriangleView<'_>,
     factors: &DevelopmentFactors,
     policy: MonotonicityPolicy,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     validate_triangle(cumulative)?;
     if policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(cumulative)?;
@@ -372,17 +373,17 @@ fn validate_bf_inputs_with_policy(
 fn validate_maturity_with_policy(
     maturity: &[f64],
     policy: MonotonicityPolicy,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     for (index, &value) in maturity.iter().enumerate() {
         if !value.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         let valid = match policy {
             MonotonicityPolicy::Strict => (0.0..=1.0).contains(&value),
             MonotonicityPolicy::AllowNegativeIncrements => value >= 0.0,
         };
         if !valid {
-            return Err(ValidationError::InvalidMaturity { index, value });
+            return Err(ReservingError::InvalidMaturity { index, value });
         }
     }
     Ok(())
@@ -570,7 +571,7 @@ mod tests {
                 &factors(),
                 &[200.0, 240.0],
             ),
-            Err(ValidationError::ShapeMismatch)
+            Err(ReservingError::ShapeMismatch)
         );
     }
 
@@ -585,7 +586,7 @@ mod tests {
                 &[400.0, -300.0, 600.0],
                 &[0.5, 0.8, 0.5],
             ),
-            Err(ValidationError::Negative)
+            Err(ReservingError::Negative)
         );
     }
 
@@ -600,7 +601,7 @@ mod tests {
                 &[400.0, 300.0, 600.0],
                 &[0.5, -0.8, 0.5],
             ),
-            Err(ValidationError::Negative)
+            Err(ReservingError::Negative)
         );
     }
 
@@ -616,7 +617,7 @@ mod tests {
                 &bad_factors,
                 &[200.0, 240.0, 300.0],
             ),
-            Err(ValidationError::NotFinite)
+            Err(ReservingError::NotFinite)
         );
     }
 
@@ -635,7 +636,7 @@ mod tests {
                 &factors(),
                 &[200.0, 240.0, 300.0],
             ),
-            Err(ValidationError::NonMonotoneCumulative {
+            Err(ReservingError::NonMonotoneCumulative {
                 origin: 0,
                 dev: 1,
                 previous: 100.0,

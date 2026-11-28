@@ -15,20 +15,21 @@
 
 use std::f64::consts::TAU;
 
-use crate::validate::{ValidationError, validate_nonnegative_finite_vector};
+use crate::error::ReservingError;
+use crate::validate::validate_nonnegative_finite_vector;
 
-fn divide_vectors(numerator: &[f64], denominator: &[f64]) -> Result<Vec<f64>, ValidationError> {
+fn divide_vectors(numerator: &[f64], denominator: &[f64]) -> Result<Vec<f64>, ReservingError> {
     let n = numerator.len();
     validate_nonnegative_finite_vector(numerator, n)?;
     validate_nonnegative_finite_vector(denominator, denominator.len())?;
     if denominator.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         if denominator[i] <= 0.0 {
-            return Err(ValidationError::DivideByZero("count"));
+            return Err(ReservingError::DivideByZero("count"));
         }
         out.push(numerator[i] / denominator[i]);
     }
@@ -36,12 +37,12 @@ fn divide_vectors(numerator: &[f64], denominator: &[f64]) -> Result<Vec<f64>, Va
 }
 
 /// Paid severity by origin, `paid / counts`.
-pub fn paid_severity(paid: &[f64], counts: &[f64]) -> Result<Vec<f64>, ValidationError> {
+pub fn paid_severity(paid: &[f64], counts: &[f64]) -> Result<Vec<f64>, ReservingError> {
     divide_vectors(paid, counts)
 }
 
 /// Incurred severity by origin, `incurred / counts`.
-pub fn incurred_severity(incurred: &[f64], counts: &[f64]) -> Result<Vec<f64>, ValidationError> {
+pub fn incurred_severity(incurred: &[f64], counts: &[f64]) -> Result<Vec<f64>, ReservingError> {
     divide_vectors(incurred, counts)
 }
 
@@ -49,7 +50,7 @@ pub fn incurred_severity(incurred: &[f64], counts: &[f64]) -> Result<Vec<f64>, V
 pub fn ultimate_severity(
     ultimate_loss: &[f64],
     ultimate_count: &[f64],
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     divide_vectors(ultimate_loss, ultimate_count)
 }
 
@@ -57,7 +58,7 @@ pub fn ultimate_severity(
 pub fn open_claim_severity(
     case_reserve: &[f64],
     open_claims: &[f64],
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     divide_vectors(case_reserve, open_claims)
 }
 
@@ -65,7 +66,7 @@ pub fn open_claim_severity(
 pub fn closed_claim_severity(
     paid: &[f64],
     closed_claims: &[f64],
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     divide_vectors(paid, closed_claims)
 }
 
@@ -73,12 +74,12 @@ pub fn closed_claim_severity(
 pub fn frequency_severity_ultimate(
     ultimate_count: &[f64],
     severity: &[f64],
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     let n = ultimate_count.len();
     validate_nonnegative_finite_vector(ultimate_count, n)?;
     validate_nonnegative_finite_vector(severity, severity.len())?;
     if severity.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     Ok(ultimate_count
         .iter()
@@ -447,7 +448,7 @@ impl SeverityDistribution {
         step: f64,
         max_index: usize,
         capture_upper_tail: bool,
-    ) -> Result<Vec<f64>, ValidationError> {
+    ) -> Result<Vec<f64>, ReservingError> {
         crate::capital::aggregate_loss::discretize_rounding(
             self,
             step,
@@ -461,18 +462,18 @@ impl SeverityDistribution {
         &self,
         step: f64,
         max_index: usize,
-    ) -> Result<Vec<f64>, ValidationError> {
+    ) -> Result<Vec<f64>, ReservingError> {
         crate::capital::aggregate_loss::discretize_mean_preserving(self, step, max_index)
     }
 
     /// Construct a Lognormal distribution from ground-up mean and coefficient
     /// of variation `cv = sd / mean > 0`.
-    pub fn lognormal_from_mean_cv(mean: f64, cv: f64) -> Result<Self, ValidationError> {
+    pub fn lognormal_from_mean_cv(mean: f64, cv: f64) -> Result<Self, ReservingError> {
         if !mean.is_finite() || !cv.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if mean <= 0.0 || cv <= 0.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "lognormal mean and CV must be strictly positive",
             ));
         }
@@ -482,71 +483,71 @@ impl SeverityDistribution {
     }
 
     /// Validate distribution parameters.
-    pub fn validate(&self) -> Result<(), ValidationError> {
+    pub fn validate(&self) -> Result<(), ReservingError> {
         match self {
             Self::Lognormal { mu, sigma } => {
                 if !mu.is_finite() || !sigma.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if *sigma <= 0.0 {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "lognormal sigma must be > 0",
                     ));
                 }
             }
             Self::Pareto { alpha, theta } | Self::SingleParameterPareto { alpha, theta } => {
                 if !alpha.is_finite() || !theta.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if *alpha <= 0.0 || *theta <= 0.0 {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "Pareto alpha and theta must be > 0",
                     ));
                 }
             }
             Self::Exponential { mean } => {
                 if !mean.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if *mean <= 0.0 {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "exponential mean must be > 0",
                     ));
                 }
             }
             Self::MixedExponential { weights, means } => {
                 if weights.is_empty() || weights.len() != means.len() {
-                    return Err(ValidationError::ShapeMismatch);
+                    return Err(ReservingError::ShapeMismatch);
                 }
                 let mut sum_w = 0.0;
                 for (&w, &m) in weights.iter().zip(means.iter()) {
                     if !w.is_finite() || !m.is_finite() {
-                        return Err(ValidationError::NotFinite);
+                        return Err(ReservingError::NotFinite);
                     }
                     if w <= 0.0 || m <= 0.0 {
-                        return Err(ValidationError::InvalidParameter(
+                        return Err(ReservingError::InvalidParameter(
                             "mixed exponential weights and means must be > 0",
                         ));
                     }
                     sum_w += w;
                 }
                 if (sum_w - 1.0).abs() > 1e-6 {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "mixed exponential weights must sum to 1.0",
                     ));
                 }
             }
             Self::GeneralizedPareto { xi, beta } => {
                 if !xi.is_finite() || !beta.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 if *beta <= 0.0 {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "GPD scale beta must be > 0",
                     ));
                 }
                 if *xi < 0.0 {
-                    return Err(ValidationError::InvalidParameter(
+                    return Err(ReservingError::InvalidParameter(
                         "GPD shape xi must be >= 0 for unbounded positive support",
                     ));
                 }
@@ -671,13 +672,13 @@ impl SeverityDistribution {
 
     /// Exact closed-form Limited Expected Value `E[X ∧ limit]`
     /// (Klugman, Panjer & Willmot, Appendix A; Lee 1988).
-    pub fn limited_expected_value(&self, limit: f64) -> Result<f64, ValidationError> {
+    pub fn limited_expected_value(&self, limit: f64) -> Result<f64, ReservingError> {
         self.validate()?;
         if !limit.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if limit < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
         if limit == 0.0 {
             return Ok(0.0);
@@ -747,13 +748,13 @@ impl SeverityDistribution {
     ///   `E[(X − a)_+] − E[(X − a − l)_+]` with `E[(X − c)_+] = e^{μ+σ²/2} Q(z_c − σ) − c Q(z_c)`
     ///   evaluated in log space (no `e^{μ+σ²/2}` overflow); narrow layers
     ///   (`l <= 0.01 a`) use 8-point Gauss–Legendre on `S`.
-    pub fn layer_expected_loss(&self, attachment: f64, limit: f64) -> Result<f64, ValidationError> {
+    pub fn layer_expected_loss(&self, attachment: f64, limit: f64) -> Result<f64, ReservingError> {
         self.validate()?;
         if !attachment.is_finite() || !limit.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if attachment < 0.0 || limit < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
         if limit == 0.0 {
             return Ok(0.0);
@@ -782,7 +783,7 @@ impl SeverityDistribution {
             Self::GeneralizedPareto { xi, beta } => gpd_layer(*xi, *beta, a, l),
         };
         if !layer.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         Ok(layer.clamp(0.0, l))
     }
@@ -791,7 +792,7 @@ impl SeverityDistribution {
     pub fn layer_expected_loss_spec(
         &self,
         layer: crate::excess::excess_layers::LayerSpec,
-    ) -> Result<f64, ValidationError> {
+    ) -> Result<f64, ReservingError> {
         self.layer_expected_loss(layer.attachment, layer.limit)
     }
 
@@ -799,19 +800,19 @@ impl SeverityDistribution {
     /// computed directly from the survival-integral closed form (no
     /// `E[X] − E[X ∧ retention]` cancellation).
     ///
-    /// Returns [`ValidationError::InvalidParameter`] when the unlimited mean
+    /// Returns [`ReservingError::InvalidParameter`] when the unlimited mean
     /// diverges (Pareto `α <= 1`, GPD `ξ >= 1`).
-    pub fn excess_expected_value(&self, retention: f64) -> Result<f64, ValidationError> {
+    pub fn excess_expected_value(&self, retention: f64) -> Result<f64, ReservingError> {
         self.validate()?;
         if !retention.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if retention < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
         let mean = self
             .unbounded_mean()
-            .ok_or(ValidationError::InvalidParameter(
+            .ok_or(ReservingError::InvalidParameter(
                 "excess expected value requires a finite unbounded mean",
             ))?;
         let a = retention;
@@ -842,7 +843,7 @@ impl SeverityDistribution {
             }
         };
         if !excess.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         Ok(excess.clamp(0.0, mean))
     }
@@ -850,11 +851,11 @@ impl SeverityDistribution {
     /// Excess ratio `R(retention) = E[(X - retention)_+] / E[X]`, computed
     /// from [`Self::excess_expected_value`] (full relative precision for high
     /// retentions).
-    pub fn excess_ratio(&self, retention: f64) -> Result<f64, ValidationError> {
+    pub fn excess_ratio(&self, retention: f64) -> Result<f64, ReservingError> {
         self.validate()?;
         let mean = self
             .unbounded_mean()
-            .ok_or(ValidationError::InvalidParameter(
+            .ok_or(ReservingError::InvalidParameter(
                 "excess ratio requires a finite unbounded mean",
             ))?;
         let excess = self.excess_expected_value(retention)?;
@@ -863,11 +864,11 @@ impl SeverityDistribution {
 
     /// Layer loss share `(R(a) − R(a + l)) = E[layer] / E[X]`, computed from the
     /// direct layer closed form (no difference of excess ratios).
-    pub fn layer_ratio(&self, attachment: f64, limit: f64) -> Result<f64, ValidationError> {
+    pub fn layer_ratio(&self, attachment: f64, limit: f64) -> Result<f64, ReservingError> {
         self.validate()?;
         let mean = self
             .unbounded_mean()
-            .ok_or(ValidationError::InvalidParameter(
+            .ok_or(ReservingError::InvalidParameter(
                 "layer ratio requires a finite unbounded mean",
             ))?;
         let layer = self.layer_expected_loss(attachment, limit)?;

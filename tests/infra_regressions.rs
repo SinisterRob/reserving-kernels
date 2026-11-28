@@ -4,7 +4,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use reserving_kernels::{Triangle, datasets, validate::ValidationError};
+use reserving_kernels::{ReservingError, Triangle, datasets};
 
 /// Fixed fuzz seed (house default) so every failure is reproducible.
 const FUZZ_SEED: u64 = 42069;
@@ -267,7 +267,7 @@ fn try_new_rejects_overflowing_dimensions_without_panicking() {
     // a pass-through that later panics on indexing.
     let huge = 1_usize << (usize::BITS / 2);
     let result = catch_unwind(|| Triangle::try_new(huge, huge, Vec::new()));
-    assert_eq!(result.ok(), Some(Err(ValidationError::ShapeMismatch)));
+    assert_eq!(result.ok(), Some(Err(ReservingError::ShapeMismatch)));
     let json = format!(r#"{{"n_origins":{huge},"n_devs":{huge},"data":[]}}"#);
     let parsed = catch_unwind(|| serde_json::from_str::<Triangle>(&json));
     assert!(matches!(parsed, Ok(Err(_))));
@@ -278,24 +278,24 @@ fn triangle_construction_invariants() {
     // Shape and squareness.
     assert_eq!(
         Triangle::try_new(2, 2, vec![1.0; 3]),
-        Err(ValidationError::ShapeMismatch)
+        Err(ReservingError::ShapeMismatch)
     );
     assert_eq!(
         Triangle::try_new(2, 3, vec![1.0; 6]),
-        Err(ValidationError::NotSquare)
+        Err(ReservingError::NotSquare)
     );
     // Observed cells must be finite and non-negative; unobserved may be NaN.
     assert_eq!(
         Triangle::try_new(2, 2, vec![1.0, f64::NAN, 3.0, f64::NAN]),
-        Err(ValidationError::NotFinite)
+        Err(ReservingError::NotFinite)
     );
     assert_eq!(
         Triangle::try_new(2, 2, vec![1.0, f64::INFINITY, 3.0, f64::NAN]),
-        Err(ValidationError::NotFinite)
+        Err(ReservingError::NotFinite)
     );
     assert_eq!(
         Triangle::try_new(2, 2, vec![1.0, -2.0, 3.0, f64::NAN]),
-        Err(ValidationError::Negative)
+        Err(ReservingError::Negative)
     );
     let ok = Triangle::try_new(2, 2, vec![1.0, 2.0, 3.0, f64::NAN]).expect("valid");
     assert_triangle_invariants(&ok, "try_new");
@@ -303,15 +303,15 @@ fn triangle_construction_invariants() {
     // Ragged constructors.
     assert_eq!(
         Triangle::try_from_rows::<Vec<f64>>(&[]),
-        Err(ValidationError::ShapeMismatch)
+        Err(ReservingError::ShapeMismatch)
     );
     assert_eq!(
         Triangle::try_from_upper_rows(&[&[1.0, 2.0], &[3.0, 4.0]]),
-        Err(ValidationError::ShapeMismatch)
+        Err(ReservingError::ShapeMismatch)
     );
     assert_eq!(
         Triangle::try_from_incremental_rows(&[&[1.0, f64::NAN], &[2.0]]),
-        Err(ValidationError::NotFinite)
+        Err(ReservingError::NotFinite)
     );
     let inc = Triangle::try_from_incremental_rows(&[&[1.0, 2.0], &[3.0]]).expect("incremental");
     assert_eq!(inc.get(0, 1), 3.0);

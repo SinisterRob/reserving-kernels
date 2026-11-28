@@ -13,8 +13,8 @@
 //!   * [`stub_exposure_scale`] — separates partial-year earned exposure growth
 //!     from pure claim reporting lag on stub rows.
 
+use crate::error::ReservingError;
 use crate::subannual::grid::stub_average_age;
-use crate::validate::ValidationError;
 
 /// Result of extrapolating a pre-12-month stub CDF and stub-to-12-month LDF.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -48,17 +48,17 @@ pub fn stub_plus12(
     stub_age_months: f64,
     cdf_12: f64,
     cdf_24: f64,
-) -> Result<StubExtrapolationResult, ValidationError> {
+) -> Result<StubExtrapolationResult, ReservingError> {
     if !stub_age_months.is_finite() || !cdf_12.is_finite() || !cdf_24.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if stub_age_months <= 0.0 || stub_age_months > 12.0 + 1e-9 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "stub_age_months must be in (0, 12]",
         ));
     }
     if cdf_12 <= 0.0 || cdf_24 <= 0.0 {
-        return Err(ValidationError::DivideByZero("annual CDF"));
+        return Err(ReservingError::DivideByZero("annual CDF"));
     }
 
     let s = stub_age_months.min(12.0);
@@ -67,7 +67,7 @@ pub fn stub_plus12(
     let stub_to_12_ldf = f12_24.powf(exponent);
     let stub_cdf = cdf_12 * stub_to_12_ldf;
     if !stub_to_12_ldf.is_finite() || !stub_cdf.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(StubExtrapolationResult {
@@ -99,21 +99,21 @@ pub fn stub_power_ratio(
     cdf_12: f64,
     ldf_12_24: f64,
     ldf_24_36: f64,
-) -> Result<StubExtrapolationResult, ValidationError> {
+) -> Result<StubExtrapolationResult, ReservingError> {
     if !stub_age_months.is_finite()
         || !cdf_12.is_finite()
         || !ldf_12_24.is_finite()
         || !ldf_24_36.is_finite()
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if stub_age_months <= 0.0 || stub_age_months > 12.0 + 1e-9 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "stub_age_months must be in (0, 12]",
         ));
     }
     if cdf_12 <= 0.0 || ldf_12_24 <= 0.0 || ldf_24_36 <= 0.0 {
-        return Err(ValidationError::DivideByZero("CDF or LDF"));
+        return Err(ReservingError::DivideByZero("CDF or LDF"));
     }
 
     let s = stub_age_months.min(12.0);
@@ -122,7 +122,7 @@ pub fn stub_power_ratio(
     let stub_to_12_ldf = base_factor.powf(exponent);
     let stub_cdf = cdf_12 * stub_to_12_ldf;
     if !stub_to_12_ldf.is_finite() || !stub_cdf.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(StubExtrapolationResult {
@@ -150,17 +150,17 @@ pub fn stub_natural_log(
     stub_age_months: f64,
     cdf_12: f64,
     cdf_24: f64,
-) -> Result<StubExtrapolationResult, ValidationError> {
+) -> Result<StubExtrapolationResult, ReservingError> {
     if !stub_age_months.is_finite() || !cdf_12.is_finite() || !cdf_24.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if stub_age_months <= 0.0 || stub_age_months > 12.0 + 1e-9 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "stub_age_months must be in (0, 12]",
         ));
     }
     if cdf_12 <= 0.0 || cdf_24 <= 0.0 {
-        return Err(ValidationError::DivideByZero("annual CDF"));
+        return Err(ReservingError::DivideByZero("annual CDF"));
     }
 
     let s = stub_age_months.min(12.0);
@@ -169,7 +169,7 @@ pub fn stub_natural_log(
     let stub_to_12_ldf = f12_24.powf(exponent);
     let stub_cdf = cdf_12 * stub_to_12_ldf;
     if !stub_to_12_ldf.is_finite() || !stub_cdf.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(StubExtrapolationResult {
@@ -220,25 +220,25 @@ pub fn stub_exposure_scale(
     pure_reporting_cdf: f64,
     stub_duration_months: f64,
     full_period_months: f64,
-) -> Result<StubExposureScaleResult, ValidationError> {
+) -> Result<StubExposureScaleResult, ReservingError> {
     if !full_period_expected_loss.is_finite()
         || !pure_reporting_cdf.is_finite()
         || !stub_duration_months.is_finite()
         || !full_period_months.is_finite()
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if full_period_expected_loss < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     if pure_reporting_cdf <= 0.0 {
-        return Err(ValidationError::DivideByZero("pure_reporting_cdf"));
+        return Err(ReservingError::DivideByZero("pure_reporting_cdf"));
     }
     if full_period_months <= 0.0
         || stub_duration_months <= 0.0
         || stub_duration_months > full_period_months + 1e-9
     {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "stub_duration_months must be in (0, full_period_months]",
         ));
     }
@@ -266,15 +266,15 @@ pub fn decompose_combined_stub_cdf(
     combined_stub_cdf: f64,
     stub_duration_months: f64,
     full_period_months: f64,
-) -> Result<StubExposureScaleResult, ValidationError> {
+) -> Result<StubExposureScaleResult, ReservingError> {
     if !combined_stub_cdf.is_finite()
         || !stub_duration_months.is_finite()
         || !full_period_months.is_finite()
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if combined_stub_cdf <= 0.0 || full_period_months <= 0.0 || stub_duration_months <= 0.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "combined_stub_cdf, stub_duration_months, and full_period_months must be positive",
         ));
     }

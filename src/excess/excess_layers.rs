@@ -7,9 +7,9 @@
 //! driven by the crate-wide seeded `DeterministicRng`) with sorted prefix-sum
 //! $O(\log N)$ layer queries.
 
+use crate::error::ReservingError;
 use crate::excess::severity::{lognormal_layer, lognormal_lev};
 use crate::stochastic::bootstrap_odp::DeterministicRng;
-use crate::validate::ValidationError;
 
 const INV_SQRT_TAU: f64 = 0.398_942_280_401_432_7;
 
@@ -25,26 +25,26 @@ pub struct LayerSpec {
 
 impl LayerSpec {
     /// Construct a validated layer from `(attachment, limit)` where `top = attachment + limit`.
-    pub fn from_attachment_limit(attachment: f64, limit: f64) -> Result<Self, ValidationError> {
+    pub fn from_attachment_limit(attachment: f64, limit: f64) -> Result<Self, ReservingError> {
         if !attachment.is_finite() || !limit.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if attachment < 0.0 || limit < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
         if !(attachment + limit).is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         Ok(Self { attachment, limit })
     }
 
     /// Construct a validated layer from `(attachment, top)` where `limit = (top - attachment).max(0.0)`.
-    pub fn from_attachment_top(attachment: f64, top: f64) -> Result<Self, ValidationError> {
+    pub fn from_attachment_top(attachment: f64, top: f64) -> Result<Self, ReservingError> {
         if !attachment.is_finite() || !top.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if attachment < 0.0 || top < 0.0 {
-            return Err(ValidationError::Negative);
+            return Err(ReservingError::Negative);
         }
         Ok(Self {
             attachment,
@@ -77,19 +77,19 @@ pub struct LognormalLayerModel {
 impl LognormalLayerModel {
     /// Construct a validated lognormal layer model with ground-up `mean > 0`
     /// and log-scale standard deviation `sigma > 0`.
-    pub fn try_new(mean: f64, sigma: f64) -> Result<Self, ValidationError> {
+    pub fn try_new(mean: f64, sigma: f64) -> Result<Self, ReservingError> {
         if !mean.is_finite() || !sigma.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if mean <= 0.0 {
-            return Err(ValidationError::NonPositive("ground-up mean"));
+            return Err(ReservingError::NonPositive("ground-up mean"));
         }
         if sigma <= 0.0 {
-            return Err(ValidationError::NonPositive("lognormal sigma"));
+            return Err(ReservingError::NonPositive("lognormal sigma"));
         }
         let log_mean = mean.ln() - 0.5 * sigma * sigma;
         if !log_mean.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         Ok(Self {
             mean,
@@ -211,14 +211,14 @@ impl LognormalLayerSampler {
         model: LognormalLayerModel,
         n_samples: usize,
         seed: u64,
-    ) -> Result<Self, ValidationError> {
+    ) -> Result<Self, ReservingError> {
         if n_samples < 2 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "LognormalLayerSampler requires at least 2 samples",
             ));
         }
         let half = n_samples.div_ceil(2);
-        let total = half.checked_mul(2).ok_or(ValidationError::ShapeMismatch)?;
+        let total = half.checked_mul(2).ok_or(ReservingError::ShapeMismatch)?;
         let mut rng = DeterministicRng::from_seed(seed);
         let mut pos: Vec<f64> = (0..half)
             .map(|_| rng.next_standard_normal().abs())
@@ -239,7 +239,7 @@ impl LognormalLayerSampler {
             prefix_sums.push(acc);
         }
         if !acc.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
 
         Ok(Self {
@@ -364,11 +364,11 @@ mod tests {
     fn validates_model_and_sampler_inputs() {
         assert_eq!(
             LognormalLayerModel::try_new(0.0, 1.0),
-            Err(ValidationError::NonPositive("ground-up mean"))
+            Err(ReservingError::NonPositive("ground-up mean"))
         );
         assert_eq!(
             LognormalLayerModel::try_new(100_000.0, -0.5),
-            Err(ValidationError::NonPositive("lognormal sigma"))
+            Err(ReservingError::NonPositive("lognormal sigma"))
         );
         let model = LognormalLayerModel::try_new(100_000.0, 1.0).expect("model");
         assert!(LognormalLayerSampler::try_new(model, 1, 42).is_err());

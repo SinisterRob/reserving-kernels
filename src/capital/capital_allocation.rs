@@ -35,7 +35,8 @@
 //!   conserving `sum_i Q_i == Q` and `sum_i (L_i + Q_i) == A` identically.
 
 use crate::capital::reserve_distribution::{mean, rvar, tvar_coherent};
-use crate::validate::{ValidationError, validate_finite_slice};
+use crate::error::ReservingError;
+use crate::validate::validate_finite_slice;
 
 /// Output of an Euler coherent risk-measure capital allocation across `d` lines.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -101,12 +102,12 @@ pub struct MyersReadAllocationResult {
 pub fn euler_tvar_allocation(
     lines: &[&[f64]],
     alpha: f64,
-) -> Result<EulerAllocationResult, ValidationError> {
+) -> Result<EulerAllocationResult, ReservingError> {
     if !alpha.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if !(0.0..=1.0).contains(&alpha) {
-        return Err(ValidationError::InvalidProbability { value: alpha });
+        return Err(ReservingError::InvalidProbability { value: alpha });
     }
     let (d, n, total) = validate_and_sum_lines(lines)?;
     let (sparse_weights, portfolio_risk_measure) =
@@ -134,18 +135,18 @@ pub fn euler_rvar_allocation(
     lines: &[&[f64]],
     p_low: f64,
     p_high: f64,
-) -> Result<EulerAllocationResult, ValidationError> {
+) -> Result<EulerAllocationResult, ReservingError> {
     if !p_low.is_finite() || !p_high.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if !(0.0..=1.0).contains(&p_low) {
-        return Err(ValidationError::InvalidProbability { value: p_low });
+        return Err(ReservingError::InvalidProbability { value: p_low });
     }
     if !(0.0..=1.0).contains(&p_high) {
-        return Err(ValidationError::InvalidProbability { value: p_high });
+        return Err(ReservingError::InvalidProbability { value: p_high });
     }
     if !(p_low < p_high) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "euler_rvar_allocation requires p_low < p_high",
         ));
     }
@@ -176,12 +177,12 @@ pub fn euler_rvar_allocation(
 pub fn euler_sd_allocation(
     lines: &[&[f64]],
     kappa: f64,
-) -> Result<EulerAllocationResult, ValidationError> {
+) -> Result<EulerAllocationResult, ReservingError> {
     if !kappa.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if kappa < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     let (d, n, total) = validate_and_sum_lines(lines)?;
     let nf = n as f64;
@@ -250,9 +251,9 @@ pub fn euler_sd_allocation(
 pub fn myers_read_allocation(
     lines: &[&[f64]],
     total_assets: f64,
-) -> Result<MyersReadAllocationResult, ValidationError> {
+) -> Result<MyersReadAllocationResult, ReservingError> {
     if !total_assets.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     let (d, n, total) = validate_and_sum_lines(lines)?;
     myers_read_allocation_with_total(lines, d, n, &total, total_assets)
@@ -264,12 +265,12 @@ fn myers_read_allocation_with_total(
     n: usize,
     total: &[f64],
     total_assets: f64,
-) -> Result<MyersReadAllocationResult, ValidationError> {
+) -> Result<MyersReadAllocationResult, ReservingError> {
     let nf = n as f64;
 
     let portfolio_liability: f64 = total.iter().sum::<f64>() / nf;
     if !(portfolio_liability > 0.0) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Myers & Read allocation requires strictly positive expected portfolio liability",
         ));
     }
@@ -289,7 +290,7 @@ fn myers_read_allocation_with_total(
         }
     }
     if tail_indices.is_empty() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Myers & Read allocation requires total_assets < max(S) for positive default probability",
         ));
     }
@@ -348,12 +349,12 @@ fn myers_read_allocation_with_total(
 pub fn myers_read_from_default_ratio(
     lines: &[&[f64]],
     target_default_ratio: f64,
-) -> Result<MyersReadAllocationResult, ValidationError> {
+) -> Result<MyersReadAllocationResult, ReservingError> {
     if !target_default_ratio.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if !(target_default_ratio > 0.0 && target_default_ratio < 1.0) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "target_default_ratio must lie strictly inside (0, 1)",
         ));
     }
@@ -361,7 +362,7 @@ pub fn myers_read_from_default_ratio(
     let nf = n as f64;
     let l = total.iter().sum::<f64>() / nf;
     if !(l > 0.0) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Myers & Read allocation requires positive expected liability",
         ));
     }
@@ -393,17 +394,17 @@ pub fn myers_read_from_default_ratio(
     myers_read_allocation_with_total(lines, d, n, &total, safe_assets)
 }
 
-fn validate_and_sum_lines(lines: &[&[f64]]) -> Result<(usize, usize, Vec<f64>), ValidationError> {
+fn validate_and_sum_lines(lines: &[&[f64]]) -> Result<(usize, usize, Vec<f64>), ReservingError> {
     if lines.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let n = lines[0].len();
     if n == 0 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for &col in lines {
         if col.len() != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         validate_finite_slice(col)?;
     }
@@ -543,7 +544,7 @@ fn build_euler_result(
     _n: usize,
     portfolio_risk_measure: f64,
     standalone_risk_measures: Vec<f64>,
-) -> Result<EulerAllocationResult, ValidationError> {
+) -> Result<EulerAllocationResult, ReservingError> {
     let portfolio_mean = mean(total)?;
     let mut standalone_means = Vec::with_capacity(d);
     let mut allocated_total = Vec::with_capacity(d);

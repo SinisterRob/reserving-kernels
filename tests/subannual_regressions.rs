@@ -10,12 +10,13 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use reserving_kernels::ReservingError;
 use reserving_kernels::datasets::genins;
 use reserving_kernels::deterministic::ldf::LdfSelectionMethod;
 use reserving_kernels::stochastic::bootstrap_odp::OdpBootstrapOptions;
 use reserving_kernels::stochastic::clark_mle::{ClarkOptions, fit_clark_cape_cod, fit_clark_ldf};
 use reserving_kernels::subannual::*;
-use reserving_kernels::validate::{MonotonicityPolicy, ValidationError};
+use reserving_kernels::validate::MonotonicityPolicy;
 
 const ANNUAL_AGES: [f64; 5] = [12.0, 24.0, 36.0, 48.0, 60.0];
 const ANNUAL_CDFS: [f64; 5] = [2.50, 1.45, 1.18, 1.06, 1.00];
@@ -288,7 +289,7 @@ fn stub_boundaries_and_single_period_grids() {
     // Overflowing dimensions return an error instead of panicking/aborting.
     assert_eq!(
         asymmetric_age_grid(usize::MAX, 2, 12.0, 6.0, 6.0, None),
-        Err(ValidationError::ShapeMismatch)
+        Err(ReservingError::ShapeMismatch)
     );
 }
 
@@ -317,7 +318,7 @@ fn nan_cells_are_rejected_when_observed_and_ignored_when_unobserved() {
             1.0,
             MonotonicityPolicy::Strict
         ),
-        Err(ValidationError::NotFinite)
+        Err(ReservingError::NotFinite)
     );
 
     // NaN residuals are skipped (counted out) by the calendar diagnostics.
@@ -418,7 +419,7 @@ fn mutated_public_fields_yield_errors_not_panics() {
     assert_eq!(a, None);
     assert_eq!(b, None);
     assert!(!c);
-    assert_eq!(latest, Err(ValidationError::ShapeMismatch));
+    assert_eq!(latest, Err(ReservingError::ShapeMismatch));
     assert!(cal_err);
 
     // observed_counts exceeding n_devs.
@@ -535,7 +536,7 @@ fn clark_exact_age_rejects_overflowing_dimensions() {
             &ClarkExactAgeOptions::default(),
         )
     });
-    assert!(matches!(res, Ok(Err(ValidationError::ShapeMismatch))));
+    assert!(matches!(res, Ok(Err(ReservingError::ShapeMismatch))));
 }
 
 #[test]

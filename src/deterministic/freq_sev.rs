@@ -11,9 +11,10 @@
 //!   fits a claim-count-weighted Gamma log-link GLM for incremental severity as
 //!   a Hoerl curve in midpoint operational time plus calendar-year inflation.
 
+use crate::error::ReservingError;
 use crate::linalg::{cholesky_lower, solve_general, solve_lower_into};
 use crate::types::TriangleView;
-use crate::validate::{ValidationError, validate_triangle};
+use crate::validate::validate_triangle;
 
 // ===========================================================================
 // 2.1 Friedland Method 2 / Adler–Kline (1988)
@@ -90,18 +91,18 @@ pub struct AdlerKlineResult {
     pub total_reserve: f64,
 }
 
-fn validate_square_incremental_paid(t: &TriangleView<'_>) -> Result<(), ValidationError> {
+fn validate_square_incremental_paid(t: &TriangleView<'_>) -> Result<(), ReservingError> {
     if t.data.len() != t.n_origins * t.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if t.n_origins != t.n_devs {
-        return Err(ValidationError::NotSquare);
+        return Err(ReservingError::NotSquare);
     }
     let n = t.n_origins;
     for i in 0..n {
         for j in 0..(n - i) {
             if !t.get(i, j).is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
         }
     }
@@ -111,9 +112,9 @@ fn validate_square_incremental_paid(t: &TriangleView<'_>) -> Result<(), Validati
 /// Fill lags without any observed closings: carry the prior lag's selected
 /// severity forward; leading empty lags take the first observed lag's value.
 /// Errors when no lag has any observed closing.
-fn fill_missing_lag_severities(lags: &[Option<f64>]) -> Result<Vec<f64>, ValidationError> {
+fn fill_missing_lag_severities(lags: &[Option<f64>]) -> Result<Vec<f64>, ReservingError> {
     let Some(first) = lags.iter().find_map(|v| *v) else {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Adler-Kline severity unestimable: no lag has a positive incremental closed count",
         ));
     };
@@ -147,34 +148,34 @@ pub fn adler_kline_reserve(
     incremental_paid_loss: &TriangleView<'_>,
     ultimate_counts: &[f64],
     options: AdlerKlineOptions,
-) -> Result<AdlerKlineResult, ValidationError> {
+) -> Result<AdlerKlineResult, ReservingError> {
     validate_triangle(cumulative_closed_counts)?;
     validate_square_incremental_paid(incremental_paid_loss)?;
     let n = cumulative_closed_counts.n_origins;
     if incremental_paid_loss.n_origins != n || ultimate_counts.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if n < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Adler-Kline requires at least a 2x2 triangle",
         ));
     }
     if !options.severity_trend.is_finite() || options.severity_trend <= -1.0 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "severity_trend must be finite and > -1.0",
         ));
     }
     if let Some(ts) = options.tail_severity
         && !ts.is_finite()
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     for &u in ultimate_counts {
         if !u.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if u <= 0.0 {
-            return Err(ValidationError::NonPositive("ultimate_counts"));
+            return Err(ReservingError::NonPositive("ultimate_counts"));
         }
     }
 
@@ -239,7 +240,7 @@ pub fn adler_kline_reserve(
             let slice = &valid_sevs[start..];
             let sel = slice.iter().sum::<f64>() / slice.len() as f64;
             if !sel.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             lag_severities[j] = Some(if options.clamp_nonnegative_severity {
                 sel.max(0.0)
@@ -393,7 +394,7 @@ pub struct WrightOperationalTimeResult {
     pub converged: bool,
 }
 
-fn solve_symmetric_system(a: &[f64], b: &[f64], dim: usize) -> Result<Vec<f64>, ValidationError> {
+fn solve_symmetric_system(a: &[f64], b: &[f64], dim: usize) -> Result<Vec<f64>, ReservingError> {
     if let Ok(l) = cholesky_lower(a, dim) {
         let mut y = vec![0.0; dim];
         solve_lower_into(&l, dim, b, &mut y);
@@ -422,30 +423,30 @@ pub fn wright_operational_time_reserve(
     incremental_paid_loss: &TriangleView<'_>,
     ultimate_counts: &[f64],
     options: WrightOperationalTimeOptions,
-) -> Result<WrightOperationalTimeResult, ValidationError> {
+) -> Result<WrightOperationalTimeResult, ReservingError> {
     validate_triangle(cumulative_closed_counts)?;
     validate_square_incremental_paid(incremental_paid_loss)?;
     let n = cumulative_closed_counts.n_origins;
     if incremental_paid_loss.n_origins != n || ultimate_counts.len() != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Wright operational time model requires at least a 3x3 triangle",
         ));
     }
     if options.max_iterations == 0 {
-        return Err(ValidationError::InvalidIterations);
+        return Err(ReservingError::InvalidIterations);
     }
     if !options.tolerance.is_finite() || options.tolerance <= 0.0 {
-        return Err(ValidationError::NonPositive("tolerance"));
+        return Err(ReservingError::NonPositive("tolerance"));
     }
     for &u in ultimate_counts {
         if !u.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if u <= 0.0 {
-            return Err(ValidationError::NonPositive("ultimate_counts"));
+            return Err(ReservingError::NonPositive("ultimate_counts"));
         }
     }
 
@@ -484,7 +485,7 @@ pub fn wright_operational_time_reserve(
     }
 
     if x_rows.len() < p {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "insufficient positive incremental severity observations for Wright GLM",
         ));
     }
@@ -504,7 +505,7 @@ pub fn wright_operational_time_reserve(
 
     // Factor constant X^T W X once before IRLS iterations.
     let chol = crate::linalg::cholesky_lower(&xtwx, p).ok();
-    let solve_with_xtwx = |rhs_vec: &[f64]| -> Result<Vec<f64>, ValidationError> {
+    let solve_with_xtwx = |rhs_vec: &[f64]| -> Result<Vec<f64>, ReservingError> {
         if let Some(ref l) = chol {
             let mut y = vec![0.0; p];
             for i in 0..p {
@@ -556,7 +557,7 @@ pub fn wright_operational_time_reserve(
             .fold(0.0_f64, f64::max);
         theta = next_theta;
         if !max_diff.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         if max_diff < options.tolerance {
             converged = true;

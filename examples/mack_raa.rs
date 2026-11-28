@@ -10,12 +10,12 @@
 //! Standard Error of Chain Ladder Reserve Estimates", ASTIN Bulletin 23(2),
 //! pp. 213-225.
 
+use reserving_kernels::ReservingError;
 use reserving_kernels::datasets;
 use reserving_kernels::diagnostics::mack_tests::{
     adjacent_factor_correlation_test, calendar_year_effect_test,
 };
 use reserving_kernels::preprocessing::triangle::latest_diagonal;
-use reserving_kernels::validate::ValidationError;
 
 const ORIGIN_YEARS: [u32; 10] = [1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990];
 
@@ -29,7 +29,7 @@ const MACK_1993_SE: [f64; 10] = [
 const MACK_1993_TOTAL_RESERVE: f64 = 52_135.2;
 const MACK_1993_TOTAL_SE: f64 = 26_909.0;
 
-fn main() -> Result<(), ValidationError> {
+fn main() -> Result<(), ReservingError> {
     let raa = datasets::raa();
     let view = raa.view();
 

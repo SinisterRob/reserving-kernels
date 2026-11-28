@@ -26,10 +26,11 @@
 //! disabled, the filtered posterior reproduces the static log-linear Chain
 //! Ladder OLS estimates identically.
 
+use crate::error::ReservingError;
 use crate::linalg::weighted_least_squares_qr_beta_only;
 use crate::preprocessing::triangle::{cumulative_to_incremental, latest_diagonal};
 use crate::types::TriangleView;
-use crate::validate::{ValidationError, validate_triangle};
+use crate::validate::validate_triangle;
 
 /// Configuration for the De Jong–Zehnwirth (1983) / Verrall (1989) Kalman filter.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -122,7 +123,7 @@ impl std::fmt::Display for KalmanReservingResult {
     }
 }
 
-fn estimate_static_obs_variance(inc: &[f64], n: usize) -> Result<f64, ValidationError> {
+fn estimate_static_obs_variance(inc: &[f64], n: usize) -> Result<f64, ReservingError> {
     let p = 2 * n - 1;
     let n_obs = n * (n + 1) / 2;
     let mut x = vec![0.0; n_obs * p];
@@ -132,7 +133,7 @@ fn estimate_static_obs_variance(inc: &[f64], n: usize) -> Result<f64, Validation
         for j in 0..(n - i) {
             let v = inc[i * n + j];
             if !v.is_finite() || v <= 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Kalman log-linear reserving requires strictly positive incremental losses",
                 ));
             }
@@ -178,11 +179,11 @@ struct FutureCell {
 pub fn analyze(
     cumulative: &TriangleView<'_>,
     options: KalmanReservingOptions,
-) -> Result<KalmanReservingResult, ValidationError> {
+) -> Result<KalmanReservingResult, ReservingError> {
     validate_triangle(cumulative)?;
     let n = cumulative.n_origins;
     if n < 2 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "triangle must be at least 2x2",
         ));
     }
@@ -196,7 +197,7 @@ pub fn analyze(
         || !options.diffuse_prior_var.is_finite()
         || options.diffuse_prior_var <= 0.0
     {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "invalid Kalman transition or prior variance parameter",
         ));
     }
@@ -206,7 +207,7 @@ pub fn analyze(
         for j in 0..(n - i) {
             let v = inc[i * n + j];
             if !v.is_finite() || v <= 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Kalman log-linear reserving requires strictly positive incremental losses",
                 ));
             }
@@ -216,7 +217,7 @@ pub fn analyze(
     let obs_var = match options.observation_variance {
         Some(v) => {
             if !v.is_finite() || v <= 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "observation_variance must be finite and positive",
                 ));
             }
@@ -321,7 +322,7 @@ pub fn analyze(
             }
 
             if !(s_var > 0.0) || !s_var.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             log_likelihood += -0.5 * ((std::f64::consts::TAU * s_var).ln() + innov * innov / s_var);
 
@@ -416,7 +417,7 @@ pub fn analyze(
             // Log-normal unbiased mean with process + state predictive variance.
             let mean_x = (mean_y + f64::midpoint(obs_var, var_state)).exp();
             if !mean_x.is_finite() {
-                return Err(ValidationError::NotFinite);
+                return Err(ReservingError::NotFinite);
             }
             future_cells.push(FutureCell {
                 origin: i,
@@ -477,7 +478,7 @@ pub fn analyze(
         || !total_reserve.is_finite()
         || origin_var.iter().any(|v| !v.is_finite())
     {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     let total_standard_error = total_var.max(0.0).sqrt();
     let total_cv = if total_reserve > 0.0 {

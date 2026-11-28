@@ -1,25 +1,26 @@
 //! Large-loss triangle transforms.
 
+use crate::error::ReservingError;
 use crate::types::{Triangle, TriangleView};
-use crate::validate::{ValidationError, validate_triangle};
+use crate::validate::validate_triangle;
 
 fn validate_nonnegative_scalar(
     value: f64,
     zero_context: &'static str,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     if !value.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if value < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     if value == 0.0 {
-        return Err(ValidationError::DivideByZero(zero_context));
+        return Err(ReservingError::DivideByZero(zero_context));
     }
     Ok(())
 }
 
-fn transform_triangle<F>(triangle: &TriangleView<'_>, mut f: F) -> Result<Triangle, ValidationError>
+fn transform_triangle<F>(triangle: &TriangleView<'_>, mut f: F) -> Result<Triangle, ReservingError>
 where
     F: FnMut(f64) -> f64,
 {
@@ -43,14 +44,14 @@ fn combine_triangles<F>(
     left: &TriangleView<'_>,
     right: &TriangleView<'_>,
     mut f: F,
-) -> Result<Triangle, ValidationError>
+) -> Result<Triangle, ReservingError>
 where
     F: FnMut(f64, f64) -> f64,
 {
     validate_triangle(left)?;
     validate_triangle(right)?;
     if left.n_origins != right.n_origins || left.n_devs != right.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
 
     let mut data = vec![f64::NAN; left.n_origins * left.n_devs];
@@ -64,7 +65,7 @@ where
             if a.is_finite() && b.is_finite() {
                 let out = f(a, b);
                 if !out.is_finite() {
-                    return Err(ValidationError::NotFinite);
+                    return Err(ReservingError::NotFinite);
                 }
                 data[origin * left.n_devs + dev] = out;
             }
@@ -74,7 +75,7 @@ where
 }
 
 /// Cap every observed triangle cell at `cap`.
-pub fn cap_triangle(triangle: &TriangleView<'_>, cap: f64) -> Result<Triangle, ValidationError> {
+pub fn cap_triangle(triangle: &TriangleView<'_>, cap: f64) -> Result<Triangle, ReservingError> {
     validate_nonnegative_scalar(cap, "cap")?;
     transform_triangle(triangle, |value| value.min(cap))
 }
@@ -83,12 +84,12 @@ pub fn cap_triangle(triangle: &TriangleView<'_>, cap: f64) -> Result<Triangle, V
 pub fn excess_triangle(
     triangle: &TriangleView<'_>,
     attachment: f64,
-) -> Result<Triangle, ValidationError> {
+) -> Result<Triangle, ReservingError> {
     if !attachment.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if attachment < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     transform_triangle(triangle, |value| (value - attachment).max(0.0))
 }
@@ -98,15 +99,15 @@ pub fn layer_triangle(
     triangle: &TriangleView<'_>,
     attachment: f64,
     limit: f64,
-) -> Result<Triangle, ValidationError> {
+) -> Result<Triangle, ReservingError> {
     if !attachment.is_finite() || !limit.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if attachment < 0.0 || limit < 0.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     if limit == 0.0 {
-        return Err(ValidationError::DivideByZero("limit"));
+        return Err(ReservingError::DivideByZero("limit"));
     }
     transform_triangle(triangle, |value| (value - attachment).max(0.0).min(limit))
 }
@@ -115,7 +116,7 @@ pub fn layer_triangle(
 pub fn large_loss_removed_triangle(
     triangle: &TriangleView<'_>,
     threshold: f64,
-) -> Result<Triangle, ValidationError> {
+) -> Result<Triangle, ReservingError> {
     cap_triangle(triangle, threshold)
 }
 
@@ -123,7 +124,7 @@ pub fn large_loss_removed_triangle(
 pub fn large_loss_addback(
     base_triangle: &TriangleView<'_>,
     addback_triangle: &TriangleView<'_>,
-) -> Result<Triangle, ValidationError> {
+) -> Result<Triangle, ReservingError> {
     combine_triangles(base_triangle, addback_triangle, |base, addback| {
         base + addback
     })

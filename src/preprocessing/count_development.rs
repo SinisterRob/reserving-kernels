@@ -2,19 +2,20 @@
 
 use crate::deterministic::chain_ladder::{ChainLadderEngine, ChainLadderProjection};
 use crate::deterministic::ldf::{DevelopmentFactorEngine, DevelopmentFactors};
+use crate::error::ReservingError;
 use crate::types::{Triangle, TriangleView};
-use crate::validate::{ValidationError, validate_triangle};
+use crate::validate::validate_triangle;
 
 /// Open-count triangle `reported - closed`, preserving `NaN` where either cell is missing
 /// or outside the scheduled observed region.
 pub fn open_count_triangle(
     reported: &TriangleView<'_>,
     closed: &TriangleView<'_>,
-) -> Result<Triangle, ValidationError> {
+) -> Result<Triangle, ReservingError> {
     validate_triangle(reported)?;
     validate_triangle(closed)?;
     if reported.n_origins != closed.n_origins || reported.n_devs != closed.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let mut data = vec![f64::NAN; reported.n_origins * reported.n_devs];
     for origin in 0..reported.n_origins {
@@ -36,7 +37,7 @@ pub fn open_count_triangle(
 pub fn reported_count_ldf(
     reported: &TriangleView<'_>,
     tail: f64,
-) -> Result<DevelopmentFactors, ValidationError> {
+) -> Result<DevelopmentFactors, ReservingError> {
     DevelopmentFactorEngine::volume_weighted(reported, tail)
 }
 
@@ -44,7 +45,7 @@ pub fn reported_count_ldf(
 pub fn closed_count_ldf(
     closed: &TriangleView<'_>,
     tail: f64,
-) -> Result<DevelopmentFactors, ValidationError> {
+) -> Result<DevelopmentFactors, ReservingError> {
     DevelopmentFactorEngine::volume_weighted(closed, tail)
 }
 
@@ -52,7 +53,7 @@ pub fn closed_count_ldf(
 pub fn ultimate_claim_count(
     counts: &TriangleView<'_>,
     factors: &DevelopmentFactors,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     Ok(ChainLadderEngine::project(counts, factors)?.ultimates)
 }
 
@@ -60,7 +61,7 @@ pub fn ultimate_claim_count(
 pub fn ibnr_claim_count(
     reported: &TriangleView<'_>,
     factors: &DevelopmentFactors,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     Ok(ChainLadderEngine::project(reported, factors)?.reserves)
 }
 
@@ -68,7 +69,7 @@ pub fn ibnr_claim_count(
 pub fn project_volume_weighted(
     counts: &TriangleView<'_>,
     tail: f64,
-) -> Result<ChainLadderProjection, ValidationError> {
+) -> Result<ChainLadderProjection, ReservingError> {
     let factors = DevelopmentFactorEngine::volume_weighted(counts, tail)?;
     ChainLadderEngine::project(counts, &factors)
 }

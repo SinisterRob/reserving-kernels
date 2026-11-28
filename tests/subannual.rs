@@ -2,6 +2,7 @@
 //! `subannual` kernel registry (sub-annual development, asymmetric grids, and
 //! pre-12-month stub periods).
 
+use reserving_kernels::ReservingError;
 use reserving_kernels::datasets::{friedland_us_industry_auto, genins};
 use reserving_kernels::deterministic::bf::BornhuetterFergusonEngine;
 use reserving_kernels::deterministic::cape_cod::CapeCodEngine;
@@ -11,7 +12,7 @@ use reserving_kernels::stochastic::bootstrap_odp::{
 };
 use reserving_kernels::stochastic::clark_mle::GrowthCurve;
 use reserving_kernels::subannual::*;
-use reserving_kernels::validate::{MonotonicityPolicy, ValidationError};
+use reserving_kernels::validate::MonotonicityPolicy;
 
 // ===========================================================================
 // 1. Grid Geometry & Age Mapping
@@ -391,7 +392,7 @@ fn asymmetric_odp_bootstrap_is_deterministic_and_supports_all_modes() {
 fn validation_rejects_invalid_subannual_inputs() {
     assert_eq!(
         asymmetric_age_grid(0, 4, 12.0, 6.0, 6.0, None),
-        Err(ValidationError::ShapeMismatch)
+        Err(ReservingError::ShapeMismatch)
     );
     assert!(stub_average_age(-1.0, 12.0).is_err());
     assert!(stub_plus12(15.0, 2.0, 1.4).is_err());

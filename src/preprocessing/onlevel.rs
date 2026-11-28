@@ -1,13 +1,14 @@
 //! Premium on-level transforms.
 
-use crate::validate::{ValidationError, validate_nonnegative_finite_slice};
+use crate::error::ReservingError;
+use crate::validate::validate_nonnegative_finite_slice;
 
-fn validate_rate_change(rate_change: f64) -> Result<(), ValidationError> {
+fn validate_rate_change(rate_change: f64) -> Result<(), ReservingError> {
     if !rate_change.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if rate_change <= -1.0 {
-        return Err(ValidationError::Negative);
+        return Err(ReservingError::Negative);
     }
     Ok(())
 }
@@ -16,14 +17,14 @@ fn validate_rate_change(rate_change: f64) -> Result<(), ValidationError> {
 pub fn onlevel_premium(
     premium: &[f64],
     onlevel_factors: &[f64],
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     if premium.len() != onlevel_factors.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_nonnegative_finite_slice(premium)?;
     validate_nonnegative_finite_slice(onlevel_factors)?;
     if onlevel_factors.iter().any(|factor| *factor <= 0.0) {
-        return Err(ValidationError::DivideByZero("on-level factor"));
+        return Err(ReservingError::DivideByZero("on-level factor"));
     }
 
     Ok(premium
@@ -34,7 +35,7 @@ pub fn onlevel_premium(
 }
 
 /// Chain sequential percentage rate changes into one cumulative rate-level factor.
-pub fn rate_change_chain(rate_changes: &[f64]) -> Result<f64, ValidationError> {
+pub fn rate_change_chain(rate_changes: &[f64]) -> Result<f64, ReservingError> {
     let mut factor = 1.0;
     for &rate_change in rate_changes {
         validate_rate_change(rate_change)?;
@@ -54,9 +55,9 @@ pub fn rate_change_chain(rate_changes: &[f64]) -> Result<f64, ValidationError> {
 pub fn parallelogram_onlevel_factor(
     rate_changes: &[f64],
     earned_weights: &[f64],
-) -> Result<f64, ValidationError> {
+) -> Result<f64, ReservingError> {
     if earned_weights.len() != rate_changes.len() + 1 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_nonnegative_finite_slice(earned_weights)?;
 
@@ -72,10 +73,10 @@ pub fn parallelogram_onlevel_factor(
     }
 
     if !level.is_finite() || !weighted_level.is_finite() || !weight_sum.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if weight_sum <= 0.0 || weighted_level <= 0.0 {
-        return Err(ValidationError::DivideByZero("average rate level"));
+        return Err(ReservingError::DivideByZero("average rate level"));
     }
     let average_level = weighted_level / weight_sum;
     Ok(level / average_level)

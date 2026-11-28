@@ -20,12 +20,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ReservingError,
     linalg::solve_general,
     preprocessing::triangle::latest_diagonal,
     types::TriangleView,
-    validate::{
-        MonotonicityPolicy, ValidationError, validate_monotone_cumulative, validate_triangle,
-    },
+    validate::{MonotonicityPolicy, validate_monotone_cumulative, validate_triangle},
 };
 
 /// Structural specification for [`analyze_multivariate_cl`].
@@ -91,14 +90,14 @@ pub struct MultivariateClResult {
 pub fn analyze_multivariate_cl(
     triangles: &[TriangleView<'_>],
     options: &MultivariateClOptions,
-) -> Result<MultivariateClResult, ValidationError> {
+) -> Result<MultivariateClResult, ReservingError> {
     let k_lines = triangles.len();
     if k_lines == 0 {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     let n = triangles[0].n_origins;
     if n < 3 || triangles[0].n_devs != n {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     for tri in triangles {
         validate_triangle(tri)?;
@@ -106,7 +105,7 @@ pub fn analyze_multivariate_cl(
             validate_monotone_cumulative(tri)?;
         }
         if tri.n_origins != n || tri.n_devs != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
     }
 

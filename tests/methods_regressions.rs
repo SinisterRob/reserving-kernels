@@ -9,7 +9,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use reserving_kernels::{
-    Triangle, datasets,
+    ReservingError, Triangle, datasets,
     deterministic::{
         berquist_sherman::{
             CaseReserveTrend, DisposalInterpolation, adjust_case_reserves,
@@ -28,7 +28,7 @@ use reserving_kernels::{
         murphy::{self, MurphyOptions},
     },
     stochastic::clark_mle::{ClarkOptions, GrowthCurve, fit_clark_cape_cod},
-    validate::{MonotonicityPolicy, ValidationError},
+    validate::MonotonicityPolicy,
 };
 
 const NAN: f64 = f64::NAN;
@@ -280,7 +280,7 @@ fn case_outstanding_unestimable_ratio_with_open_case_is_error() {
         &CaseOutstandingOptions::default(),
     )
     .expect_err("unestimable ratio must error");
-    assert!(matches!(err, ValidationError::InvalidParameter(_)));
+    assert!(matches!(err, ReservingError::InvalidParameter(_)));
 }
 
 #[test]
@@ -408,7 +408,7 @@ fn incremental_additive_rejects_invalid_inputs() {
     ] {
         assert!(matches!(
             project_incremental_additive(&t.view(), &bad, &IncrementalAdditiveOptions::default()),
-            Err(ValidationError::InvalidParameter(_))
+            Err(ReservingError::InvalidParameter(_))
         ));
     }
     assert!(
@@ -543,7 +543,7 @@ fn clark_alae_zero_offset_uses_integer_ages_and_validates_options() {
                     ..ClarkAlaeOptions::default()
                 }
             ),
-            Err(ValidationError::InvalidParameter(_))
+            Err(ReservingError::InvalidParameter(_))
         ));
     }
     // Largest default age is 5.5; max_age below it is rejected.
@@ -556,7 +556,7 @@ fn clark_alae_zero_offset_uses_integer_ages_and_validates_options() {
                 ..ClarkAlaeOptions::default()
             }
         ),
-        Err(ValidationError::InvalidParameter(_))
+        Err(ReservingError::InvalidParameter(_))
     ));
 }
 
@@ -670,7 +670,7 @@ fn berquist_sherman_rejects_decreasing_custom_targets() {
             DisposalInterpolation::PiecewiseLinear,
             1.0,
         ),
-        Err(ValidationError::InvalidParameter(_))
+        Err(ReservingError::InvalidParameter(_))
     ));
 }
 
@@ -745,7 +745,7 @@ fn berquist_sherman_case_with_zero_open_counts_is_error() {
             1.0,
             MonotonicityPolicy::AllowNegativeIncrements,
         ),
-        Err(ValidationError::InvalidParameter(_))
+        Err(ReservingError::InvalidParameter(_))
     ));
 }
 
@@ -765,7 +765,7 @@ fn berquist_sherman_undefined_anchor_average_case_is_error() {
             1.0,
             MonotonicityPolicy::AllowNegativeIncrements,
         ),
-        Err(ValidationError::InvalidParameter(_))
+        Err(ReservingError::InvalidParameter(_))
     ));
 }
 
@@ -866,7 +866,7 @@ fn adler_kline_without_any_closings_is_error() {
             &[10.0, 10.0],
             AdlerKlineOptions::default()
         ),
-        Err(ValidationError::InvalidParameter(_))
+        Err(ReservingError::InvalidParameter(_))
     ));
 }
 

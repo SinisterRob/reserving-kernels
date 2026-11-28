@@ -34,12 +34,12 @@
 //!   method on `R_i(psi)`, combined with process variance `sigma^2 * R_i`:
 //!   `SE_total = sqrt(ProcessVar + ParamVar)`.
 
+use crate::error::ReservingError;
 use crate::linalg::{invert_spd, quad_form};
 use crate::preprocessing::triangle::{cumulative_to_incremental, latest_diagonal};
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, ValidationError, validate_monotone_cumulative, validate_premium,
-    validate_triangle,
+    MonotonicityPolicy, validate_monotone_cumulative, validate_premium, validate_triangle,
 };
 
 /// Parametric loss-emergence growth curve `G(x; omega, theta)`.
@@ -248,18 +248,18 @@ pub struct ClarkMleResult {
 pub fn fit_clark_ldf(
     triangle: &TriangleView<'_>,
     options: &ClarkOptions,
-) -> Result<ClarkMleResult, ValidationError> {
+) -> Result<ClarkMleResult, ReservingError> {
     let prep = prepare_inputs(triangle, options)?;
     let n = prep.n;
     let n_obs = n * (n + 1) / 2;
     let n_params = n + 2;
     if n_obs <= n_params {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Clark LDF requires at least a 4x4 triangle for positive degrees of freedom",
         ));
     }
     if prep.latest.iter().any(|&v| v <= 0.0) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Clark LDF requires strictly positive latest diagonal losses for every origin",
         ));
     }
@@ -289,7 +289,7 @@ pub fn fit_clark_ldf(
             let dg = dg_inc[j];
             let mu = ui * dg;
             if !(mu > 0.0) || !mu.is_finite() {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Clark MLE produced non-positive fitted increment",
                 ));
             }
@@ -396,14 +396,14 @@ pub fn fit_clark_cape_cod(
     triangle: &TriangleView<'_>,
     premium: &[f64],
     options: &ClarkOptions,
-) -> Result<ClarkMleResult, ValidationError> {
+) -> Result<ClarkMleResult, ReservingError> {
     let prep = prepare_inputs(triangle, options)?;
     let n = prep.n;
     validate_premium(premium, n)?;
     let n_obs = n * (n + 1) / 2;
     let n_params = 3usize;
     if n_obs <= n_params {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Clark Cape Cod requires at least a 3x3 triangle for positive degrees of freedom",
         ));
     }
@@ -421,7 +421,7 @@ pub fn fit_clark_cape_cod(
     let sum_latest: f64 = prep.latest.iter().sum();
     let sum_used_prem: f64 = (0..n).map(|i| premium[i] * g_vals[n - 1 - i]).sum();
     if !(sum_used_prem > 0.0) {
-        return Err(ValidationError::DivideByZero("Clark Cape Cod used premium"));
+        return Err(ReservingError::DivideByZero("Clark Cape Cod used premium"));
     }
     let elr = sum_latest / sum_used_prem;
 
@@ -435,7 +435,7 @@ pub fn fit_clark_cape_cod(
             let dg = dg_inc[j];
             let mu = p_i * elr * dg;
             if !(mu > 0.0) || !mu.is_finite() {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Clark Cape Cod produced non-positive fitted increment",
                 ));
             }
@@ -562,29 +562,29 @@ impl ClarkWorkspace {
 fn prepare_inputs(
     triangle: &TriangleView<'_>,
     options: &ClarkOptions,
-) -> Result<PreparedClarkInputs, ValidationError> {
+) -> Result<PreparedClarkInputs, ReservingError> {
     validate_triangle(triangle)?;
     if options.monotonicity_policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(triangle)?;
     }
     let n = triangle.n_origins;
     if n < 3 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Clark MLE requires at least a 3x3 triangle",
         ));
     }
     let ages = if let Some(custom) = &options.ages {
         if custom.len() != n {
-            return Err(ValidationError::ShapeMismatch);
+            return Err(ReservingError::ShapeMismatch);
         }
         for k in 0..n {
             if !custom[k].is_finite() || custom[k] <= 0.0 {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Clark development ages must be strictly positive and finite",
                 ));
             }
             if k > 0 && !(custom[k] > custom[k - 1]) {
-                return Err(ValidationError::InvalidParameter(
+                return Err(ReservingError::InvalidParameter(
                     "Clark development ages must be strictly increasing",
                 ));
             }
@@ -592,7 +592,7 @@ fn prepare_inputs(
         custom.clone()
     } else {
         if !options.origin_offset.is_finite() || options.origin_offset >= 1.0 {
-            return Err(ValidationError::InvalidParameter(
+            return Err(ReservingError::InvalidParameter(
                 "origin_offset must be finite and < 1.0",
             ));
         }
@@ -603,7 +603,7 @@ fn prepare_inputs(
     if let Some(mx) = options.max_age
         && (!mx.is_finite() || mx < ages[ages.len() - 1])
     {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "max_age must be finite and >= largest observed development age",
         ));
     }
@@ -904,7 +904,7 @@ fn optimize_growth_params(
     prep: &PreparedClarkInputs,
     premium: Option<&[f64]>,
     curve: GrowthCurve,
-) -> Result<(f64, f64, f64, f64), ValidationError> {
+) -> Result<(f64, f64, f64, f64), ReservingError> {
     let mid_age = prep.ages[prep.n / 2];
     let omega_grid: [f64; 6] = [0.4, 0.8, 1.2, 1.8, 2.6, 3.8];
     let theta_mults: [f64; 6] = [0.2, 0.5, 1.0, 2.0, 4.0, 8.0];
@@ -929,7 +929,7 @@ fn optimize_growth_params(
     }
 
     if !best_ll.is_finite() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "failed to find valid starting point for Clark MLE",
         ));
     }

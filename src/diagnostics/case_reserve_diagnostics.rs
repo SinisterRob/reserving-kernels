@@ -1,8 +1,9 @@
 //! Case-reserve triangle diagnostics.
 
 use crate::diagnostics::paid_incurred_reconciliation::case_triangle;
+use crate::error::ReservingError;
 use crate::types::{Triangle, TriangleView};
-use crate::validate::{ValidationError, validate_triangle};
+use crate::validate::validate_triangle;
 
 /// Case-reserve diagnostic bundle by origin and development.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,11 +19,11 @@ pub struct CaseReserveDiagnostics {
 fn validate_compatible(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
-) -> Result<(), ValidationError> {
+) -> Result<(), ReservingError> {
     validate_triangle(paid)?;
     validate_triangle(incurred)?;
     if paid.n_origins != incurred.n_origins || paid.n_devs != incurred.n_devs {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     Ok(())
 }
@@ -31,7 +32,7 @@ fn validate_compatible(
 pub fn case_reserve_ratio_triangle(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
-) -> Result<Triangle, ValidationError> {
+) -> Result<Triangle, ReservingError> {
     validate_compatible(paid, incurred)?;
     let mut data = vec![f64::NAN; paid.n_origins * paid.n_devs];
     for origin in 0..paid.n_origins {
@@ -53,7 +54,7 @@ pub fn case_reserve_ratio_triangle(
 pub fn incurred_minus_paid_emergence(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
-) -> Result<Triangle, ValidationError> {
+) -> Result<Triangle, ReservingError> {
     case_triangle(paid, incurred)
 }
 
@@ -61,7 +62,7 @@ pub fn incurred_minus_paid_emergence(
 pub fn case_decay_pattern(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
-) -> Result<Vec<f64>, ValidationError> {
+) -> Result<Vec<f64>, ReservingError> {
     validate_compatible(paid, incurred)?;
     let mut out = vec![f64::NAN; paid.n_devs];
     for dev in 0..paid.n_devs {
@@ -89,7 +90,7 @@ pub fn case_decay_pattern(
 pub fn diagnose(
     paid: &TriangleView<'_>,
     incurred: &TriangleView<'_>,
-) -> Result<CaseReserveDiagnostics, ValidationError> {
+) -> Result<CaseReserveDiagnostics, ReservingError> {
     validate_compatible(paid, incurred)?;
     let mut latest_case_reserve = Vec::with_capacity(paid.n_origins);
     let mut latest_case_reserve_ratio = Vec::with_capacity(paid.n_origins);

@@ -17,8 +17,9 @@
 //!   Ladder Reserve Estimates: Recursive Calculation and Inclusion of a Tail
 //!   Factor*, ASTIN Bulletin, Vol. 29, No. 2, pp. 361–366.
 
+use crate::error::ReservingError;
 use crate::stochastic::mack::MackTailSpec;
-use crate::validate::{ValidationError, validate_positive_finite_slice};
+use crate::validate::validate_positive_finite_slice;
 
 /// Tail curve family fitted to empirical development factors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -56,9 +57,9 @@ pub struct TailFit {
 
 /// Classic Bondy (1966) tail factor: repeats the final observed development
 /// factor (`b = 0.5`, so `prod_{m>=1} f_last^{0.5^m} = f_last`).
-pub fn bondy(ldfs: &[f64]) -> Result<TailFit, ValidationError> {
+pub fn bondy(ldfs: &[f64]) -> Result<TailFit, ReservingError> {
     if ldfs.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(ldfs, "LDF")?;
     let last = ldfs[ldfs.len() - 1];
@@ -90,9 +91,9 @@ pub fn generalized_bondy(
     ldfs: &[f64],
     fit_start: usize,
     extrap_periods: usize,
-) -> Result<TailFit, ValidationError> {
+) -> Result<TailFit, ReservingError> {
     if ldfs.is_empty() || fit_start >= ldfs.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(ldfs, "LDF")?;
 
@@ -102,7 +103,7 @@ pub fn generalized_bondy(
     }
     let ys: Vec<f64> = slice.iter().map(|&f| f.ln()).collect();
     if ys.iter().all(|&y| y <= 0.0) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "generalized Bondy requires at least one LDF > 1.0",
         ));
     }
@@ -164,7 +165,7 @@ pub fn generalized_bondy(
     }
     let b = f64::midpoint(lo, hi);
     if b >= 1.0 - 1e-5 {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "generalized Bondy requires decaying LDFs (b < 1.0)",
         ));
     }
@@ -183,14 +184,14 @@ pub fn generalized_bondy(
     let tail_log = c * b_pow / (1.0 - b);
     let tail_factor = tail_log.exp().max(1.0);
     if !tail_factor.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     let mut extrapolated_ldfs = Vec::with_capacity(extrap_periods);
     for _ in 0..extrap_periods {
         let log_f = c * b_pow;
         let f_step = log_f.exp();
         if !f_step.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         extrapolated_ldfs.push(f_step);
         b_pow *= b;
@@ -208,10 +209,10 @@ pub fn generalized_bondy(
 }
 
 /// Ordinary least squares on `(xs, ys)` returning `(intercept, slope, r_squared)`.
-fn ols_fit(xs: &[f64], ys: &[f64]) -> Result<(f64, f64, f64), ValidationError> {
+fn ols_fit(xs: &[f64], ys: &[f64]) -> Result<(f64, f64, f64), ReservingError> {
     let n = xs.len();
     if n < 2 || n != ys.len() {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "tail curve regression requires at least two valid LDF points > 1.0",
         ));
     }
@@ -229,7 +230,7 @@ fn ols_fit(xs: &[f64], ys: &[f64]) -> Result<(f64, f64, f64), ValidationError> {
         syy += dy * dy;
     }
     if !(sxx > 0.0) {
-        return Err(ValidationError::DivideByZero("tail regression variance"));
+        return Err(ReservingError::DivideByZero("tail regression variance"));
     }
     let slope = sxy / sxx;
     let intercept = my - slope * mx;
@@ -256,9 +257,9 @@ pub fn fit_exponential_decay(
     ldfs: &[f64],
     fit_start: usize,
     extrap_periods: usize,
-) -> Result<TailFit, ValidationError> {
+) -> Result<TailFit, ReservingError> {
     if ldfs.is_empty() || fit_start >= ldfs.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(ldfs, "LDF")?;
 
@@ -273,7 +274,7 @@ pub fn fit_exponential_decay(
 
     let (intercept, slope, r_squared) = ols_fit(&xs, &ys)?;
     if !(slope < 0.0) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "exponential tail curve requires negative decay slope",
         ));
     }
@@ -285,13 +286,13 @@ pub fn fit_exponential_decay(
         let t = (m + step) as f64;
         let f_t = 1.0 + (intercept + slope * t).exp();
         if !f_t.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         extrapolated_ldfs.push(f_t);
         tail_factor *= f_t;
     }
     if !tail_factor.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(TailFit {
@@ -312,9 +313,9 @@ pub fn fit_inverse_power(
     ldfs: &[f64],
     fit_start: usize,
     extrap_periods: usize,
-) -> Result<TailFit, ValidationError> {
+) -> Result<TailFit, ReservingError> {
     if ldfs.is_empty() || fit_start >= ldfs.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(ldfs, "LDF")?;
 
@@ -329,7 +330,7 @@ pub fn fit_inverse_power(
 
     let (intercept, slope, r_squared) = ols_fit(&xs, &ys)?;
     if !(slope < 0.0) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "inverse power tail curve requires negative decay slope",
         ));
     }
@@ -342,13 +343,13 @@ pub fn fit_inverse_power(
         // Evaluate in log-space to avoid intermediate exp(intercept) overflow/underflow.
         let f_t = 1.0 + (intercept + slope * t.ln()).exp();
         if !f_t.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         extrapolated_ldfs.push(f_t);
         tail_factor *= f_t;
     }
     if !tail_factor.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(TailFit {
@@ -369,9 +370,9 @@ pub fn fit_weibull(
     ldfs: &[f64],
     fit_start: usize,
     extrap_periods: usize,
-) -> Result<TailFit, ValidationError> {
+) -> Result<TailFit, ReservingError> {
     if ldfs.is_empty() || fit_start >= ldfs.len() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     validate_positive_finite_slice(ldfs, "LDF")?;
 
@@ -386,7 +387,7 @@ pub fn fit_weibull(
 
     let (intercept, slope, r_squared) = ols_fit(&xs, &ys)?;
     if !(slope > 0.0) {
-        return Err(ValidationError::InvalidParameter(
+        return Err(ReservingError::InvalidParameter(
             "Weibull tail curve requires positive slope",
         ));
     }
@@ -399,17 +400,17 @@ pub fn fit_weibull(
         let z = (intercept + slope * t.ln()).exp();
         let denom = -(-z).exp_m1();
         if !(denom > 0.0) || !denom.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         let f_t = 1.0 / denom;
         if !f_t.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         extrapolated_ldfs.push(f_t);
         tail_factor *= f_t;
     }
     if !tail_factor.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
 
     Ok(TailFit {
@@ -432,15 +433,15 @@ pub fn estimate_mack_tail_spec(
     sigma_sq: &[f64],
     ldf_se: &[f64],
     tail_factor: f64,
-) -> Result<MackTailSpec, ValidationError> {
+) -> Result<MackTailSpec, ReservingError> {
     if !tail_factor.is_finite() {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     if tail_factor < 1.0 {
-        return Err(ValidationError::InvalidTail { tail: tail_factor });
+        return Err(ReservingError::InvalidTail { tail: tail_factor });
     }
     if sigma_sq.len() != ldf_se.len() || sigma_sq.is_empty() {
-        return Err(ValidationError::ShapeMismatch);
+        return Err(ReservingError::ShapeMismatch);
     }
     if (tail_factor - 1.0).abs() <= 1e-12 {
         return Ok(MackTailSpec::fixed(tail_factor));
@@ -512,13 +513,13 @@ pub fn estimate_mack_tail_spec(
 pub fn clark_tail(
     triangle: &crate::types::TriangleView<'_>,
     curve: crate::stochastic::clark_mle::GrowthCurve,
-) -> Result<MackTailSpec, ValidationError> {
+) -> Result<MackTailSpec, ReservingError> {
     let opts = crate::stochastic::clark_mle::ClarkOptions::new(curve);
     let fit = crate::stochastic::clark_mle::fit_clark_ldf(triangle, &opts)?;
     let n_devs = triangle.n_devs;
     let g_end = fit.growth_curve[n_devs - 1];
     if !g_end.is_finite() || g_end <= 0.0 || g_end > 1.0 {
-        return Err(ValidationError::NotFinite);
+        return Err(ReservingError::NotFinite);
     }
     let tail_factor = (1.0 / g_end).max(1.0);
     // Approximate tail factor SE from Clark's origin-0 (oldest maturity) parameter SE:
@@ -527,7 +528,7 @@ pub fn clark_tail(
     let tail_se = if c0_last.is_finite() && c0_last > 0.0 {
         let v = fit.parameter_se[0] / c0_last;
         if !v.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         v.max(0.0)
     } else {
@@ -537,7 +538,7 @@ pub fn clark_tail(
         let proc_var = fit.process_se[0] * fit.process_se[0];
         let v = proc_var / c0_last;
         if !v.is_finite() {
-            return Err(ValidationError::NotFinite);
+            return Err(ReservingError::NotFinite);
         }
         v.max(0.0)
     } else {
