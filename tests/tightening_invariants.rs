@@ -482,7 +482,11 @@ fn neumaier_compensated_summary_and_truncated_var_tvar_coherence() {
     assert!(agg.var(0.999).is_err());
     assert!(agg.tvar(0.999).is_err());
     let v50 = agg.var(0.50).expect("var 50");
-    let tv50 = agg.tvar(0.50).expect("tvar 50");
+    // ~11% of the mass lies beyond the grid: the default 1%-of-tail budget rejects
+    // TVaR instead of silently renormalizing; an explicit loose budget yields a
+    // lower bound that still dominates VaR.
+    assert!(agg.tvar(0.50).is_err());
+    let tv50 = agg.tvar_with_tolerance(0.50, 1.0).expect("tvar 50");
     assert!(tv50 >= v50 - 1e-12);
 }
 

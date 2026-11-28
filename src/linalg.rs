@@ -3,7 +3,11 @@
 //!
 //! All routines operate on row-major `&[f64]` / `Vec<f64>` buffers with zero
 //! unsafe code and zero external linear-algebra dependencies, keeping the crate
-//! WASM-compatible and deterministic across platforms.
+//! WASM-compatible. Results are deterministic run-to-run on a given platform
+//! (fixed operation order, no threading); bit-for-bit reproducibility *across*
+//! platforms is not guaranteed because transcendental helpers such as
+//! `f64::hypot`, `sqrt`-adjacent libm calls and compiler FMA contraction may
+//! differ in the last ulp between targets.
 
 use crate::validate::ValidationError;
 
@@ -760,6 +764,9 @@ pub(crate) fn quad_form(v: &[f64], m: &[f64], dim: usize) -> f64 {
 ///
 /// Returns `(eigenvalues, q)` where `q` is row-major `dim × dim` with column `k`
 /// (`q[row * dim + k]`) holding the unit eigenvector for `eigenvalues[k]`.
+/// Returns [`ValidationError::InvalidParameter`] if the off-diagonal mass does
+/// not fall below `1e-13 * max|a_ij|` within `64 * dim` sweeps (never returns
+/// an unconverged decomposition silently).
 pub(crate) fn jacobi_eigen_symmetric(
     a: &[f64],
     dim: usize,
@@ -794,14 +801,19 @@ pub(crate) fn jacobi_eigen_symmetric(
     let off_tol = 1e-13 * scale;
     let pivot_tol = 1e-15 * scale;
     let max_sweeps = 64 * dim.max(1);
-    for _sweep in 0..max_sweeps {
+    let max_offdiag = |m: &[f64]| {
         let mut max_off = 0.0_f64;
         for p in 0..dim {
             for r in (p + 1)..dim {
-                max_off = max_off.max(mat[p * dim + r].abs());
+                max_off = max_off.max(m[p * dim + r].abs());
             }
         }
-        if max_off <= off_tol {
+        max_off
+    };
+    let mut converged = false;
+    for _sweep in 0..max_sweeps {
+        if max_offdiag(&mat) <= off_tol {
+            converged = true;
             break;
         }
         for p in 0..dim {
@@ -844,6 +856,12 @@ pub(crate) fn jacobi_eigen_symmetric(
                 }
             }
         }
+    }
+
+    if !converged && max_offdiag(&mat) > off_tol {
+        return Err(ValidationError::InvalidParameter(
+            "Jacobi eigen-decomposition did not converge within max_sweeps",
+        ));
     }
 
     let eigenvalues: Vec<f64> = (0..dim).map(|i| mat[i * dim + i]).collect();
