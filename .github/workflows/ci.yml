@@ -5,9 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Reused by release.yml so a tag can only publish after the full CI suite passes.
+  workflow_call:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -205,7 +207,17 @@ jobs:
         with:
           key: miri-nightly
       - name: Run Miri on WASM C-ABI FFI & invariant tests
-        run: cargo +nightly miri test --test tightening_invariants --features wasm wasm_c_abi_exports_roundtrip_and_clear_buffers_on_invalid_input layer_spec_unifies_attachment_limit_and_attachment_top_conventions swimon_does_not_panic_on_tiny_concave_rounding_slack malformed_views_and_grids_return_err_without_panicking
+        # cargo accepts a single TESTNAME filter; pass several exact names to the
+        # libtest harness after `--` instead.
+        run: >-
+          cargo +nightly miri test --test tightening_invariants --features wasm --
+          --exact
+          wasm_c_abi_exports_roundtrip_and_clear_buffers_on_invalid_input
+          layer_spec_unifies_attachment_limit_and_attachment_top_conventions
+          swimon_does_not_panic_on_tiny_concave_rounding_slack
+          malformed_views_and_grids_return_err_without_panicking
+      - name: Run Miri on WASM export status-code regressions
+        run: cargo +nightly miri test --test infra_regressions --features wasm -- wasm_status_
 
   ci-pass:
     name: CI Pass

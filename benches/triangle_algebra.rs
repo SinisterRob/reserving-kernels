@@ -19,7 +19,7 @@ fn right_cumulative_triangle(n: usize) -> Triangle {
             data[i * n + j] = acc;
         }
     }
-    Triangle::new(n, n, data)
+    Triangle::try_new(n, n, data).expect("valid triangle")
 }
 
 fn bench_latest_diagonal(c: &mut Criterion) {
@@ -53,7 +53,7 @@ fn bench_incremental_to_cumulative(c: &mut Criterion) {
     for n in [8_usize, 32, 128, 512] {
         let tri = right_cumulative_triangle(n);
         let incremental = triangle::cumulative_to_incremental(&tri.view());
-        let incr = Triangle::new(n, n, incremental);
+        let incr = Triangle::try_new(n, n, incremental).expect("valid triangle");
         group.throughput(Throughput::Elements(((n * (n + 1)) / 2) as u64));
         group.bench_with_input(BenchmarkId::from_parameter(n), &incr, |b, incr| {
             let view = incr.view();

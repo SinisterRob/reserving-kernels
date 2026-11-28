@@ -27,7 +27,7 @@ fn test_triangle() -> Triangle {
         1500.0, 2100.0,    NAN,    NAN,
         1800.0,    NAN,    NAN,    NAN,
     ];
-    Triangle::new(4, 4, data)
+    Triangle::try_new(4, 4, data).expect("valid triangle")
 }
 
 fn close(a: f64, b: f64, eps: f64) -> bool {
@@ -292,12 +292,13 @@ fn mack_standard_errors_are_non_negative_and_finite() {
 #[test]
 fn mack_checked_rejects_non_cumulative_triangle_under_strict_policy() {
     #[rustfmt::skip]
-    let t = Triangle::new(4, 4, vec![
+    let t = Triangle::try_new(4, 4, vec![
         1000.0, 1500.0, 1700.0, 1800.0,
         1200.0, 1100.0, 2000.0,    NAN,
         1500.0, 2100.0,    NAN,    NAN,
         1800.0,    NAN,    NAN,    NAN,
-    ]);
+    ])
+.expect("valid triangle");
 
     let result = mack::analyze_with_policy(
         &t.view(),
@@ -386,7 +387,7 @@ fn larger_triangle_chain_ladder_consistency() {
         200.0, 350.0,   NAN,   NAN,   NAN,   NAN,
         220.0,   NAN,   NAN,   NAN,   NAN,   NAN,
     ];
-    let t = Triangle::new(6, 6, data);
+    let t = Triangle::try_new(6, 6, data).expect("valid triangle");
     let f = ldf::volume_weighted(&t.view());
     let cl = chain_ladder::project_unchecked(&t.view(), &f, 1.0);
     let latest = triangle::latest_diagonal(&t.view());
@@ -646,9 +647,14 @@ fn regression_ldf_tail_onlevel_dependence_and_diagnostics() {
     let cal = calendar_effect::diagnose(&empty, &[]);
     assert!(cal.strongest_calendar.is_none());
 
-    let rect = Triangle::new(3, 5, vec![100.0; 15]);
+    let rect_data = vec![100.0; 15];
+    let rect = TriangleView {
+        n_origins: 3,
+        n_devs: 5,
+        data: &rect_data,
+    };
     assert_eq!(
-        triangle_diagnostics::negative_increment_flags(&rect.view()),
+        triangle_diagnostics::negative_increment_flags(&rect),
         Vec::new()
     );
 }

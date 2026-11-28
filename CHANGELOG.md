@@ -5,6 +5,48 @@ All notable changes to `reserving-kernels` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — 0.5.0
+
+<!-- One bullet per change, grouped by subsection. Module owners append below. -->
+
+### Fixed
+- **CI:** The Miri job passed four positional test names to `cargo miri test`, which accepts a single `TESTNAME`, so the main CI run was red. It now passes them to libtest after `--` with `--exact`. Miri also runs the new WASM status-code regression test.
+- **WASM exports:** `n > rk_n_max()` used to be silently clamped to 20, returning results for a truncated triangle. It is now rejected with `0` (counts), `NaN` (scalars), or `-1` (`rk_ldf_*`), and stale output buffers are cleared to `NaN`.
+- **WASM docs:** Removed the claim that `catch_unwind` maps panics to `0`/`NaN` on `wasm32-unknown-unknown`. That target aborts on panic and traps the instance; status mapping applies only to native and Miri builds.
+- **`Triangle::try_new`:** Untrusted dimensions are now checked with `checked_mul`. Before this, a `2^32 × 2^32` header with empty `data` could wrap `n_origins * n_devs` to `0`, which panicked in debug builds and slipped past the shape check in release builds.
+- **Parity scripts:** `scripts/parity_r.R` and `scripts/parity_python.py` now check every parity value against reference values within explicit tolerances and exit non-zero on a mismatch. They exit `2` when the packages are missing. The R `bench_us` helper re-evaluates its expression on every repetition; the old `force()` evaluated it only once.
+
+### Changed (Breaking)
+- **`Triangle::new` is now `pub(crate)`.** It skipped validation and relied on a `debug_assert`, so malformed buffers could panic in release builds inside `latest_diagonal` and `diagnostics`. External callers must use `Triangle::try_new`, `try_from_rows`, `try_from_upper_rows`, `try_from_incremental_rows`, or the `triangle!` macro.
+- **WASM `rk_ldf_*` exports now return `i32`:** the number of LDFs written (`0` is a valid result for `n = 1`), or `RK_STATUS_ERR` (`-1`) on invalid input. They returned `u32` before, so an error and `n = 1` both returned `0`.
+
+### Changed
+- **Release workflow:** Removed automatic deletion of older GitHub Releases and automatic `cargo yank` of every older crates.io version. Yanking is now a manual step, used only for broken releases.
+- **Release workflow:** Runs the full CI workflow (reused through `workflow_call`) as a required gate before verifying, building, or publishing a tag. The release clippy gate now also denies `clippy::expect_used`, matching CI.
+- **README:** States that the ODP GLM benchmark row uses the closed-form chain-ladder fast path, while R and Python use IRLS. States that the R and Python ratios include interpreter overhead. Matches the chainladder-python version to the parity script (`>= 0.10`, timings on 0.10.1). Narrows the determinism claim to bit-identical results per target/platform, because samplers use the platform `libm`. Documents the WASM status convention.
+
+### Added
+- `tests/infra_regressions.rs` adds a seeded (seed `42069`) mutation fuzz over `Triangle` JSON. It covers truncation, byte flips, NaN/null/huge/negative values, shape and overflow mismatches, and structural damage, and checks that nothing panics and that every accepted triangle meets the invariants. The file also tests the `Triangle` construction invariants and the WASM status codes.
+- `wasm_exports::RK_STATUS_ERR` constant. `scripts/wasm-smoke.mjs` now covers the status convention.
+- Unit test asserting every bundled dataset passes `Triangle::try_new`.
+
+## [0.4.0] - 2026-11-26
+
+### Changed (Breaking)
+- **Phase 2 domain architecture:** Reorganized about 50 modules into the `deterministic`, `stochastic`, `capital`, `excess`, `preprocessing`, `diagnostics`, and `subannual` domains. Method facades moved out of `types.rs` into `triangle_ops.rs`.
+
+### Added
+- `triangle!` macro for validated literal triangles.
+- `stochastic::reserve_runoff`: Mack and ODP one-year re-reserving simulation, with Merz & Wüthrich (2014) traceability.
+- Mack (1993) RAA worked example (`docs/examples/mack-chain-ladder-raa.md`, `cargo run --example mack_raa`).
+- Eight new Criterion benchmarks and more than 20 published kernel latencies in the README.
+
+### Changed
+- Updated `criterion` to 0.8. Benchmarks use `std::hint::black_box`.
+- Hardened the pre-commit and pre-push hooks, added a `cargo-deny` and CI security gate, and fixed `nullglob` in the script syntax check.
+- The release workflow yanked previous crates.io versions automatically. This is reverted in 0.5.0.
+- Removed the tracked `__pycache__`, then removed `CITATION.cff`.
+
 ## [0.3.0] - 2026-11-26
 
 ### Changed (Breaking)

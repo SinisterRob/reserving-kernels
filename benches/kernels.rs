@@ -45,7 +45,7 @@ fn synthetic_cumulative_triangle(n: usize) -> Triangle {
             data[i * n + j] = acc;
         }
     }
-    Triangle::new(n, n, data)
+    Triangle::try_new(n, n, data).expect("valid triangle")
 }
 
 fn bench_ldf_and_deterministic(c: &mut Criterion) {
@@ -145,7 +145,7 @@ fn bench_bootstrap(c: &mut Criterion) {
     });
 
     let sync_opts = OdpBootstrapOptions::shapland(500, 42069);
-    let genins2 = Triangle::new(
+    let genins2 = Triangle::try_new(
         genins.n_origins(),
         genins.n_devs(),
         genins
@@ -153,7 +153,8 @@ fn bench_bootstrap(c: &mut Criterion) {
             .iter()
             .map(|&v| if v.is_finite() { v * 1.35 } else { f64::NAN })
             .collect(),
-    );
+    )
+    .expect("valid triangle");
     let views = [genins.view(), genins2.view()];
     group.throughput(Throughput::Elements(500));
     group.bench_function("synchronized_odp_2line_500", |b| {
@@ -282,7 +283,7 @@ fn bench_advanced_kernels(c: &mut Criterion) {
             tri40_b_data[i * 40 + j] = acc;
         }
     }
-    let tri40_b = Triangle::new(40, 40, tri40_b_data);
+    let tri40_b = Triangle::try_new(40, 40, tri40_b_data).expect("valid triangle");
     let mv_views_40 = [tri40_a.view(), tri40_b.view()];
     group.bench_function("multivariate_mack_2line_40x40", |b| {
         b.iter(|| multivariate_mack::analyze(black_box(&mv_views_40), 1.0).expect("mv mack"));

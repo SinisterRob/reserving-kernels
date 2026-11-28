@@ -134,6 +134,33 @@ assert.ok(Number.isFinite(mackSe) && mackSe > 0, `Mack SE invalid: ${mackSe}`);
 assert.equal(e.rk_chain_ladder(n, 0.5), 0, "Invalid tail (< 1.0) should return 0");
 assert.ok(Number.isNaN(e.rk_mack(n, Number.NaN)), "NaN tail should return NaN");
 
+// 8. Status convention: rk_ldf_* return the LDF count (0 is valid for n = 1)
+//    or -1 on invalid n; n > rk_n_max() is rejected, never truncated.
+const RK_STATUS_ERR = -1;
+const ldfExports = [
+  (m) => e.rk_ldf_volume_weighted(m),
+  (m) => e.rk_ldf_simple_average(m),
+  (m) => e.rk_ldf_ex_hi_lo(m),
+  (m) => e.rk_ldf_volume_weighted_last_n(m, 3),
+  (m) => e.rk_ldf_simple_average_last_n(m, 3),
+];
+for (const call of ldfExports) {
+  assert.equal(call(n), n - 1, "LDF count for valid n");
+  assert.equal(call(1), 0, "n = 1 yields zero LDFs (success, not error)");
+  assert.equal(call(0), RK_STATUS_ERR, "n = 0 must return the error status");
+  assert.equal(call(nMax + 1), RK_STATUS_ERR, "n > n_max must return the error status");
+  assert.ok(Number.isNaN(f64View(e.rk_ldf_ptr(), 1)[0]), "LDF buffer cleared on error");
+}
+assert.equal(e.rk_cdf_compute(nMax + 1, 1.0), 0, "rk_cdf_compute rejects n > n_max");
+assert.equal(e.rk_chain_ladder(nMax + 1, 1.0), 0, "rk_chain_ladder rejects n > n_max");
+assert.ok(Number.isNaN(f64View(e.rk_ult_ptr(), 1)[0]), "ULT buffer cleared on n > n_max");
+assert.equal(e.rk_bf(nMax + 1, 1.0), 0, "rk_bf rejects n > n_max");
+assert.equal(e.rk_bf_expected_from_premium(nMax + 1, 0.7), 0, "BF expected rejects n > n_max");
+assert.equal(e.rk_brosius(nMax + 1, 1.0), 0, "rk_brosius rejects n > n_max");
+assert.ok(Number.isNaN(e.rk_cape_cod_elr(nMax + 1, 1.0)), "Cape Cod ELR rejects n > n_max");
+assert.ok(Number.isNaN(e.rk_cape_cod(nMax + 1, 1.0)), "Cape Cod rejects n > n_max");
+assert.ok(Number.isNaN(e.rk_mack(nMax + 1, 1.0)), "Mack rejects n > n_max");
+
 console.log(
   `WASM smoke test passed (${wasmPath}: ${bytes.length.toLocaleString()} bytes raw, ${gzipBytes.toLocaleString()} bytes gzip)`,
 );

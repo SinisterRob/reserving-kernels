@@ -35,6 +35,9 @@ impl Triangle {
     /// Convert this cumulative triangle to an incremental [`Triangle`].
     pub fn to_incremental(&self) -> Self {
         let n = self.n();
+        // `cumulative_to_incremental` returns an `n × n` buffer, so the shape
+        // invariant of the crate-internal constructor holds. Incremental cells
+        // may legitimately be negative, so `try_new` is not applicable here.
         Self::new(n, n, cumulative_to_incremental(&self.view()))
     }
 

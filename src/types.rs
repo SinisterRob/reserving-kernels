@@ -63,14 +63,18 @@ impl PartialEq for Triangle {
 }
 
 impl Triangle {
-    /// Construct a triangle from a row-major slice without validation.
+    /// Construct a triangle from a row-major buffer without validation.
     ///
-    /// Callers must ensure `data.len() == n_origins * n_devs`. Use
-    /// [`Self::try_new`] at external ingress boundaries when full validation
-    /// (square, finite, non-negative observed cells) is required.
+    /// Crate-internal only: callers must guarantee
+    /// `data.len() == n_origins * n_devs` (accessors such as
+    /// [`Self::latest_diagonal`] index the buffer directly and would panic in
+    /// release builds otherwise). Every in-crate caller derives `data` from an
+    /// existing validated triangle of the same shape or from a fixed-size
+    /// literal. External users must go through [`Self::try_new`] or the
+    /// `try_from_*` constructors.
     #[inline]
     #[must_use]
-    pub fn new(n_origins: usize, n_devs: usize, data: Vec<f64>) -> Self {
+    pub(crate) fn new(n_origins: usize, n_devs: usize, data: Vec<f64>) -> Self {
         debug_assert_eq!(data.len(), n_origins * n_devs);
         Self {
             n_origins,
@@ -89,6 +93,12 @@ impl Triangle {
         n_devs: usize,
         data: Vec<f64>,
     ) -> Result<Self, ValidationError> {
+        // Checked product first: with untrusted (e.g. deserialized) dimensions
+        // `n_origins * n_devs` can overflow and wrap to `data.len()`, which
+        // would otherwise let a `2^32 × 2^32` header with empty data through.
+        if n_origins.checked_mul(n_devs) != Some(data.len()) {
+            return Err(ValidationError::ShapeMismatch);
+        }
         let triangle = Self {
             n_origins,
             n_devs,

@@ -253,7 +253,7 @@ fn meyers_bivariate_ccl_propagates_parameter_and_correlation_uncertainty() {
             data2[i * n + j] = g.get(i, j) * 1.15 * jitter;
         }
     }
-    let line2 = Triangle::new(n, n, data2);
+    let line2 = Triangle::try_new(n, n, data2).expect("valid triangle");
     let opts = MeyersOptions {
         model: MeyersModel::Ccl,
         n_samples: 400,
@@ -284,7 +284,7 @@ fn general_gmcl_exact_sandwich_msep_is_finite_and_positive() {
             data2[i * n + j] = g.get(i, j) * factor;
         }
     }
-    let line2 = Triangle::new(n, n, data2);
+    let line2 = Triangle::try_new(n, n, data2).expect("valid triangle");
     let gmcl = analyze_multivariate_cl(
         &[g.view(), line2.view()],
         &MultivariateClOptions {
