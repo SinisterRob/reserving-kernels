@@ -12,6 +12,7 @@ documentation = "https://docs.rs/reserving-kernels"
 readme = "README.md"
 exclude = [
     "assets/",
+    ".claude/",
     ".github/",
     ".githooks/",
     ".gitignore",
