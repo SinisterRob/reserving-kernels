@@ -102,6 +102,56 @@ pub struct OdpBootstrapOptions {
     pub monotonicity_policy: MonotonicityPolicy,
 }
 
+/// Numerical safeguards and failure policy for the ODP bootstrap family
+/// ([`bootstrap_odp_with_numerics`],
+/// [`crate::stochastic::reserve_runoff::odp_one_year_runoff_with_numerics`]).
+///
+/// Kept separate from [`OdpBootstrapOptions`] so the modelling specification
+/// stays `Eq`/`Copy`-comparable while every numerical tunable is still
+/// externalised (config-first).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OdpNumerics {
+    /// Maximum tolerated fraction of failed (non-finite / degenerate pseudo-
+    /// triangle) iterations, in `[0, 1]` (default `0.01`). Failed iterations
+    /// are dropped from the empirical distribution, which can truncate its
+    /// tails; above this fraction the run returns
+    /// [`ReservingError::InvalidParameter`] instead of a silently biased result.
+    pub max_failed_fraction: f64,
+}
+
+impl Default for OdpNumerics {
+    fn default() -> Self {
+        Self {
+            max_failed_fraction: 0.01,
+        }
+    }
+}
+
+impl OdpNumerics {
+    pub(crate) fn validate(self) -> Result<(), ReservingError> {
+        if !(0.0..=1.0).contains(&self.max_failed_fraction) {
+            return Err(ReservingError::InvalidProbability {
+                value: self.max_failed_fraction,
+            });
+        }
+        Ok(())
+    }
+
+    /// Error when `failed / attempted` exceeds [`Self::max_failed_fraction`].
+    pub(crate) fn check_failures(
+        self,
+        failed: usize,
+        attempted: usize,
+    ) -> Result<(), ReservingError> {
+        if attempted > 0 && failed as f64 > self.max_failed_fraction * attempted as f64 {
+            return Err(ReservingError::InvalidParameter(
+                "bootstrap failed-iteration fraction exceeds max_failed_fraction",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Default for OdpBootstrapOptions {
     fn default() -> Self {
         Self::england_verrall(1000, 42069)

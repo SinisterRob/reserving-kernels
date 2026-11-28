@@ -29,8 +29,10 @@
 //!   `ELR_hat(omega, theta) = sum_i C_{i, d_i} / sum_i (P_i · G(x_{d_i}))`.
 //! * **Over-Dispersed Poisson scale**:
 //!   `sigma^2 = (1 / (N - p)) * sum_{(i,j)} (c_{i,j} - mu_{i,j})^2 / mu_{i,j}`.
-//! * **Cramér–Rao parameter variance**: computed from the inverse Fisher
-//!   information matrix `Cov(psi_hat) = sigma^2 * I(psi_hat)^{-1}` via delta
+//! * **Parameter variance**: computed from the inverse information matrix
+//!   `Cov(psi_hat) = sigma^2 * I(psi_hat)^{-1}` (observed information by
+//!   default as in Clark 2003; expected Fisher information optional, see
+//!   [`ClarkCovariance`]) via delta
 //!   method on `R_i(psi)`, combined with process variance `sigma^2 * R_i`:
 //!   `SE_total = sqrt(ProcessVar + ParamVar)`.
 
@@ -128,6 +130,24 @@ pub struct ClarkOptions {
     pub max_age: Option<f64>,
     /// Cumulative monotonicity validation policy.
     pub monotonicity_policy: MonotonicityPolicy,
+    /// Parameter covariance estimator (default [`ClarkCovariance::Observed`], Clark 2003).
+    pub covariance: ClarkCovariance,
+}
+
+/// Information matrix used for the Clark (2003) parameter covariance
+/// `Cov(ψ̂) = σ² · I(ψ̂)⁻¹`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ClarkCovariance {
+    /// Observed information `−∇²ℓ(ψ̂)` of the (quasi-)Poisson log-likelihood,
+    /// as in Clark (2003, §§ 2–3) and `ChainLadder::ClarkLDF`:
+    /// `Σ [ (c/μ²) ∇μ∇μᵀ − (c/μ − 1) ∇²μ ]`. Growth-curve second derivatives
+    /// are central finite differences of the analytic first derivatives.
+    /// Falls back to [`Self::Expected`] (flagged in
+    /// [`ClarkMleResult::covariance_fallback`]) if it is not positive definite.
+    #[default]
+    Observed,
+    /// Expected (Fisher) information `Σ (1/μ) ∇μ∇μᵀ`.
+    Expected,
 }
 
 impl Default for ClarkOptions {
@@ -146,6 +166,7 @@ impl ClarkOptions {
             origin_offset: 0.5,
             max_age: None,
             monotonicity_policy: MonotonicityPolicy::Strict,
+            covariance: ClarkCovariance::Observed,
         }
     }
 
@@ -174,6 +195,12 @@ impl ClarkOptions {
     /// Truncate ultimate projection at a finite maximum development age.
     pub const fn with_max_age(mut self, max_age: f64) -> Self {
         self.max_age = Some(max_age);
+        self
+    }
+
+    /// Select the parameter covariance estimator.
+    pub const fn with_covariance(mut self, covariance: ClarkCovariance) -> Self {
+        self.covariance = covariance;
         self
     }
 
@@ -237,10 +264,16 @@ pub struct ClarkMleResult {
     pub total_se_aggregate: f64,
     /// Total portfolio coefficient of variation (`total_se_aggregate / total_reserve`).
     pub total_cv: f64,
-    /// Parameter covariance matrix `sigma^2 * I(psi_hat)^{-1}` (`p × p` row-major).
+    /// Parameter covariance matrix `sigma^2 * I(psi_hat)^{-1}` (`p × p` row-major),
+    /// using the information matrix reported in [`Self::covariance`].
     /// Parameter ordering is `[U_0..U_{n-1}, omega, theta]` for LDF and
     /// `[ELR, omega, theta]` for Cape Cod.
     pub parameter_covariance: Vec<f64>,
+    /// Information matrix actually used for `parameter_covariance`.
+    pub covariance: ClarkCovariance,
+    /// `true` when [`ClarkCovariance::Observed`] was requested but the observed
+    /// information was not positive definite and the expected one was used.
+    pub covariance_fallback: bool,
 }
 
 /// Fit Clark (2003) parametric LDF model (`mu_{i,j} = U_i * dG_j`) to a
@@ -280,8 +313,10 @@ pub fn fit_clark_ldf(
 
     // Compute ODP scale sigma^2 and unscaled Fisher information matrix J (p × p).
     // Ordering: [U_0..U_{n-1}, omega, theta].
+    let (d2_ww, d2_wt, d2_tt) = curve_second_derivs(&prep.ages, omega, theta, options.curve);
     let mut pearson_ss = 0.0;
     let mut info = vec![0.0; n_params * n_params];
+    let mut info_obs = vec![0.0; n_params * n_params];
     for i in 0..n {
         let ui = u_hat[i];
         for j in 0..(n - i) {
@@ -312,12 +347,29 @@ pub fn fit_clark_ldf(
             info[idx_w * n_params + idx_t] += inv_mu * d_w * d_t;
             info[idx_t * n_params + idx_w] += inv_mu * d_w * d_t;
             info[idx_t * n_params + idx_t] += inv_mu * d_t * d_t;
+
+            // Observed information: (c/mu^2) d d^T - (c/mu - 1) H_mu.
+            let a = obs * inv_mu * inv_mu;
+            let b = obs * inv_mu - 1.0;
+            let idx = [i, idx_w, idx_t];
+            let d = [d_u, d_w, d_t];
+            let h = [
+                [0.0, d_dg_dw[j], d_dg_dt[j]],
+                [d_dg_dw[j], ui * d2_ww[j], ui * d2_wt[j]],
+                [d_dg_dt[j], ui * d2_wt[j], ui * d2_tt[j]],
+            ];
+            for r in 0..3 {
+                for c in 0..3 {
+                    info_obs[idx[r] * n_params + idx[c]] += a * d[r] * d[c] - b * h[r][c];
+                }
+            }
         }
     }
 
     let dof = n_obs - n_params;
     let sigma_sq = pearson_ss / dof as f64;
-    let j_inv = invert_spd(&info, n_params)?;
+    let (j_inv, covariance, covariance_fallback) =
+        invert_information(&info, &info_obs, n_params, options.covariance)?;
     let cov: Vec<f64> = j_inv.iter().map(|&v| sigma_sq * v).collect();
 
     let mut reserves = vec![0.0; n];
@@ -387,6 +439,8 @@ pub fn fit_clark_ldf(
         total_se_aggregate,
         total_cv,
         parameter_covariance: cov,
+        covariance,
+        covariance_fallback,
     })
 }
 
@@ -426,8 +480,10 @@ pub fn fit_clark_cape_cod(
     let elr = sum_latest / sum_used_prem;
 
     // 3×3 Fisher information for [ELR, omega, theta].
+    let (d2_ww, d2_wt, d2_tt) = curve_second_derivs(&prep.ages, omega, theta, options.curve);
     let mut pearson_ss = 0.0;
     let mut info = vec![0.0; 9];
+    let mut info_obs = vec![0.0; 9];
     for i in 0..n {
         let p_i = premium[i];
         for j in 0..(n - i) {
@@ -444,9 +500,17 @@ pub fn fit_clark_cape_cod(
 
             let d = [p_i * dg, p_i * elr * d_dg_dw[j], p_i * elr * d_dg_dt[j]];
             let inv_mu = 1.0 / mu;
+            let w_a = obs * inv_mu * inv_mu;
+            let w_b = obs * inv_mu - 1.0;
+            let h = [
+                [0.0, p_i * d_dg_dw[j], p_i * d_dg_dt[j]],
+                [p_i * d_dg_dw[j], p_i * elr * d2_ww[j], p_i * elr * d2_wt[j]],
+                [p_i * d_dg_dt[j], p_i * elr * d2_wt[j], p_i * elr * d2_tt[j]],
+            ];
             for a in 0..3 {
                 for b in 0..3 {
                     info[a * 3 + b] += inv_mu * d[a] * d[b];
+                    info_obs[a * 3 + b] += w_a * d[a] * d[b] - w_b * h[a][b];
                 }
             }
         }
@@ -454,7 +518,8 @@ pub fn fit_clark_cape_cod(
 
     let dof = n_obs - n_params;
     let sigma_sq = pearson_ss / dof as f64;
-    let j_inv = invert_spd(&info, 3)?;
+    let (j_inv, covariance, covariance_fallback) =
+        invert_information(&info, &info_obs, 3, options.covariance)?;
     let cov: Vec<f64> = j_inv.iter().map(|&v| sigma_sq * v).collect();
 
     let mut reserves = vec![0.0; n];
@@ -524,6 +589,8 @@ pub fn fit_clark_cape_cod(
         total_se_aggregate,
         total_cv,
         parameter_covariance: cov,
+        covariance,
+        covariance_fallback,
     })
 }
 
@@ -863,6 +930,58 @@ fn profile_ll_and_grad(
     }
     // Chain rule: d/du = omega * d/domega, d/dv = theta * d/dtheta.
     Some((ll, [grad_omega * omega, grad_theta * theta]))
+}
+
+/// Invert the requested information matrix, falling back to the expected
+/// information when the observed one is not positive definite.
+fn invert_information(
+    expected: &[f64],
+    observed: &[f64],
+    dim: usize,
+    kind: ClarkCovariance,
+) -> Result<(Vec<f64>, ClarkCovariance, bool), ReservingError> {
+    if kind == ClarkCovariance::Observed {
+        let mut sym = observed.to_vec();
+        for a in 0..dim {
+            for b in (a + 1)..dim {
+                let v = f64::midpoint(sym[a * dim + b], sym[b * dim + a]);
+                sym[a * dim + b] = v;
+                sym[b * dim + a] = v;
+            }
+        }
+        if let Ok(inv) = invert_spd(&sym, dim) {
+            return Ok((inv, ClarkCovariance::Observed, false));
+        }
+        return Ok((invert_spd(expected, dim)?, ClarkCovariance::Expected, true));
+    }
+    Ok((invert_spd(expected, dim)?, ClarkCovariance::Expected, false))
+}
+
+/// Second derivatives of the incremental growth `dG_j` w.r.t. `(ω, θ)` via
+/// central differences of the analytic first derivatives (relative step `1e-5`).
+#[allow(clippy::type_complexity)]
+fn curve_second_derivs(
+    ages: &[f64],
+    omega: f64,
+    theta: f64,
+    curve: GrowthCurve,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let hw = 1e-5 * omega.abs().max(1e-8);
+    let ht = 1e-5 * theta.abs().max(1e-8);
+    let (.., wp_dw, wp_dt) = evaluate_curve_arrays(ages, omega + hw, theta, curve);
+    let (.., wm_dw, wm_dt) = evaluate_curve_arrays(ages, omega - hw, theta, curve);
+    let (.., tp_dt) = evaluate_curve_arrays(ages, omega, theta + ht, curve);
+    let (.., tm_dt) = evaluate_curve_arrays(ages, omega, theta - ht, curve);
+    let n = ages.len();
+    let mut d2_ww = vec![0.0; n];
+    let mut d2_wt = vec![0.0; n];
+    let mut d2_tt = vec![0.0; n];
+    for j in 0..n {
+        d2_ww[j] = (wp_dw[j] - wm_dw[j]) / (2.0 * hw);
+        d2_wt[j] = (wp_dt[j] - wm_dt[j]) / (2.0 * hw);
+        d2_tt[j] = (tp_dt[j] - tm_dt[j]) / (2.0 * ht);
+    }
+    (d2_ww, d2_wt, d2_tt)
 }
 
 #[allow(clippy::type_complexity)]

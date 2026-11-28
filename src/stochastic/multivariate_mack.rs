@@ -94,6 +94,48 @@ impl std::fmt::Display for MultivariateMackResult {
     }
 }
 
+/// Braun (2004, Eq. 3.4) cross-triangle link covariance at link `k` over the
+/// first `nk` origins, with the unbiased denominator
+/// `w_k = n_k − 2 + (Σ √(C^r C^s))² / (S^r S^s)` (reducing to `n_k − 1` when
+/// `r = s`). Only origins with positive denominators in both triangles enter.
+/// Returns `None` with fewer than two such origins or a non-positive `w_k`.
+///
+/// Shared by [`analyze_with_policy`] and
+/// [`crate::stochastic::multivariate_cl`]'s diagonal MCL.
+pub(crate) fn braun_link_covariance(
+    tri_r: &TriangleView<'_>,
+    tri_s: &TriangleView<'_>,
+    k: usize,
+    nk: usize,
+    f_r: f64,
+    f_s: f64,
+) -> Option<f64> {
+    let mut acc = 0.0;
+    let mut valid = 0usize;
+    let mut ssp = 0.0;
+    let mut sr = 0.0;
+    let mut ss = 0.0;
+    for i in 0..nk {
+        let cr = tri_r.get(i, k);
+        let cs = tri_s.get(i, k);
+        if cr > 0.0 && cs > 0.0 {
+            let dr = tri_r.get(i, k + 1) / cr - f_r;
+            let ds = tri_s.get(i, k + 1) / cs - f_s;
+            let g = (cr * cs).sqrt();
+            acc += g * dr * ds;
+            ssp += g;
+            sr += cr;
+            ss += cs;
+            valid += 1;
+        }
+    }
+    if valid < 2 || sr <= 0.0 || ss <= 0.0 {
+        return None;
+    }
+    let denom = (valid as f64 - 2.0) + (ssp * ssp) / (sr * ss);
+    (denom > 0.0).then(|| acc / denom)
+}
+
 /// Compute Braun (2004) / Merz & Wüthrich (2008) multivariate chain-ladder MSEP
 /// across $N$ aligned square triangles under strict cumulative monotonicity.
 pub fn analyze(
@@ -199,36 +241,15 @@ pub fn analyze_with_policy(
                 };
 
                 let cov_rs = if nk >= 2 {
-                    let mut acc = 0.0;
-                    let mut valid = 0usize;
-                    let mut ssp_valid = 0.0;
-                    let mut sr_valid = 0.0;
-                    let mut ss_valid = 0.0;
-                    for i in 0..nk {
-                        let cr = triangles[r].get(i, k);
-                        let cs = triangles[s].get(i, k);
-                        if cr > 0.0 && cs > 0.0 {
-                            let dr = triangles[r].get(i, k + 1) / cr - marginal_mack[r].ldf[k];
-                            let ds = triangles[s].get(i, k + 1) / cs - marginal_mack[s].ldf[k];
-                            let g = (cr * cs).sqrt();
-                            acc += g * dr * ds;
-                            ssp_valid += g;
-                            sr_valid += cr;
-                            ss_valid += cs;
-                            valid += 1;
-                        }
-                    }
-                    if valid >= 2 && sr_valid > 0.0 && ss_valid > 0.0 {
-                        let denom =
-                            (valid as f64 - 2.0) + (ssp_valid * ssp_valid) / (sr_valid * ss_valid);
-                        if denom > 0.0 {
-                            (acc / denom).clamp(-max_abs_cov, max_abs_cov)
-                        } else {
-                            0.0
-                        }
-                    } else {
-                        0.0
-                    }
+                    braun_link_covariance(
+                        &triangles[r],
+                        &triangles[s],
+                        k,
+                        nk,
+                        marginal_mack[r].ldf[k],
+                        marginal_mack[s].ldf[k],
+                    )
+                    .map_or(0.0, |c| c.clamp(-max_abs_cov, max_abs_cov))
                 } else if k >= 2 {
                     // Extrapolate last-link covariance via Braun (2004) Mack-style min-rule
                     // preserving sign and Cauchy-Schwarz bound.

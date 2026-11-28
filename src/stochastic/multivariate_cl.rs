@@ -23,6 +23,7 @@ use crate::{
     ReservingError,
     linalg::solve_general,
     preprocessing::triangle::latest_diagonal,
+    stochastic::multivariate_mack::braun_link_covariance,
     types::TriangleView,
     validate::{MonotonicityPolicy, validate_monotone_cumulative, validate_triangle},
 };
@@ -211,6 +212,26 @@ pub fn analyze_multivariate_cl(
             let inv_dof = 1.0 / dof as f64;
             for v in &mut sig {
                 *v *= inv_dof;
+            }
+            // Diagonal MCL off-diagonals use Braun's (2004, Eq. 3.4) unbiased
+            // denominator, shared with `multivariate_mack` (diagonals are
+            // identical: Braun's denominator reduces to n_k − 1).
+            if options.model == MultivariateModel::DiagonalMcl {
+                for a in 0..k_lines {
+                    for b in (a + 1)..k_lines {
+                        let cov = braun_link_covariance(
+                            &triangles[a],
+                            &triangles[b],
+                            k,
+                            nk,
+                            bk[a * k_lines + a],
+                            bk[b * k_lines + b],
+                        )
+                        .unwrap_or(0.0);
+                        sig[a * k_lines + b] = cov;
+                        sig[b * k_lines + a] = cov;
+                    }
+                }
             }
         }
         b_mats.push(bk);

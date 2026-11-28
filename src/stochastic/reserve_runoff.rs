@@ -50,7 +50,7 @@ use crate::capital::reserve_distribution::{
 use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::stochastic::bootstrap_odp::{
-    DeterministicRng, FastIndexSampler, OdpBootstrapOptions, OdpBootstrapScratch,
+    DeterministicRng, FastIndexSampler, OdpBootstrapOptions, OdpBootstrapScratch, OdpNumerics,
     build_adjusted_residual_pool, fit_odp, refit_pseudo_ldfs_from_pool,
     sample_process_increment_fast,
 };
@@ -322,7 +322,7 @@ pub enum MackInnovation {
 }
 
 /// Configuration for [`mack_one_year_runoff_with_options`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MackRunoffOptions {
     /// Number of Monte Carlo scenarios.
     pub scenarios: usize,
@@ -335,6 +335,10 @@ pub struct MackRunoffOptions {
     pub center_residuals: bool,
     /// Monotonicity policy for triangle validation.
     pub monotonicity_policy: MonotonicityPolicy,
+    /// Maximum tolerated fraction of failed scenarios (default `0.01`).
+    /// Failed scenarios are dropped (truncating the simulated tails); above
+    /// this fraction the run errors instead. See [`OdpNumerics::max_failed_fraction`].
+    pub max_failed_fraction: f64,
 }
 
 impl Default for MackRunoffOptions {
@@ -354,7 +358,14 @@ impl MackRunoffOptions {
             innovation: MackInnovation::BootstrapResiduals,
             center_residuals: true,
             monotonicity_policy: MonotonicityPolicy::AllowNegativeIncrements,
+            max_failed_fraction: 0.01,
         }
+    }
+
+    /// Set the maximum tolerated fraction of failed scenarios.
+    pub const fn with_max_failed_fraction(mut self, fraction: f64) -> Self {
+        self.max_failed_fraction = fraction;
+        self
     }
 
     /// Set the number of Monte Carlo scenarios.
@@ -578,6 +589,11 @@ pub fn mack_one_year_runoff(
 
 /// Run the Mack one-year re-reserving simulation with explicit tail factor and
 /// [`MackRunoffOptions`].
+///
+/// Failed scenarios are dropped and counted in
+/// [`OneYearRunoffResult::failed_iterations`]; a failed fraction above
+/// [`MackRunoffOptions::max_failed_fraction`] returns an error rather than a
+/// tail-truncated distribution.
 pub fn mack_one_year_runoff_with_options(
     triangle: &TriangleView<'_>,
     tail: f64,
@@ -586,6 +602,10 @@ pub fn mack_one_year_runoff_with_options(
     if options.scenarios == 0 {
         return Err(ReservingError::InvalidIterations);
     }
+    OdpNumerics {
+        max_failed_fraction: options.max_failed_fraction,
+    }
+    .validate()?;
     validate_tail(tail)?;
 
     let opening_mack = mack::analyze_with_policy(triangle, tail, options.monotonicity_policy)?;
@@ -790,6 +810,9 @@ pub fn mack_one_year_runoff_with_options(
         origin_adverse_development,
         lifetime_total_reserves,
         failed_iterations,
+        OdpNumerics {
+            max_failed_fraction: options.max_failed_fraction,
+        },
     )
 }
 
@@ -805,11 +828,27 @@ pub fn mack_one_year_runoff_with_options(
 /// `R_{t+1}`, one-year adverse development `L_{t+1} = P_{t+1} + R_{t+1} - R_t`
 /// (positive = adverse, i.e., `-CDR`), and lifetime reserves `R_life` on the
 /// same observed origin-period cohort.
+///
+/// Failed scenarios are dropped and counted in
+/// [`OneYearRunoffResult::failed_iterations`]; more than
+/// [`OdpNumerics::default`]'s `max_failed_fraction` (1%) is an error. Use
+/// [`odp_one_year_runoff_with_numerics`] to change the threshold.
 pub fn odp_one_year_runoff(
     triangle: &TriangleView<'_>,
     tail: f64,
     options: OdpBootstrapOptions,
 ) -> Result<OneYearRunoffResult, ReservingError> {
+    odp_one_year_runoff_with_numerics(triangle, tail, options, OdpNumerics::default())
+}
+
+/// [`odp_one_year_runoff`] with explicit [`OdpNumerics`].
+pub fn odp_one_year_runoff_with_numerics(
+    triangle: &TriangleView<'_>,
+    tail: f64,
+    options: OdpBootstrapOptions,
+    numerics: OdpNumerics,
+) -> Result<OneYearRunoffResult, ReservingError> {
+    numerics.validate()?;
     if options.iterations == 0 {
         return Err(ReservingError::InvalidIterations);
     }
@@ -967,6 +1006,7 @@ pub fn odp_one_year_runoff(
         origin_adverse_development,
         lifetime_total_reserves,
         failed_iterations,
+        numerics,
     )
 }
 
@@ -981,7 +1021,12 @@ fn finalize_runoff_result(
     origin_adverse_development: Vec<Vec<f64>>,
     lifetime_total_reserves: Vec<f64>,
     failed_iterations: usize,
+    numerics: OdpNumerics,
 ) -> Result<OneYearRunoffResult, ReservingError> {
+    numerics.check_failures(
+        failed_iterations,
+        failed_iterations + total_adverse_development.len(),
+    )?;
     if total_adverse_development.is_empty() {
         return Err(ReservingError::NotFinite);
     }

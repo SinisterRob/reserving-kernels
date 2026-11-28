@@ -8,9 +8,18 @@
 
 use reserving_kernels::{
     ReservingError,
+    stochastic::bootstrap_odp::{OdpBootstrapOptions, OdpNumerics},
+    stochastic::clark_mle::{ClarkCovariance, ClarkOptions, fit_clark_cape_cod, fit_clark_ldf},
     stochastic::mack::{self, MackOptions},
     stochastic::mack_bf::{self, BfPayoutEstimator, MackBfOptions},
     stochastic::merz_wuthrich,
+    stochastic::multivariate_cl::{
+        MultivariateClOptions, MultivariateModel, analyze_multivariate_cl,
+    },
+    stochastic::multivariate_mack,
+    stochastic::reserve_runoff::{
+        MackRunoffOptions, mack_one_year_runoff_with_options, odp_one_year_runoff_with_numerics,
+    },
     types::Triangle,
     validate::MonotonicityPolicy,
 };
@@ -248,12 +257,137 @@ fn mack_bf_chain_ladder_pattern_se_is_delta_method_of_cl_pattern() {
     assert_eq!(res.payout_se[n - 1], 0.0);
 }
 
-#[test]
-fn probe_values() {
+/// Second line for multi-line tests: GenIns scaled with deterministic jitter.
+fn genins_jittered() -> Triangle {
     let g = genins_triangle();
-    let mw = merz_wuthrich::analyze(&g.view()).expect("mw");
-    println!(
-        "MW cdr se {:?} total {} ult {:?}",
-        mw.cdr_standard_error, mw.total_cdr_standard_error, mw.ultimate_standard_error
+    let n = 10;
+    let mut data = vec![NAN; n * n];
+    for i in 0..n {
+        for j in 0..(n - i) {
+            let jitter = 1.0 + 0.03 * (((i * 7 + j * 13) % 5) as f64 - 2.0);
+            data[i * n + j] = g.get(i, j) * 0.8 * jitter * (1.0 + 0.01 * j as f64);
+        }
+    }
+    Triangle::try_new(n, n, data).expect("triangle")
+}
+
+// ===========================================================================
+// Braun (2004) cross-covariance parity: multivariate Mack vs diagonal MCL
+// ===========================================================================
+
+#[test]
+fn braun_link_covariance_matches_between_multivariate_mack_and_diagonal_mcl() {
+    let a = genins_triangle();
+    let b = genins_jittered();
+    let views = [a.view(), b.view()];
+    let mm = multivariate_mack::analyze_with_policy(
+        &views,
+        1.0,
+        MonotonicityPolicy::AllowNegativeIncrements,
+    )
+    .expect("multivariate mack");
+    let mcl = analyze_multivariate_cl(
+        &views,
+        &MultivariateClOptions {
+            model: MultivariateModel::DiagonalMcl,
+            policy: MonotonicityPolicy::AllowNegativeIncrements,
+        },
+    )
+    .expect("mcl");
+    // Links with >= 2 pairs (k <= n - 3) use the estimator directly.
+    // Links k <= 6 (>= 3 pairs); at k = 7 multivariate Mack additionally
+    // clamps to the Cauchy-Schwarz bound sqrt(sigma_r^2 sigma_s^2).
+    for k in 0..7 {
+        let cov_mm = mm.link_covariances[k][1];
+        let cov_mcl = mcl.sigma_matrices[k][1];
+        assert!(
+            close_rel(cov_mm, cov_mcl, 1e-10),
+            "k={k}: mack={cov_mm} mcl={cov_mcl}"
+        );
+        // Diagonals reduce to Mack's n_k - 1 estimator in both.
+        assert!(close_rel(
+            mm.marginal_mack[0].sigma_sq[k],
+            mcl.sigma_matrices[k][0],
+            1e-10
+        ));
+    }
+}
+
+// ===========================================================================
+// Clark (2003): observed vs expected information covariance
+// ===========================================================================
+
+#[test]
+fn clark_observed_information_is_default_and_close_to_expected_on_genins() {
+    let g = genins_triangle();
+    let obs = fit_clark_ldf(&g.view(), &ClarkOptions::loglogistic()).expect("observed");
+    let exp = fit_clark_ldf(
+        &g.view(),
+        &ClarkOptions::loglogistic().with_covariance(ClarkCovariance::Expected),
+    )
+    .expect("expected");
+    assert_eq!(obs.covariance, ClarkCovariance::Observed);
+    assert!(!obs.covariance_fallback);
+    assert_eq!(exp.covariance, ClarkCovariance::Expected);
+    // Same MLE point estimates; only the parameter covariance differs.
+    assert!(close_rel(obs.total_reserve, exp.total_reserve, 1e-12));
+    assert!(close_rel(obs.total_process_se, exp.total_process_se, 1e-12));
+    assert!((obs.total_parameter_se - exp.total_parameter_se).abs() > 0.0);
+    let ratio = obs.total_parameter_se / exp.total_parameter_se;
+    assert!(
+        (0.7..1.4).contains(&ratio),
+        "obs/exp param SE ratio {ratio}"
     );
+    // Observed covariance is symmetric positive on its diagonal.
+    let p = obs.n_params;
+    for i in 0..p {
+        assert!(obs.parameter_covariance[i * p + i] > 0.0);
+        for j in 0..p {
+            assert!(close_rel(
+                obs.parameter_covariance[i * p + j],
+                obs.parameter_covariance[j * p + i],
+                1e-9
+            ));
+        }
+    }
+    let cc = fit_clark_cape_cod(&g.view(), &[10_000_000.0; 10], &ClarkOptions::weibull())
+        .expect("cape cod observed");
+    assert_eq!(cc.covariance, ClarkCovariance::Observed);
+    assert!(cc.total_parameter_se > 0.0);
+}
+
+// ===========================================================================
+// Reserve run-off: explicit failed-scenario policy
+// ===========================================================================
+
+#[test]
+fn runoff_failed_fraction_threshold_is_validated_and_clean_runs_pass() {
+    let g = genins_triangle();
+    let ok = mack_one_year_runoff_with_options(
+        &g.view(),
+        1.0,
+        MackRunoffOptions::new(500, 42069).with_max_failed_fraction(0.0),
+    )
+    .expect("no failures on GenIns");
+    assert_eq!(ok.failed_iterations, 0);
+    let bad = mack_one_year_runoff_with_options(
+        &g.view(),
+        1.0,
+        MackRunoffOptions::new(10, 42069).with_max_failed_fraction(1.5),
+    );
+    assert!(matches!(
+        bad,
+        Err(ReservingError::InvalidProbability { .. })
+    ));
+    let odp = odp_one_year_runoff_with_numerics(
+        &g.view(),
+        1.0,
+        OdpBootstrapOptions::england_verrall(200, 42069),
+        OdpNumerics {
+            max_failed_fraction: 0.0,
+            ..OdpNumerics::default()
+        },
+    )
+    .expect("odp runoff");
+    assert_eq!(odp.failed_iterations, 0);
 }
