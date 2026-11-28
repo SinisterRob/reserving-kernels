@@ -118,13 +118,17 @@ pub mod prelude {
     pub use crate::excess::severity::SeverityDistribution;
     pub use crate::stochastic::bayesian_reserving::{
         BayesianOdpOptions, BayesianOdpResult, BivariateCclResult, MeyersModel, MeyersOptions,
-        MeyersResult, bayesian_odp_laplace, meyers_bivariate_ccl, meyers_laplace_snis,
+        MeyersPriorFamily, MeyersPriors, MeyersResult, bayesian_odp_laplace, meyers_bivariate_ccl,
+        meyers_laplace_snis,
     };
     pub use crate::stochastic::bootstrap_odp::{
-        OdpBootstrapOptions, OdpBootstrapResult, OdpCdrBootstrapResult, OdpFit,
-        ProcessDistribution, ResidualAdjustment, bootstrap_odp, bootstrap_odp_cdr, fit_odp,
+        OdpBootstrapOptions, OdpBootstrapResult, OdpCdrBootstrapResult, OdpFit, OdpNumerics,
+        ProcessDistribution, ResidualAdjustment, bootstrap_odp, bootstrap_odp_cdr,
+        bootstrap_odp_with_numerics, fit_odp, fit_odp_with_numerics,
     };
-    pub use crate::stochastic::clark_mle::{ClarkMleResult, ClarkOptions, GrowthCurve};
+    pub use crate::stochastic::clark_mle::{
+        ClarkCovariance, ClarkMleResult, ClarkOptions, GrowthCurve,
+    };
     pub use crate::stochastic::glm_reserving::{
         GlmDesign, GlmFamily, GlmOptions, GlmReservingResult, TweediePowerSelection, fit_glm,
         select_tweedie_power,
@@ -148,7 +152,7 @@ pub mod prelude {
     pub use crate::stochastic::reserve_runoff::{
         ChainLadderRollForward, MackInnovation, MackRunoffOptions, OneYearRunoffResult,
         RollForwardStep, mack_one_year_runoff, mack_one_year_runoff_with_options,
-        odp_one_year_runoff,
+        odp_one_year_runoff, odp_one_year_runoff_with_numerics,
     };
     pub use crate::subannual::{
         AsymmetricAgeGrid, AsymmetricChainLadderProjection, AsymmetricOdpBootstrapResult,

@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Clayton copula:** The sampler is correct for large θ (log-space Gamma frailty). The t-copula draws its chi-square in log space.
 - **Severity layers:** Layer and excess-ratio values use direct closed forms, so they no longer lose precision through cancellation at high attachments.
 - **Jacobi eigensolver:** Returns an error instead of silently returning an unconverged result.
+- **Mack:** `analyze_with_options` now extrapolates σ² for every link with fewer than 2 active pairs, using the Mack min-rule. Before, it extrapolated only an exact-zero last link, which understated the SE on masked or 3×3 triangles. The `alpha` doc had 0 and 2 swapped: 0 is the simple average and 2 is OLS through the origin.
+- **Mack-BF:** The pattern SE uses the Mack (2008) min-rule over the lower and upper sums. The chain-ladder-implied pattern SE is now consistent with the z actually used (delta method).
+- **Meyers LCL/CCL:** Importance sampling collapsed on real 10×10 triangles: on GenIns CCL the effective sample size was 1, and `converged` was still `true`. The sampler now integrates (α, β) exactly and runs a tempered adaptive t-mixture proposal. Effective sample size is now about 1,800–6,000 at M = 4096. Below `min_ess_fraction` the fit returns an error, or with `fallback_to_laplace` it returns the Laplace result flagged `laplace_fallback = true`. Bivariate CCL runs Newton polish and reports `converged`.
+- **Log-normal GLM:** The mean is bias-corrected as `exp(η̂ + (σ̂² − v)/2)` (Verrall 1991); before, the reserve was overstated by 4–17% on small triangles. The diagonal and off-diagonal MSEP terms are now consistent, and the "exact MSEP" doc claim is removed.
+- **ODP analytic prediction error:** Now includes the tail factor. Before, with a tail of 1.10 on GenIns, the reserve rose 28% while the prediction error was unchanged.
+- **Tweedie:** `power >= 2` rejects zero increments (it previously reported a meaningless Gamma deviance). `select_tweedie_power` skips fits that did not converge. Its doc now says it uses EQL.
+- **ODP deviance:** With negative increments, the reported deviance now equals the objective being optimised.
+- **`bootstrap()`:** Now a projection of `bootstrap_odp`, so draws are identical for the same seed. It reports `failed_iterations`, and zero iterations returns `InvalidIterations`.
+- **Braun (2004):** One shared cross-covariance estimator for `multivariate_mack` and the diagonal MCL; the two previously used different denominators.
 
 ### Changed (Breaking)
 - **`Triangle::new` is now `pub(crate)`.** It skipped validation and relied on a `debug_assert`, so malformed buffers could panic in release builds inside `latest_diagonal` and `diagnostics`. External callers must use `Triangle::try_new`, `try_from_rows`, `try_from_upper_rows`, `try_from_incremental_rows`, or the `triangle!` macro.
@@ -44,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `brosius::project` gives different results on triangles with links where a < 0 or b < 0, such as GenIns. `BrosiusFitRule::RawOls` restores the previous fit.
   - The Clark ALAE default ages move from `j+1` to `j+0.5`.
   - `LognormalLayerSampler` uses the crate RNG, so the same seed now gives different draws.
+- **Mack observed counts:** `mack::analyze_observed_counts` defaults to `AllowNegativeIncrements`, the same as `analyze`. `analyze_observed_counts_with_policy` is added.
+- **Clark:** Parameter covariance uses the observed information by default (`ClarkCovariance::Observed`, as in Clark 2003). If that matrix is not positive definite it falls back to the expected information and sets `covariance_fallback`. Parameter SEs change.
+- **Meyers:** The default priors follow CAS Monograph 1 (`MeyersPriors::monograph_2015`); the old Gaussian priors are available as a preset. New result fields.
+- **Log-normal GLM:** Reserves and prediction errors change because of the bias correction.
+- **Run-off:** `MackRunoffOptions` adds `max_failed_fraction` (default 1%) and no longer derives `Eq`. A run-off returns an error when the failed fraction exceeds it.
 
 ### Changed
 - **Release workflow:** Removed automatic deletion of older GitHub Releases and automatic `cargo yank` of every older crates.io version. Yanking is now a manual step, used only for broken releases.
@@ -53,6 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Large loss:** The module documents that it operates on per-claim triangles. `large_loss_removed_triangle` is deprecated in favour of `remove_large_loss_excess` and `aggregate_claims_split`.
 - **Internal:** Added a shared `deterministic::averaging` kernel module and a neutral `special` module (removing the lateral dependency from `diagnostics` on `capital`/`stochastic`). Refactored the tail-curve and trend clones. New `capital::correlation` module gives `copulas` and `dependence` a one-way dependency. One lognormal LEV implementation.
 - **Toolchain:** Added `rust-toolchain.toml`, pinned to 1.100.1 with rustfmt, clippy, rust-analyzer, rust-src and the wasm32 target. The CI MSRV job runs `cargo +1.97.0` explicitly.
+- **Configurable numerics:**
+  - `GlmOptions` adds `eta_clamp`, `y_floor_relative` and `max_step_halvings`. `GlmReservingResult::eta_clamp_hits` reports how many cells the clamp bound.
+  - New `OdpNumerics` (`exclude_zero_residuals`, `leverage_saturation_tol`, `max_failed_fraction`), with `fit_odp_with_numerics`, `bootstrap_odp_with_numerics` and `odp_one_year_runoff_with_numerics`.
+- **Internal:** The tridiagonal ODP solver now lives in one module (`stochastic::odp_tridiagonal`), shared by the bootstrap and the GLM. One log-normal MSEP helper.
+- **Determinism:** The stochastic docs claim bit-reproducibility only within the same platform.
 
 ### Added
 - `tests/infra_regressions.rs` adds a seeded (seed `42069`) mutation fuzz over `Triangle` JSON. It covers truncation, byte flips, NaN/null/huge/negative values, shape and overflow mismatches, and structural damage, and checks that nothing panics and that every accepted triangle meets the invariants. The file also tests the `Triangle` construction invariants and the WASM status codes.
@@ -63,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Higham (2002) `nearest_correlation_matrix` / `HighamOptions`, now used by `repair_correlation_matrix`.
 - Severity: `excess_expected_value`, `layer_ratio`.
 - New regression suites: `tests/deterministic_regressions.rs` (Friedland Auto goldens derived with exact rational arithmetic, policy coverage, panic-free kernels), `tests/methods_regressions.rs`, `tests/subannual_regressions.rs` and `tests/capital_regressions.rs` (Clayton/Gumbel KS and Kendall τ, high-layer precision, Panjer vs FFT, Higham example, Euler and Myers–Read checks against finite differences).
+- **Stochastic tests:** pins for Merz–Wüthrich GenIns CDR (total SE 1,778,967.66), the 4-wide/scalar bootstrap paths with negative pseudo-LDFs, bootstrap and `bootstrap_odp` giving equal draws, ODP analytic PE with a tail against the bootstrap, Clark observed vs expected covariance, Braun parity, Mack-BF min-rule, and a linux-x86_64 golden test of the first bootstrap draws.
+- **Slow test:** a seeded log-normal GLM bias/MSEP Monte Carlo, marked `#[ignore]`; run it with `--include-ignored`.
 
 ## [0.4.0] - 2026-11-26
 
