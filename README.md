@@ -29,7 +29,7 @@
 
 ---
 
-`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). It is part of a four-crate pure-Rust actuarial kernel suite alongside [`pricing-kernels`](https://github.com/SinisterRob/pricing-kernels) (prospective ratemaking and underwriting risk), [`reinsurance-kernels`](https://github.com/SinisterRob/reinsurance-kernels) (treaty pricing and structuring), and [`esg-kernels`](https://github.com/SinisterRob/esg-kernels) (economic scenario generation). Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs)).
+`reserving-kernels` covers retrospective loss development, stochastic reserving, and the **reserve risk** module of capital modeling (1-year CDR, multi-line dependence, and capital allocation). Its companion crate [`pricing-kernels`](https://github.com/SinisterRob/pricing-kernels) covers prospective ratemaking and underwriting risk. Every method is implemented from peer-reviewed actuarial literature ([`docs/SOURCES.md`](https://github.com/SinisterRob/reserving-kernels/blob/main/docs/SOURCES.md)) and verified against published benchmark triangles ([`tests/source_benchmarks.rs`](https://github.com/SinisterRob/reserving-kernels/blob/main/tests/source_benchmarks.rs)).
 
 ## Why `reserving-kernels`?
 
@@ -318,6 +318,10 @@ If Excel blocks a downloaded XLL, verify it against the release checksum before 
 | `=RK.MACK(A1:D4, 1.05)` | Ultimate, reserve, standard error | 3×3 |
 
 Use a square cumulative triangle of up to 512 origins with the oldest origin first, development ages from left to right, and blank cells below the observed triangle. Both functions use volume-weighted development factors and append a totals row. Mack's total standard error includes covariance across origins. The optional tail factor defaults to `1.0` and must be finite and at least `1.0`. Invalid layouts or input types return `#VALUE!`. Numeric validation failures return `#NUM!`.
+
+## Actuarial Standards & Disclaimer
+
+`reserving-kernels` is a general-purpose open-source numerical library provided **"as-is"** under the MIT or Apache-2.0 license. It does **not** constitute an actuarial opinion, Statement of Actuarial Opinion (SAO), reserve certification, or regulatory advice. Under **ASOP 56 (Modeling)**, **ASOP 23 (Data Quality)**, and **ASOP 43 (Property/Casualty Unpaid Claim Estimates)**, the actuary or practitioner using this software remains solely responsible for data validation, model and assumption selection, jurisdictional compliance, and independent verification of all outputs for their specific portfolio and intended purpose.
 
 ## License
 
