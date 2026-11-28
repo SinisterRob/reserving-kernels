@@ -532,3 +532,30 @@ fn wasm_c_abi_exports_roundtrip_and_clear_buffers_on_invalid_input() {
         assert!((*rk_res_ptr()).is_nan());
     }
 }
+
+#[test]
+fn serde_deserialization_fuzz_never_panics_on_malformed_json() {
+    let payloads = [
+        r#"{"n_origins":0,"n_devs":0,"data":[]}"#,
+        r#"{"n_origins":3,"n_devs":2,"data":[1.0,2.0,3.0,4.0,5.0,6.0]}"#,
+        r#"{"n_origins":2,"n_devs":2,"data":[1.0,-5.0,3.0,null]}"#,
+        r#"{"n_origins":2,"n_devs":2,"data":[null,2.0,3.0,null]}"#,
+        r#"{"n_origins":1000000,"n_devs":1000000,"data":[1.0]}"#,
+        r#"{"n_origins":3,"n_devs":3,"data":[1.0,2.0,3.0,4.0,5.0,null,6.0,null,null]}"#,
+        "{}",
+        "null",
+        "[]",
+    ];
+    for raw in payloads {
+        if let Ok(tri) = serde_json::from_str::<Triangle>(raw) {
+            let _ = tri.chain_ladder(1.0);
+            let _ = tri.mack(1.0);
+            let _ = tri.diagnostics();
+        }
+        if let Ok(grid) =
+            serde_json::from_str::<reserving_kernels::subannual::AsymmetricAgeGrid>(raw)
+        {
+            let _ = calendar_diagonal_index(&grid);
+        }
+    }
+}

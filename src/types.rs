@@ -69,6 +69,7 @@ impl Triangle {
     /// [`Self::try_new`] at external ingress boundaries when full validation
     /// (square, finite, non-negative observed cells) is required.
     #[inline]
+    #[must_use]
     pub fn new(n_origins: usize, n_devs: usize, data: Vec<f64>) -> Self {
         debug_assert_eq!(data.len(), n_origins * n_devs);
         Self {
@@ -211,6 +212,7 @@ impl Triangle {
 
     /// Borrow as a [`TriangleView`].
     #[inline]
+    #[must_use]
     pub fn view(&self) -> TriangleView<'_> {
         TriangleView {
             n_origins: self.n_origins,

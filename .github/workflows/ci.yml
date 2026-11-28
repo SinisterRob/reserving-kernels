@@ -42,8 +42,8 @@ jobs:
         run: cargo clippy --all-targets --no-default-features -- -D warnings
       - name: Clippy (all features)
         run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Clippy (library panic/unwrap-free gate)
-        run: cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::panic
+      - name: Clippy (library panic/unwrap/expect-free gate)
+        run: cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
 
   test:
     name: Test (${{ matrix.os }})
@@ -192,12 +192,27 @@ jobs:
       - name: Check release benchmarks compile
         run: cargo check --benches --release
 
+  miri:
+    name: Miri (FFI & UB Check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: miri-nightly
+      - name: Run Miri on WASM C-ABI FFI & invariant tests
+        run: cargo +nightly miri test --test tightening_invariants --features wasm wasm_c_abi_exports_roundtrip_and_clear_buffers_on_invalid_input layer_spec_unifies_attachment_limit_and_attachment_top_conventions swimon_does_not_panic_on_tiny_concave_rounding_slack malformed_views_and_grids_return_err_without_panicking
+
   ci-pass:
     name: CI Pass
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
-    needs: [fmt, clippy, test, msrv, docs, wasm, xll, security, package]
+    needs: [fmt, clippy, test, msrv, docs, wasm, xll, security, package, miri]
     steps:
       - name: Verify all required CI jobs succeeded
         shell: bash
@@ -212,6 +227,7 @@ jobs:
             xll=${{ needs.xll.result }}
             security=${{ needs.security.result }}
             package=${{ needs.package.result }}
+            miri=${{ needs.miri.result }}
         run: |
           failed=0
           for item in $RESULTS; do

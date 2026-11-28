@@ -776,4 +776,51 @@ mod tests {
         assert!((sq_cc.omega - ex_cc.omega).abs() < 1e-4);
         assert!((sq_cc.total_reserve - ex_cc.total_reserve).abs() / sq_cc.total_reserve < 1e-5);
     }
+
+    #[test]
+    fn envelope_theorem_analytic_profile_gradient_matches_central_fd() {
+        let tri = genins();
+        let n = tri.n_origins();
+        let mut cell_ages = vec![f64::NAN; n * n];
+        let mut counts = Vec::with_capacity(n);
+        for i in 0..n {
+            counts.push(n - i);
+            for j in 0..(n - i) {
+                cell_ages[i * n + j] = (j as f64) + 0.5;
+            }
+        }
+        let data = prepare_exact_age_data(
+            tri.data(),
+            &cell_ages,
+            n,
+            n,
+            &counts,
+            &ClarkExactAgeOptions::default(),
+        )
+        .unwrap();
+        let prem = vec![10_000_000.0; n];
+        let h = 1e-6;
+        for curve in [GrowthCurve::Loglogistic, GrowthCurve::Weibull] {
+            for weights in [None, Some(prem.as_slice())] {
+                let u = 1.4_f64.ln();
+                let v = 3.2_f64.ln();
+                let (ll, gu, gv) = profile_log_lik_and_grad(&data, weights, curve, u, v);
+                assert!(ll.is_finite());
+                let fd_u = (profile_log_lik(&data, weights, curve, u + h, v)
+                    - profile_log_lik(&data, weights, curve, u - h, v))
+                    / (2.0 * h);
+                let fd_v = (profile_log_lik(&data, weights, curve, u, v + h)
+                    - profile_log_lik(&data, weights, curve, u, v - h))
+                    / (2.0 * h);
+                assert!(
+                    (gu - fd_u).abs() < 1e-5 * (1.0 + fd_u.abs()),
+                    "gu={gu} fd_u={fd_u}"
+                );
+                assert!(
+                    (gv - fd_v).abs() < 1e-5 * (1.0 + fd_v.abs()),
+                    "gv={gv} fd_v={fd_v}"
+                );
+            }
+        }
+    }
 }

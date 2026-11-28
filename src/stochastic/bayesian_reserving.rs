@@ -1842,4 +1842,103 @@ mod tests {
         // At zeta_rho = 0, rho = 0 and prior density on zeta_rho is 1/2 (log = -ln 2).
         assert!(((lp_ccl - lp_lcl) - (-std::f64::consts::LN_2)).abs() < 1e-12);
     }
+
+    #[test]
+    fn meyers_univariate_and_bivariate_analytic_gradients_match_central_fd() {
+        let tri = genins();
+        let n = tri.n();
+        let opts = MeyersOptions {
+            model: MeyersModel::Ccl,
+            ..MeyersOptions::default()
+        };
+        let MeyersInitData {
+            log_y,
+            alpha_prior_mean,
+            mut init,
+        } = prepare_log_triangle_and_init(&tri.view(), &opts).expect("init");
+        // Perturb zeta_rho away from 0 so AR(1) adjoint chain is fully exercised.
+        let last = init.len() - 1;
+        init[last] = 0.35;
+
+        let (lp0, grad_a) =
+            meyers_log_posterior_and_grad(&init, &log_y, n, &alpha_prior_mean, true);
+        let h = 1e-6;
+        let mut work = init.clone();
+        for k in 0..init.len() {
+            let xk = work[k];
+            work[k] = xk + h;
+            let fp = meyers_log_posterior(&work, &log_y, n, &alpha_prior_mean, true);
+            work[k] = xk - h;
+            let fm = meyers_log_posterior(&work, &log_y, n, &alpha_prior_mean, true);
+            work[k] = xk;
+            let fd = (fp - fm) / (2.0 * h);
+            let scale = 1.0 + fd.abs();
+            assert!(
+                (grad_a[k] - fd).abs() < 1e-5 * scale,
+                "univariate grad[{k}] analytic={} fd={} (lp0={lp0})",
+                grad_a[k],
+                fd
+            );
+        }
+
+        // Bivariate joint log-posterior gradient check with nonzero rho12.
+        let log_y2: Vec<f64> = log_y
+            .iter()
+            .enumerate()
+            .map(|(idx, &v)| {
+                if v.is_finite() {
+                    v + 0.25 + 0.03 * ((idx % 7) as f64 - 3.0)
+                } else {
+                    f64::NAN
+                }
+            })
+            .collect();
+        let mut joint = Vec::with_capacity(2 * init.len() + 1);
+        joint.extend_from_slice(&init);
+        joint.extend_from_slice(&init);
+        joint.push(0.45);
+
+        let (_, g_joint) = meyers_bivariate_log_posterior_and_grad(
+            &joint,
+            &log_y,
+            &log_y2,
+            n,
+            &alpha_prior_mean,
+            &alpha_prior_mean,
+            true,
+        );
+        let mut wj = joint.clone();
+        for k in 0..joint.len() {
+            let xk = wj[k];
+            wj[k] = xk + h;
+            let (fp, _) = meyers_bivariate_log_posterior_and_grad(
+                &wj,
+                &log_y,
+                &log_y2,
+                n,
+                &alpha_prior_mean,
+                &alpha_prior_mean,
+                true,
+            );
+            wj[k] = xk - h;
+            let (fm, _) = meyers_bivariate_log_posterior_and_grad(
+                &wj,
+                &log_y,
+                &log_y2,
+                n,
+                &alpha_prior_mean,
+                &alpha_prior_mean,
+                true,
+            );
+            wj[k] = xk;
+            let fd = (fp - fm) / (2.0 * h);
+            let scale = 1.0 + fd.abs();
+            assert!(
+                (g_joint[k] - fd).abs() < 1e-4 * scale,
+                "bivariate grad[{k}] analytic={} fd={}",
+                g_joint[k],
+                fd
+            );
+        }
+    }
 }

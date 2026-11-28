@@ -50,6 +50,7 @@ impl LayerSpec {
 
     /// Upper exhaustion point `attachment + limit`.
     #[inline]
+    #[must_use]
     pub fn top(self) -> f64 {
         self.attachment + self.limit
     }
