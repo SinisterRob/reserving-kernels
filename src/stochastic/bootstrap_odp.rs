@@ -47,6 +47,7 @@ use crate::deterministic::ldf::{cdfs_from_ldfs, volume_weighted_ldfs};
 use crate::error::ReservingError;
 use crate::linalg::{invert_spd, solve_lower_into};
 use crate::preprocessing::triangle::{cumulative_to_incremental, latest_diagonal};
+use crate::stochastic::odp_tridiagonal::TridiagonalRank1Factor;
 use crate::types::TriangleView;
 use crate::validate::{
     MonotonicityPolicy, validate_monotone_cumulative, validate_tail, validate_triangle,
@@ -1318,94 +1319,37 @@ fn try_solve_odp_tridiagonal(
     }
 
     let mut alpha = vec![0.0; n];
+    let mut inv_alpha = vec![0.0; n];
     for i in 0..n {
         let a = fitted_cumulative[i * n + m];
         if !(a > 0.0) || !a.is_finite() {
             return None;
         }
         alpha[i] = a;
+        inv_alpha[i] = 1.0 / a;
     }
 
-    // A[k] = sum_{i=0}^{n-1-k} α_i.
-    let mut a_sum = vec![0.0; n];
-    let mut acc = 0.0;
-    for k in (0..n).rev() {
-        acc += alpha[m - k];
-        a_sum[k] = acc;
-    }
-
-    // Assemble symmetric tridiagonal K of dimension m = n - 1 (indices 0..m correspond to k = 1..n).
-    let mut d = vec![0.0; m];
-    let mut e = vec![0.0; m.saturating_sub(1)];
-    for k in 1..n {
-        let idx = k - 1;
-        if k < m {
-            let off = a_sum[k + 1] / beta[k + 1];
-            d[idx] = a_sum[k] / beta[k] + off - alpha[m - k] / b_cum[k];
-            e[idx] = -off;
-        } else {
-            d[idx] = a_sum[k] / beta[k] - alpha[0] / b_cum[k];
-        }
-    }
-
-    // Forward L D L^T sweep in O(n): L_{idx+1, idx} = -gamma[idx].
-    let mut d_tilde = vec![0.0; m];
-    let mut gamma = vec![0.0; m.saturating_sub(1)];
-    if !d[0].is_finite() || d[0] <= 0.0 {
+    // Shared O(n) L D L^T factor of the tridiagonal Schur complement of X^T W X
+    // with rank-1 ODP weights W_{i,j} = μ_{i,j} = α_i β_j (also used by the
+    // cross-classified GLM fast paths).
+    let mut factor = TridiagonalRank1Factor::new(n);
+    if !factor.refactor(&alpha, &beta) {
         return None;
     }
-    d_tilde[0] = d[0];
-    for idx in 0..(m - 1) {
-        let g = -e[idx] / d_tilde[idx];
-        let next_dt = d[idx + 1] + e[idx] * g;
-        if !g.is_finite() || !next_dt.is_finite() || next_dt <= 1e-14 * d[idx + 1].abs().max(1e-30)
-        {
-            return None;
-        }
-        gamma[idx] = g;
-        d_tilde[idx + 1] = next_dt;
-    }
+    let mut g_mat = vec![0.0; n * n];
+    factor.compute_g_mat_into(&mut g_mat);
+    let leverages = factor.compute_leverages(&alpha, &beta, &g_mat);
 
-    // Backward diagonal recurrence for G = K^{-1} in O(n) (sum of positive squares).
-    let mut g_diag = vec![0.0; m];
-    g_diag[m - 1] = 1.0 / d_tilde[m - 1];
-    for idx in (0..(m - 1)).rev() {
-        g_diag[idx] = 1.0 / d_tilde[idx] + gamma[idx] * gamma[idx] * g_diag[idx + 1];
-    }
-
-    // Precompute w_j^T G w_j for j = 1..n in O(n).
-    let mut w_g_w = vec![0.0; n];
-    w_g_w[1] = g_diag[0] / (beta[1] * beta[1]);
-    for j in 2..n {
-        let g_jm1_j = gamma[j - 2] * g_diag[j - 1];
-        w_g_w[j] = (g_diag[j - 1] - 2.0 * g_jm1_j + g_diag[j - 2]) / (beta[j] * beta[j]);
-    }
-
-    // Compute all N = n(n+1)/2 residuals & exact leverages in row-major order in O(n^2).
+    // Residuals & exact leverages in row-major order.
     let n_observed = n * (n + 1) / 2;
     let rank = 2 * n - 1;
     let degrees_of_freedom = n_observed - rank;
     let mut residuals = Vec::with_capacity(n_observed);
     let mut pearson_sq_sum = 0.0;
-    let mut g_row = vec![0.0; n];
-
+    let mut cell = 0usize;
     for origin in 0..n {
         let ki = m - origin;
-        if ki >= 1 {
-            g_row[ki] = g_diag[ki - 1];
-            for j in (1..ki).rev() {
-                g_row[j] = gamma[j - 1] * g_row[j + 1];
-            }
-        }
-        let inv_b_ki = 1.0 / b_cum[ki];
-        let base_phi = inv_b_ki / alpha[origin];
-        let z_g_z = if ki >= 1 {
-            g_diag[ki - 1] * inv_b_ki * inv_b_ki
-        } else {
-            0.0
-        };
         let row_off = origin * n;
-
         for dev in 0..=ki {
             let obs = observed_incremental[row_off + dev];
             let mu = fitted_incremental[row_off + dev];
@@ -1414,19 +1358,8 @@ fn try_solve_odp_tridiagonal(
             }
             let raw_residual = (obs - mu) / mu.sqrt();
             pearson_sq_sum += raw_residual * raw_residual;
-
-            let y_g_y = if dev == 0 {
-                z_g_z
-            } else if dev == 1 {
-                let w_g_z = -g_row[1] * inv_b_ki / beta[1];
-                w_g_w[1] + 2.0 * w_g_z + z_g_z
-            } else {
-                let w_g_z = -(g_row[dev] - g_row[dev - 1]) * inv_b_ki / beta[dev];
-                w_g_w[dev] + 2.0 * w_g_z + z_g_z
-            };
-            let leverage = (mu * (base_phi + y_g_y)).clamp(0.0, 1.0);
-            let saturated = (1.0 - leverage) <= leverage_tol;
-
+            let leverage = leverages[cell];
+            cell += 1;
             residuals.push(OdpCellResidual {
                 origin,
                 dev,
@@ -1434,28 +1367,19 @@ fn try_solve_odp_tridiagonal(
                 fitted_incremental: mu,
                 raw_pearson_residual: raw_residual,
                 leverage,
-                saturated,
+                saturated: (1.0 - leverage) <= leverage_tol,
             });
         }
     }
 
     let dispersion = pearson_sq_sum / degrees_of_freedom as f64;
 
-    // Precompute column G[k, m-1] for k = 0..m in O(n).
-    let mut g_last = vec![0.0; m];
-    g_last[m - 1] = g_diag[m - 1];
-    for idx in (0..(m - 1)).rev() {
-        g_last[idx] = gamma[idx] * g_last[idx + 1];
-    }
-
     // Closed-form O(n) origin reserves & analytic prediction errors.
     let mut origin_reserves = vec![0.0; n];
+    let mut pre_tail = vec![0.0; n];
     let mut analytic_origin_process_se = vec![0.0; n];
     let mut analytic_origin_param_se = vec![0.0; n];
     let mut analytic_origin_prediction_error = vec![0.0; n];
-    let mut r_diag_sum = 0.0;
-    let g_mm = g_diag[m - 1];
-
     for origin in 0..n {
         let ki = m - origin;
         let ai = alpha[origin];
@@ -1464,22 +1388,11 @@ fn try_solve_odp_tridiagonal(
         } else {
             ai * (1.0 - b_cum[ki])
         };
-        let tail_increment = ai * (tail - 1.0);
-        origin_reserves[origin] = r_pre_tail + tail_increment;
+        pre_tail[origin] = r_pre_tail;
+        origin_reserves[origin] = r_pre_tail + ai * (tail - 1.0);
 
-        let param_quad = if origin == 0 {
-            0.0
-        } else if origin < m {
-            let inv_b = 1.0 / b_cum[ki];
-            let diag_term = (r_pre_tail * r_pre_tail) * inv_b / ai;
-            r_diag_sum += diag_term;
-            diag_term
-                + ai * ai * (g_diag[ki - 1] * inv_b * inv_b - 2.0 * g_last[ki - 1] * inv_b + g_mm)
-        } else {
-            let diag_term = (r_pre_tail * r_pre_tail) / (ai * b_cum[0]);
-            r_diag_sum += diag_term;
-            diag_term + ai * ai * g_mm
-        };
+        let param_quad =
+            factor.origin_param_quad_general(&inv_alpha, origin, r_pre_tail, ai, &beta);
         // Fixed tail (England & Verrall 2002 bootstrap convention): R_i =
         // C_i (tail · CDF_i − 1) with C_i observed, so parameter variance
         // scales by tail² and the ODP process variance covers the tail amount.
@@ -1490,25 +1403,7 @@ fn try_solve_odp_tridiagonal(
         analytic_origin_prediction_error[origin] = (proc_var + param_var).sqrt();
     }
 
-    // Portfolio total parameter variance via one O(n) forward pass: y^T K^{-1} y = z^T D_tilde^{-1} z.
-    let mut total_quad = r_diag_sum;
-    let mut z_prev = 0.0;
-    for idx in 0..m {
-        let k = idx + 1;
-        let y_k = if k < m {
-            -alpha[m - k] / b_cum[k]
-        } else {
-            a_sum[0] - alpha[0]
-        };
-        let z_k = if idx == 0 {
-            y_k
-        } else {
-            y_k + gamma[idx - 1] * z_prev
-        };
-        total_quad += (z_k * z_k) / d_tilde[idx];
-        z_prev = z_k;
-    }
-
+    let total_quad = factor.total_param_quad_general(&inv_alpha, &pre_tail, &alpha, &beta);
     let total_reserve: f64 = origin_reserves.iter().sum();
     let total_param_var = (tail * tail * dispersion * total_quad).max(0.0);
     let total_proc_var = (dispersion * total_reserve).max(0.0);

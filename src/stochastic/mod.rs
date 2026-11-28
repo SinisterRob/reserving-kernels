@@ -12,6 +12,7 @@ pub mod merz_wuthrich;
 pub mod micro_reserving;
 pub mod multivariate_cl;
 pub mod multivariate_mack;
+pub(crate) mod odp_tridiagonal;
 pub mod paid_incurred_chain;
 pub mod ptf_regression;
 pub mod reserve_runoff;

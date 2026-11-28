@@ -12,8 +12,14 @@
 //!   (CAS Monograph No. 1, 2015) — cumulative log-loss Normal model with
 //!   monotonically non-increasing development standard deviations
 //!   `σ_1 >= ... >= σ_J > 0` and calendar-year shock correlation `ρ ∈ (-1, 1)`,
-//!   estimated via L-BFGS MAP + Levenberg–Marquardt spectral Hessian guard +
-//!   heavy-tailed Student-$t$ Self-Normalized Importance Sampling (SNIS).
+//!   estimated via L-BFGS MAP + Newton polish + Levenberg–Marquardt spectral
+//!   Hessian guard, then Rao-Blackwellised adaptive Self-Normalized Importance
+//!   Sampling: `(α, β)` are integrated exactly (Gaussian conditional on
+//!   `σ, ρ, logelr`), and only the low-dimensional non-linear block is
+//!   importance-sampled with a tempered population-Monte-Carlo Student-$t$
+//!   proposal plus a defensive Laplace component. Priors default to Meyers
+//!   (2015) Monograph 1 ([`MeyersPriors`]); a minimum-ESS gate
+//!   ([`MeyersOptions::min_ess_fraction`]) turns weight collapse into an error.
 //! * **Bivariate CCL** — cross-line correlated reserve simulation with
 //!   residual correlation `ρ_12 ∈ (-1, 1)`.
 
