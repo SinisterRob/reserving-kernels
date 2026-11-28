@@ -324,30 +324,42 @@ pub(crate) fn summarize_with_scratch(
     let i95 = quantile_rank_index(len, 0.95);
     let i99 = quantile_rank_index(len, 0.99);
 
-    let (_, p50_ref, rest) = buf.select_nth_unstable_by(i50, f64::total_cmp);
+    // Every element is verified finite above, so a direct `<`/`>` comparator
+    // lowers to a single `ucomisd` instead of `f64::total_cmp` bit manipulation.
+    let cmp_finite = |a: &f64, b: &f64| {
+        if *a < *b {
+            std::cmp::Ordering::Less
+        } else if *a > *b {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    };
+
+    let (_, p50_ref, rest) = buf.select_nth_unstable_by(i50, cmp_finite);
     let p50 = *p50_ref;
     let (p75, rest) = if i75 == i50 {
         (p50, rest)
     } else {
-        let (_, r, next) = rest.select_nth_unstable_by(i75 - i50 - 1, f64::total_cmp);
+        let (_, r, next) = rest.select_nth_unstable_by(i75 - i50 - 1, cmp_finite);
         (*r, next)
     };
     let (p90, rest) = if i90 == i75 {
         (p75, rest)
     } else {
-        let (_, r, next) = rest.select_nth_unstable_by(i90 - i75 - 1, f64::total_cmp);
+        let (_, r, next) = rest.select_nth_unstable_by(i90 - i75 - 1, cmp_finite);
         (*r, next)
     };
     let (p95, rest) = if i95 == i90 {
         (p90, rest)
     } else {
-        let (_, r, next) = rest.select_nth_unstable_by(i95 - i90 - 1, f64::total_cmp);
+        let (_, r, next) = rest.select_nth_unstable_by(i95 - i90 - 1, cmp_finite);
         (*r, next)
     };
     let p99 = if i99 == i95 {
         p95
     } else {
-        let (_, r, _) = rest.select_nth_unstable_by(i99 - i95 - 1, f64::total_cmp);
+        let (_, r, _) = rest.select_nth_unstable_by(i99 - i95 - 1, cmp_finite);
         *r
     };
 

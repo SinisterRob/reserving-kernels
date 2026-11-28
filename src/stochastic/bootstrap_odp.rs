@@ -447,6 +447,18 @@ const ZIG_NORM_X_INNER: [f64; 256] = [
     3.35737519214440450e-01, 2.86174591792092481e-01, 2.15241895984913806e-01, 0.00000000000000000e+00,
 ];
 
+/// Interleaved `(W[i], X_INNER[i])` table packed into 16-byte pairs so each
+/// Ziggurat normal draw hits a single cache line instead of two separate 2 KB arrays.
+const ZIG_NORM_WX: [(f64, f64); 256] = {
+    let mut out = [(0.0, 0.0); 256];
+    let mut i = 0;
+    while i < 256 {
+        out[i] = (ZIG_NORM_W[i], ZIG_NORM_X_INNER[i]);
+        i += 1;
+    }
+    out
+};
+
 /// Density values `f[i] = exp(-0.5 * x[i]^2)` for wedge checks (`f[256] = 1.0`).
 #[allow(clippy::excessive_precision)]
 #[rustfmt::skip]
@@ -594,8 +606,9 @@ impl DeterministicRng {
             // Signed 52-bit integer in [-2^51, 2^51 - 1] (disjoint from bits 0..8);
             // adding 0.5 is exact in IEEE-754 f64 and symmetric around 0.0.
             let j = ((bits as i64) >> 12) as f64 + 0.5;
-            let x = j * ZIG_NORM_W[i];
-            if x.abs() < ZIG_NORM_X_INNER[i] {
+            let (w, x_inner) = ZIG_NORM_WX[i];
+            let x = j * w;
+            if x.abs() < x_inner {
                 return x;
             }
             if i == 0 {
@@ -699,6 +712,208 @@ impl DeterministicRng {
                 return k;
             }
         }
+    }
+}
+
+/// 4-wide Structure-of-Arrays (SoA) Xoshiro256++ PRNG for lockstep vectorization
+/// across 4 independent Monte Carlo lanes with zero `unsafe` code.
+struct DeterministicRng4 {
+    s0: [u64; 4],
+    s1: [u64; 4],
+    s2: [u64; 4],
+    s3: [u64; 4],
+}
+
+impl DeterministicRng4 {
+    fn from_rng(rng: &mut DeterministicRng) -> Self {
+        let mut s0 = [0u64; 4];
+        let mut s1 = [0u64; 4];
+        let mut s2 = [0u64; 4];
+        let mut s3 = [0u64; 4];
+        for lane in 0..4 {
+            s0[lane] = rng.next_u64();
+            s1[lane] = rng.next_u64();
+            s2[lane] = rng.next_u64();
+            s3[lane] = rng.next_u64();
+            if (s0[lane] | s1[lane] | s2[lane] | s3[lane]) == 0 {
+                s0[lane] = 1;
+            }
+        }
+        Self { s0, s1, s2, s3 }
+    }
+
+    #[inline]
+    fn next_u64x4(&mut self) -> [u64; 4] {
+        let mut out = [0u64; 4];
+        for lane in 0..4 {
+            let s0 = self.s0[lane];
+            let s1 = self.s1[lane];
+            out[lane] = s0
+                .wrapping_add(self.s3[lane])
+                .rotate_left(23)
+                .wrapping_add(s0);
+            let t = s1 << 17;
+            self.s2[lane] ^= s0;
+            self.s3[lane] ^= s1;
+            self.s1[lane] ^= self.s2[lane];
+            self.s0[lane] ^= self.s3[lane];
+            self.s2[lane] ^= t;
+            self.s3[lane] = self.s3[lane].rotate_left(45);
+        }
+        out
+    }
+
+    #[inline]
+    fn next_open01x4(&mut self) -> [f64; 4] {
+        const SCALE: f64 = 1.0 / 9_007_199_254_740_992.0;
+        let bits = self.next_u64x4();
+        [
+            ((bits[0] >> 11) as f64 + 0.5) * SCALE,
+            ((bits[1] >> 11) as f64 + 0.5) * SCALE,
+            ((bits[2] >> 11) as f64 + 0.5) * SCALE,
+            ((bits[3] >> 11) as f64 + 0.5) * SCALE,
+        ]
+    }
+
+    #[cold]
+    fn finish_normal_lane(bits: u64, x: f64, fallback: &mut DeterministicRng) -> f64 {
+        let i = (bits & 0xFF) as usize;
+        if i == 0 {
+            let j_nonneg = ((bits as i64) >> 12) >= 0;
+            return fallback.sample_normal_tail(j_nonneg);
+        }
+        let u = fallback.next_open01();
+        if ZIG_NORM_F[i] + u * (ZIG_NORM_F[i + 1] - ZIG_NORM_F[i]) < (-0.5 * x * x).exp() {
+            return x;
+        }
+        fallback.next_standard_normal()
+    }
+
+    #[inline]
+    fn next_standard_normal_x4(&mut self, fallback: &mut DeterministicRng) -> [f64; 4] {
+        let bits = self.next_u64x4();
+        let i0 = (bits[0] & 0xFF) as usize;
+        let i1 = (bits[1] & 0xFF) as usize;
+        let i2 = (bits[2] & 0xFF) as usize;
+        let i3 = (bits[3] & 0xFF) as usize;
+        let (w0, xi0) = ZIG_NORM_WX[i0];
+        let (w1, xi1) = ZIG_NORM_WX[i1];
+        let (w2, xi2) = ZIG_NORM_WX[i2];
+        let (w3, xi3) = ZIG_NORM_WX[i3];
+        let x0 = (((bits[0] as i64) >> 12) as f64 + 0.5) * w0;
+        let x1 = (((bits[1] as i64) >> 12) as f64 + 0.5) * w1;
+        let x2 = (((bits[2] as i64) >> 12) as f64 + 0.5) * w2;
+        let x3 = (((bits[3] as i64) >> 12) as f64 + 0.5) * w3;
+        let ok0 = x0.abs() < xi0;
+        let ok1 = x1.abs() < xi1;
+        let ok2 = x2.abs() < xi2;
+        let ok3 = x3.abs() < xi3;
+        if ok0 & ok1 & ok2 & ok3 {
+            return [x0, x1, x2, x3];
+        }
+        [
+            if ok0 {
+                x0
+            } else {
+                Self::finish_normal_lane(bits[0], x0, fallback)
+            },
+            if ok1 {
+                x1
+            } else {
+                Self::finish_normal_lane(bits[1], x1, fallback)
+            },
+            if ok2 {
+                x2
+            } else {
+                Self::finish_normal_lane(bits[2], x2, fallback)
+            },
+            if ok3 {
+                x3
+            } else {
+                Self::finish_normal_lane(bits[3], x3, fallback)
+            },
+        ]
+    }
+
+    #[cold]
+    fn finish_gamma_lane(
+        shape: f64,
+        d: f64,
+        vr: f64,
+        v: f64,
+        u: f64,
+        z2: f64,
+        fallback: &mut DeterministicRng,
+    ) -> f64 {
+        if vr > 0.0 && u.ln() < 0.5 * z2 + d * (1.0 - v + v.ln()) {
+            return d * v;
+        }
+        fallback.sample_gamma_ge1(shape)
+    }
+
+    /// Vectorized 4-wide Marsaglia–Tsang Gamma(shape >= 1, scale = 1).
+    #[inline]
+    fn sample_gamma_ge1_x4(
+        &mut self,
+        shapes: [f64; 4],
+        fallback: &mut DeterministicRng,
+    ) -> [f64; 4] {
+        let d = [
+            shapes[0] - (1.0 / 3.0),
+            shapes[1] - (1.0 / 3.0),
+            shapes[2] - (1.0 / 3.0),
+            shapes[3] - (1.0 / 3.0),
+        ];
+        let c = [
+            (1.0 / 3.0) / d[0].sqrt(),
+            (1.0 / 3.0) / d[1].sqrt(),
+            (1.0 / 3.0) / d[2].sqrt(),
+            (1.0 / 3.0) / d[3].sqrt(),
+        ];
+        let z = self.next_standard_normal_x4(fallback);
+        let u = self.next_open01x4();
+        let vr = [
+            1.0 + c[0] * z[0],
+            1.0 + c[1] * z[1],
+            1.0 + c[2] * z[2],
+            1.0 + c[3] * z[3],
+        ];
+        let v = [
+            vr[0] * vr[0] * vr[0],
+            vr[1] * vr[1] * vr[1],
+            vr[2] * vr[2] * vr[2],
+            vr[3] * vr[3] * vr[3],
+        ];
+        let z2 = [z[0] * z[0], z[1] * z[1], z[2] * z[2], z[3] * z[3]];
+        let ok0 = vr[0] > 0.0 && u[0] < 1.0 - 0.0331 * (z2[0] * z2[0]);
+        let ok1 = vr[1] > 0.0 && u[1] < 1.0 - 0.0331 * (z2[1] * z2[1]);
+        let ok2 = vr[2] > 0.0 && u[2] < 1.0 - 0.0331 * (z2[2] * z2[2]);
+        let ok3 = vr[3] > 0.0 && u[3] < 1.0 - 0.0331 * (z2[3] * z2[3]);
+        if ok0 & ok1 & ok2 & ok3 {
+            return [d[0] * v[0], d[1] * v[1], d[2] * v[2], d[3] * v[3]];
+        }
+        [
+            if ok0 {
+                d[0] * v[0]
+            } else {
+                Self::finish_gamma_lane(shapes[0], d[0], vr[0], v[0], u[0], z2[0], fallback)
+            },
+            if ok1 {
+                d[1] * v[1]
+            } else {
+                Self::finish_gamma_lane(shapes[1], d[1], vr[1], v[1], u[1], z2[1], fallback)
+            },
+            if ok2 {
+                d[2] * v[2]
+            } else {
+                Self::finish_gamma_lane(shapes[2], d[2], vr[2], v[2], u[2], z2[2], fallback)
+            },
+            if ok3 {
+                d[3] * v[3]
+            } else {
+                Self::finish_gamma_lane(shapes[3], d[3], vr[3], v[3], u[3], z2[3], fallback)
+            },
+        ]
     }
 }
 
@@ -2028,6 +2243,464 @@ pub(crate) fn run_odp_iteration_with_scratch<'a>(
     Some(&scratch.origin_reserves)
 }
 
+/// Extract 4 independent unbiased 16-bit Lemire indices from a caller-supplied
+/// `u64` word, falling back to `rng` only on the rare `< threshold` rejection.
+#[inline]
+fn decode_4_indices_16(
+    w: u64,
+    bound: u32,
+    threshold: u32,
+    rng: &mut DeterministicRng,
+) -> [usize; 4] {
+    if bound <= 1 {
+        return [0; 4];
+    }
+    let p0 = ((w & 0xFFFF) as u32) * bound;
+    let p1 = (((w >> 16) & 0xFFFF) as u32) * bound;
+    let p2 = (((w >> 32) & 0xFFFF) as u32) * bound;
+    let p3 = ((w >> 48) as u32) * bound;
+    let l0 = p0 & 0xFFFF;
+    let l1 = p1 & 0xFFFF;
+    let l2 = p2 & 0xFFFF;
+    let l3 = p3 & 0xFFFF;
+    if l0.min(l1).min(l2).min(l3) >= threshold {
+        return [
+            (p0 >> 16) as usize,
+            (p1 >> 16) as usize,
+            (p2 >> 16) as usize,
+            (p3 >> 16) as usize,
+        ];
+    }
+    [
+        if l0 >= threshold {
+            (p0 >> 16) as usize
+        } else {
+            FastIndexSampler::sample_16_slow(rng, bound, threshold)
+        },
+        if l1 >= threshold {
+            (p1 >> 16) as usize
+        } else {
+            FastIndexSampler::sample_16_slow(rng, bound, threshold)
+        },
+        if l2 >= threshold {
+            (p2 >> 16) as usize
+        } else {
+            FastIndexSampler::sample_16_slow(rng, bound, threshold)
+        },
+        if l3 >= threshold {
+            (p3 >> 16) as usize
+        } else {
+            FastIndexSampler::sample_16_slow(rng, bound, threshold)
+        },
+    ]
+}
+
+/// 4-wide SoA lockstep ODP bootstrap fast path: fuses 16-bit Lemire residual
+/// resampling (fed by 4-wide `DeterministicRng4` words into a bounds-check-free
+/// packed pool) directly into `[f64; 4]` row/column accumulators, refits 4 sets
+/// of pseudo-LDFs in parallel, and samples 4-wide vectorized Marsaglia–Tsang
+/// Gamma process variance.
+#[allow(clippy::too_many_arguments)]
+fn run_odp_bootstrap_x4(
+    batches: usize,
+    fit: &OdpFit,
+    pool: &[f64],
+    sampler: &FastIndexSampler,
+    rng: &mut DeterministicRng,
+    scratch: &mut OdpBootstrapScratch,
+    simulated_totals: &mut Vec<f64>,
+    simulated_by_origin: &mut [Vec<f64>],
+    failed_iterations: &mut usize,
+) {
+    let n = scratch.n;
+    let m = n - 1;
+    let phi = fit.dispersion;
+    let inv_phi = scratch.inv_phi;
+    let tail = fit.tail;
+    let tail_inc = tail - 1.0;
+    let bound = sampler.bound as u32;
+    let threshold = sampler.threshold;
+
+    // Copy pool into a fixed 1024-entry table so `pool_buf[idx & 0x3FF]` is
+    // provably in-bounds at compile time (zero bounds checks in the inner loop).
+    let mut pool_buf = [0.0f64; 1024];
+    pool_buf[..pool.len()].copy_from_slice(pool);
+
+    let mut rng4 = DeterministicRng4::from_rng(rng);
+    let mut delta_col_den_stack = [[0.0f64; 4]; 16];
+    let mut latest_pseudo_stack = [[0.0f64; 4]; 16];
+    let mut pseudo_ldfs_stack = [[0.0f64; 4]; 16];
+    let mut origin_res_stack = [[0.0f64; 4]; 16];
+
+    let mut delta_col_den_heap = if n > 16 {
+        vec![[0.0f64; 4]; m]
+    } else {
+        Vec::new()
+    };
+    let mut latest_pseudo_heap = if n > 16 {
+        vec![[0.0f64; 4]; n]
+    } else {
+        Vec::new()
+    };
+    let mut pseudo_ldfs_heap = if n > 16 {
+        vec![[0.0f64; 4]; m]
+    } else {
+        Vec::new()
+    };
+    let mut origin_res_heap = if n > 16 {
+        vec![[0.0f64; 4]; n]
+    } else {
+        Vec::new()
+    };
+
+    let delta_col_den: &mut [[f64; 4]] = if n <= 16 {
+        &mut delta_col_den_stack[..m]
+    } else {
+        &mut delta_col_den_heap[..m]
+    };
+    let latest_pseudo: &mut [[f64; 4]] = if n <= 16 {
+        &mut latest_pseudo_stack[..n]
+    } else {
+        &mut latest_pseudo_heap[..n]
+    };
+    let pseudo_ldfs: &mut [[f64; 4]] = if n <= 16 {
+        &mut pseudo_ldfs_stack[..m]
+    } else {
+        &mut pseudo_ldfs_heap[..m]
+    };
+    let origin_res: &mut [[f64; 4]] = if n <= 16 {
+        &mut origin_res_stack[..n]
+    } else {
+        &mut origin_res_heap[..n]
+    };
+
+    let mut words = [0u64; 4];
+    let mut word_pos = 4usize;
+
+    for _ in 0..batches {
+        // 1. Fused 4-wide resample + row/col accumulation (zero cell_deltas buffer).
+        // Origin 0 overwrites delta_col_den[0..m] directly (no fill(0.0)).
+        let sqrt_mu = &scratch.packed_sqrt_mu;
+        let base_col_den = &scratch.base_col_den;
+        let base_latest = &scratch.base_latest;
+
+        macro_rules! next_idx4 {
+            () => {{
+                if word_pos == 4 {
+                    words = rng4.next_u64x4();
+                    word_pos = 0;
+                }
+                let w = words[word_pos];
+                word_pos += 1;
+                decode_4_indices_16(w, bound, threshold, rng)
+            }};
+        }
+
+        {
+            let mut run = [0.0f64; 4];
+            for (den_slot, &sm) in delta_col_den.iter_mut().zip(&sqrt_mu[..m]) {
+                let idx = next_idx4!();
+                run[0] += pool_buf[idx[0] & 0x3FF] * sm;
+                run[1] += pool_buf[idx[1] & 0x3FF] * sm;
+                run[2] += pool_buf[idx[2] & 0x3FF] * sm;
+                run[3] += pool_buf[idx[3] & 0x3FF] * sm;
+                *den_slot = run;
+            }
+            let sm = sqrt_mu[m];
+            let idx = next_idx4!();
+            let bl = base_latest[0];
+            latest_pseudo[0] = [
+                bl + run[0] + pool_buf[idx[0] & 0x3FF] * sm,
+                bl + run[1] + pool_buf[idx[1] & 0x3FF] * sm,
+                bl + run[2] + pool_buf[idx[2] & 0x3FF] * sm,
+                bl + run[3] + pool_buf[idx[3] & 0x3FF] * sm,
+            ];
+        }
+
+        let mut cell_idx = m + 1;
+
+        // Origins 1..m
+        for origin in 1..m {
+            let last_dev = m - origin;
+            let row_sm = &sqrt_mu[cell_idx..=(cell_idx + last_dev)];
+            cell_idx += last_dev + 1;
+            let mut run = [0.0f64; 4];
+            for (den_slot, &sm) in delta_col_den[..last_dev]
+                .iter_mut()
+                .zip(&row_sm[..last_dev])
+            {
+                let idx = next_idx4!();
+                run[0] += pool_buf[idx[0] & 0x3FF] * sm;
+                run[1] += pool_buf[idx[1] & 0x3FF] * sm;
+                run[2] += pool_buf[idx[2] & 0x3FF] * sm;
+                run[3] += pool_buf[idx[3] & 0x3FF] * sm;
+                den_slot[0] += run[0];
+                den_slot[1] += run[1];
+                den_slot[2] += run[2];
+                den_slot[3] += run[3];
+            }
+            let sm = row_sm[last_dev];
+            let idx = next_idx4!();
+            let bl = base_latest[origin];
+            latest_pseudo[origin] = [
+                bl + run[0] + pool_buf[idx[0] & 0x3FF] * sm,
+                bl + run[1] + pool_buf[idx[1] & 0x3FF] * sm,
+                bl + run[2] + pool_buf[idx[2] & 0x3FF] * sm,
+                bl + run[3] + pool_buf[idx[3] & 0x3FF] * sm,
+            ];
+        }
+
+        // Final origin row (m, single cell at dev = 0)
+        {
+            let sm = sqrt_mu[cell_idx];
+            let idx = next_idx4!();
+            let bl = base_latest[m];
+            latest_pseudo[m] = [
+                bl + pool_buf[idx[0] & 0x3FF] * sm,
+                bl + pool_buf[idx[1] & 0x3FF] * sm,
+                bl + pool_buf[idx[2] & 0x3FF] * sm,
+                bl + pool_buf[idx[3] & 0x3FF] * sm,
+            ];
+        }
+
+        // 2. Finalize 4 sets of volume-weighted LDFs right-to-left.
+        let mut lane_valid = [true; 4];
+        let mut lane_all_ge_one = [true; 4];
+        let mut next_den = [0.0f64; 4];
+        for k in (0..m).rev() {
+            let bd = base_col_den[k];
+            let d = delta_col_den[k];
+            let lp = latest_pseudo[m - 1 - k];
+            let den = [bd + d[0], bd + d[1], bd + d[2], bd + d[3]];
+            let num = [
+                next_den[0] + lp[0],
+                next_den[1] + lp[1],
+                next_den[2] + lp[2],
+                next_den[3] + lp[3],
+            ];
+            let f = [
+                num[0] / den[0],
+                num[1] / den[1],
+                num[2] / den[2],
+                num[3] / den[3],
+            ];
+            for j in 0..4 {
+                if !(den[j] > 0.0) || !den[j].is_finite() || !f[j].is_finite() || f[j] <= 0.0 {
+                    lane_valid[j] = false;
+                } else if f[j] < 1.0 {
+                    lane_all_ge_one[j] = false;
+                }
+            }
+            pseudo_ldfs[k] = f;
+            next_den = den;
+        }
+
+        let all_fast = lane_valid[0]
+            & lane_valid[1]
+            & lane_valid[2]
+            & lane_valid[3]
+            & lane_all_ge_one[0]
+            & lane_all_ge_one[1]
+            & lane_all_ge_one[2]
+            & lane_all_ge_one[3];
+
+        if all_fast {
+            let mut cdf = [tail; 4];
+            let l0 = latest_pseudo[0];
+            let mut batch_ok =
+                l0[0].is_finite() & l0[1].is_finite() & l0[2].is_finite() & l0[3].is_finite();
+            let r0 = if batch_ok && tail_inc > 0.0 {
+                let shapes = [
+                    l0[0] * tail_inc * inv_phi,
+                    l0[1] * tail_inc * inv_phi,
+                    l0[2] * tail_inc * inv_phi,
+                    l0[3] * tail_inc * inv_phi,
+                ];
+                let fast_shapes = shapes[0] >= 1.0
+                    && shapes[1] >= 1.0
+                    && shapes[2] >= 1.0
+                    && shapes[3] >= 1.0
+                    && shapes[0].is_finite()
+                    && shapes[1].is_finite()
+                    && shapes[2].is_finite()
+                    && shapes[3].is_finite();
+                if fast_shapes {
+                    let g = rng4.sample_gamma_ge1_x4(shapes, rng);
+                    [g[0] * phi, g[1] * phi, g[2] * phi, g[3] * phi]
+                } else {
+                    [
+                        sample_process_increment_fast(
+                            l0[0] * tail_inc,
+                            phi,
+                            inv_phi,
+                            ProcessDistribution::Gamma,
+                            rng,
+                        ),
+                        sample_process_increment_fast(
+                            l0[1] * tail_inc,
+                            phi,
+                            inv_phi,
+                            ProcessDistribution::Gamma,
+                            rng,
+                        ),
+                        sample_process_increment_fast(
+                            l0[2] * tail_inc,
+                            phi,
+                            inv_phi,
+                            ProcessDistribution::Gamma,
+                            rng,
+                        ),
+                        sample_process_increment_fast(
+                            l0[3] * tail_inc,
+                            phi,
+                            inv_phi,
+                            ProcessDistribution::Gamma,
+                            rng,
+                        ),
+                    ]
+                }
+            } else {
+                [0.0; 4]
+            };
+            origin_res[0] = r0;
+            let mut totals = r0;
+
+            if batch_ok {
+                for origin in 1..n {
+                    let f = pseudo_ldfs[n - 1 - origin];
+                    cdf[0] *= f[0];
+                    cdf[1] *= f[1];
+                    cdf[2] *= f[2];
+                    cdf[3] *= f[3];
+                    let li = latest_pseudo[origin];
+                    let exp_res = [
+                        li[0] * (cdf[0] - 1.0),
+                        li[1] * (cdf[1] - 1.0),
+                        li[2] * (cdf[2] - 1.0),
+                        li[3] * (cdf[3] - 1.0),
+                    ];
+                    let shapes = [
+                        exp_res[0] * inv_phi,
+                        exp_res[1] * inv_phi,
+                        exp_res[2] * inv_phi,
+                        exp_res[3] * inv_phi,
+                    ];
+                    let fast_shapes = shapes[0] >= 1.0
+                        && shapes[1] >= 1.0
+                        && shapes[2] >= 1.0
+                        && shapes[3] >= 1.0
+                        && shapes[0].is_finite()
+                        && shapes[1].is_finite()
+                        && shapes[2].is_finite()
+                        && shapes[3].is_finite();
+                    let res_i = if fast_shapes {
+                        let g = rng4.sample_gamma_ge1_x4(shapes, rng);
+                        [g[0] * phi, g[1] * phi, g[2] * phi, g[3] * phi]
+                    } else {
+                        let mut r = [0.0f64; 4];
+                        for j in 0..4 {
+                            let er = exp_res[j];
+                            if !er.is_finite() {
+                                batch_ok = false;
+                                break;
+                            }
+                            r[j] = if er > 0.0 {
+                                let sh = shapes[j];
+                                if sh >= 1.0 {
+                                    rng.sample_gamma_ge1(sh) * phi
+                                } else {
+                                    rng.sample_gamma(sh, phi)
+                                }
+                            } else if er < 0.0 {
+                                -rng.sample_gamma(-er * inv_phi, phi)
+                            } else {
+                                0.0
+                            };
+                        }
+                        if !batch_ok {
+                            break;
+                        }
+                        r
+                    };
+                    origin_res[origin] = res_i;
+                    totals[0] += res_i[0];
+                    totals[1] += res_i[1];
+                    totals[2] += res_i[2];
+                    totals[3] += res_i[3];
+                }
+            }
+
+            if batch_ok
+                & totals[0].is_finite()
+                & totals[1].is_finite()
+                & totals[2].is_finite()
+                & totals[3].is_finite()
+            {
+                simulated_totals.extend_from_slice(&totals);
+                if tail_inc > 0.0 {
+                    for (origin_vec, r4) in simulated_by_origin.iter_mut().zip(origin_res.iter()) {
+                        origin_vec.extend_from_slice(r4);
+                    }
+                } else {
+                    // Origin 0 is identically 0.0 when tail == 1.0; filled once after the loop.
+                    for (origin_vec, r4) in simulated_by_origin[1..]
+                        .iter_mut()
+                        .zip(origin_res[1..].iter())
+                    {
+                        origin_vec.extend_from_slice(r4);
+                    }
+                }
+                continue;
+            }
+        }
+
+        // Scalar fallback for any batch containing invalid lanes, LDF < 1, or non-finite values.
+        for j in 0..4 {
+            if !lane_valid[j] {
+                *failed_iterations += 1;
+                continue;
+            }
+            for origin in 0..n {
+                scratch.latest_pseudo[origin] = latest_pseudo[origin][j];
+            }
+            for k in 0..m {
+                scratch.pseudo_ldfs[k] = pseudo_ldfs[k][j];
+            }
+            if let Some(total) = project_origin_reserves(
+                tail,
+                phi,
+                lane_all_ge_one[j],
+                ProcessDistribution::Gamma,
+                rng,
+                scratch,
+            ) {
+                simulated_totals.push(total);
+                if tail_inc > 0.0 {
+                    for (origin_vec, &r) in simulated_by_origin
+                        .iter_mut()
+                        .zip(scratch.origin_reserves.iter())
+                    {
+                        origin_vec.push(r);
+                    }
+                } else {
+                    for (origin_vec, &r) in simulated_by_origin[1..]
+                        .iter_mut()
+                        .zip(scratch.origin_reserves[1..].iter())
+                    {
+                        origin_vec.push(r);
+                    }
+                }
+            } else {
+                *failed_iterations += 1;
+            }
+        }
+    }
+
+    if tail_inc <= 0.0 {
+        simulated_by_origin[0].resize(simulated_totals.len(), 0.0);
+    }
+}
+
 /// Run the full England & Verrall (1999, 2002) / Shapland (2016) ODP bootstrap.
 ///
 /// # Example
@@ -2069,7 +2742,31 @@ pub fn bootstrap_odp(
     let mut scratch = OdpBootstrapScratch::for_fit(&fit);
     let mut failed_iterations = 0usize;
 
-    for _ in 0..options.iterations {
+    let remaining = if options.iterations >= 4
+        && scratch.all_observed_positive
+        && pool.len() <= 1024
+        && options.process_distribution == ProcessDistribution::Gamma
+        && fit.dispersion > 0.0
+        && n >= 3
+    {
+        let batches = options.iterations / 4;
+        run_odp_bootstrap_x4(
+            batches,
+            &fit,
+            &pool,
+            &sampler,
+            &mut rng,
+            &mut scratch,
+            &mut simulated_totals,
+            &mut simulated_by_origin,
+            &mut failed_iterations,
+        );
+        options.iterations % 4
+    } else {
+        options.iterations
+    };
+
+    for _ in 0..remaining {
         let outcome = refit_pseudo_ldfs_from_pool(&pool, &mut sampler, &mut rng, &mut scratch);
         if !outcome.valid {
             failed_iterations += 1;
