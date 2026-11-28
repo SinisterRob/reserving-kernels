@@ -320,10 +320,10 @@ pub fn analyze(
                 s_var += ph[c];
             }
 
-            if s_var > 0.0 && s_var.is_finite() {
-                log_likelihood +=
-                    -0.5 * ((std::f64::consts::TAU * s_var).ln() + innov * innov / s_var);
+            if !(s_var > 0.0) || !s_var.is_finite() {
+                return Err(ValidationError::NotFinite);
             }
+            log_likelihood += -0.5 * ((std::f64::consts::TAU * s_var).ln() + innov * innov / s_var);
 
             let inv_s = 1.0 / s_var;
             for d in 0..dim {
@@ -415,6 +415,9 @@ pub fn analyze(
 
             // Log-normal unbiased mean with process + state predictive variance.
             let mean_x = (mean_y + f64::midpoint(obs_var, var_state)).exp();
+            if !mean_x.is_finite() {
+                return Err(ValidationError::NotFinite);
+            }
             future_cells.push(FutureCell {
                 origin: i,
                 steps_ahead: steps,
@@ -470,6 +473,12 @@ pub fn analyze(
     let ultimate: Vec<f64> = (0..n).map(|i| latest[i] + reserve[i]).collect();
     let standard_error: Vec<f64> = origin_var.iter().map(|&v| v.max(0.0).sqrt()).collect();
     let total_reserve: f64 = reserve.iter().sum();
+    if !total_var.is_finite()
+        || !total_reserve.is_finite()
+        || origin_var.iter().any(|v| !v.is_finite())
+    {
+        return Err(ValidationError::NotFinite);
+    }
     let total_standard_error = total_var.max(0.0).sqrt();
     let total_cv = if total_reserve > 0.0 {
         total_standard_error / total_reserve

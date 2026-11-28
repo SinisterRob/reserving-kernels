@@ -146,8 +146,10 @@ pub fn analyze_with_inflation(
         validate_monotone_cumulative(counts_cumulative)?;
     }
 
-    let paid_factors = DevelopmentFactorEngine::volume_weighted(paid_cumulative, 1.0)?;
-    let count_factors = DevelopmentFactorEngine::volume_weighted(counts_cumulative, 1.0)?;
+    let paid_factors =
+        DevelopmentFactorEngine::volume_weighted_with_policy(paid_cumulative, 1.0, policy)?;
+    let count_factors =
+        DevelopmentFactorEngine::volume_weighted_with_policy(counts_cumulative, 1.0, policy)?;
     let paid_cl = ChainLadderEngine::project_with_policy(paid_cumulative, &paid_factors, policy)?;
     let count_cl =
         ChainLadderEngine::project_with_policy(counts_cumulative, &count_factors, policy)?;

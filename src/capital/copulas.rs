@@ -33,7 +33,7 @@ pub(crate) fn regularized_incomplete_beta(x: f64, a: f64, b: f64) -> f64 {
     if x >= 1.0 {
         return 1.0;
     }
-    let ln_bt = ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln();
+    let ln_bt = ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (-x).ln_1p();
     let bt = ln_bt.exp();
     if x < (a + 1.0) / (a + b + 2.0) {
         bt * betacf(a, b, x) / a
@@ -98,6 +98,9 @@ fn betacf(a: f64, b: f64, x: f64) -> f64 {
 pub fn student_t_cdf(x: f64, nu: f64) -> f64 {
     if !x.is_finite() || !nu.is_finite() || nu <= 0.0 {
         return f64::NAN;
+    }
+    if nu > 1.0e8 {
+        return crate::excess::severity::normal_cdf_exact(x);
     }
     let t_arg = nu / (nu + x * x);
     let ib = regularized_incomplete_beta(t_arg, 0.5 * nu, 0.5);
@@ -213,6 +216,9 @@ pub fn apply_copula_reordering(
         if u.len() != n {
             return Err(ValidationError::ShapeMismatch);
         }
+        if u.iter().any(|v| !v.is_finite()) {
+            return Err(ValidationError::NotFinite);
+        }
     }
 
     let mut out = Vec::with_capacity(d);
@@ -303,11 +309,13 @@ pub fn student_t_copula_sample(
         }
     }
 
-    let sigma = match cholesky_lower(&raw, dim) {
-        Ok(_) => raw,
-        Err(_) => repair_correlation_matrix(&raw, dim)?,
+    let (sigma, chol) = if let Ok(c) = cholesky_lower(&raw, dim) {
+        (raw, c)
+    } else {
+        let repaired = repair_correlation_matrix(&raw, dim)?;
+        let c = cholesky_lower(&repaired, dim)?;
+        (repaired, c)
     };
-    let chol = cholesky_lower(&sigma, dim)?;
 
     let mut rng = DeterministicRng::from_seed(seed);
     let mut columns: Vec<Vec<f64>> = (0..dim).map(|_| Vec::with_capacity(n_samples)).collect();

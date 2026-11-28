@@ -179,19 +179,21 @@ pub fn generalized_bondy(
     };
 
     let m = ys.len();
-    let tail_log = c * b.powi(m as i32) / (1.0 - b);
+    let mut b_pow = b.powi(m.min(i32::MAX as usize) as i32);
+    let tail_log = c * b_pow / (1.0 - b);
     let tail_factor = tail_log.exp().max(1.0);
     if !tail_factor.is_finite() {
         return Err(ValidationError::NotFinite);
     }
     let mut extrapolated_ldfs = Vec::with_capacity(extrap_periods);
-    for step in 0..extrap_periods {
-        let log_f = c * b.powi((m + step) as i32);
+    for _ in 0..extrap_periods {
+        let log_f = c * b_pow;
         let f_step = log_f.exp();
         if !f_step.is_finite() {
             return Err(ValidationError::NotFinite);
         }
         extrapolated_ldfs.push(f_step);
+        b_pow *= b;
     }
 
     Ok(TailFit {
@@ -378,7 +380,7 @@ pub fn fit_weibull(
     for (idx, &f) in ldfs.iter().enumerate().skip(fit_start) {
         if f > 1.000_01 {
             xs.push(((idx + 1) as f64).ln());
-            ys.push((f / (f - 1.0)).ln().ln());
+            ys.push((1.0 / (f - 1.0)).ln_1p().ln());
         }
     }
 
@@ -523,13 +525,21 @@ pub fn clark_tail(
     // R_0 = C_{0, n-1} * (tail - 1) => se(tail) ≈ parameter_se[0] / C_{0, n-1}.
     let c0_last = triangle.get(0, n_devs - 1);
     let tail_se = if c0_last.is_finite() && c0_last > 0.0 {
-        (fit.parameter_se[0] / c0_last).max(0.0)
+        let v = fit.parameter_se[0] / c0_last;
+        if !v.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        v.max(0.0)
     } else {
         0.0
     };
     let tail_sigma_sq = if c0_last.is_finite() && c0_last > 0.0 {
         let proc_var = fit.process_se[0] * fit.process_se[0];
-        (proc_var / c0_last).max(0.0)
+        let v = proc_var / c0_last;
+        if !v.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        v.max(0.0)
     } else {
         0.0
     };

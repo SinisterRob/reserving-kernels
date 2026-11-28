@@ -134,13 +134,23 @@ pub fn project_case_outstanding(
     if options.paid_policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(paid)?;
     }
-    if paid.n_origins != case_outstanding.n_origins || paid.n_devs != case_outstanding.n_devs {
+    if paid.n_origins != case_outstanding.n_origins
+        || paid.n_devs != case_outstanding.n_devs
+        || case_outstanding.data.len() != case_outstanding.n_origins * case_outstanding.n_devs
+    {
         return Err(ValidationError::ShapeMismatch);
     }
     let n_origins = paid.n_origins;
     let n_devs = paid.n_devs;
     if n_origins < 2 || n_devs < 2 {
         return Err(ValidationError::ShapeMismatch);
+    }
+    for i in 0..n_origins {
+        for j in 0..(n_origins - i) {
+            if !case_outstanding.get(i, j).is_finite() {
+                return Err(ValidationError::NotFinite);
+            }
+        }
     }
 
     let inc_paid = cumulative_to_incremental(paid);
@@ -151,7 +161,7 @@ pub fn project_case_outstanding(
         let mut p_nums = Vec::with_capacity(n_origins);
         let mut c_nums = Vec::with_capacity(n_origins);
         let mut dens = Vec::with_capacity(n_origins);
-        for i in 0..n_origins {
+        for i in 0..(n_origins - j) {
             let prev_case = case_outstanding.get(i, j - 1);
             let cur_inc_paid = inc_paid[i * n_devs + j];
             let cur_case = case_outstanding.get(i, j);
@@ -179,16 +189,14 @@ pub fn project_case_outstanding(
     let mut completed_case = case_outstanding.data.to_vec();
 
     for i in 0..n_origins {
-        for j in 1..n_devs {
+        for j in (n_origins - i)..n_devs {
             let idx = i * n_devs + j;
-            if !completed_paid[idx].is_finite() || !completed_case[idx].is_finite() {
-                let prev_paid = completed_paid[i * n_devs + (j - 1)];
-                let prev_case = completed_case[i * n_devs + (j - 1)];
-                let r_p = paid_to_case_ratios[j - 1];
-                let r_c = case_to_case_ratios[j - 1];
-                completed_paid[idx] = prev_paid + prev_case * r_p;
-                completed_case[idx] = prev_case * r_c;
-            }
+            let prev_paid = completed_paid[i * n_devs + (j - 1)];
+            let prev_case = completed_case[i * n_devs + (j - 1)];
+            let r_p = paid_to_case_ratios[j - 1];
+            let r_c = case_to_case_ratios[j - 1];
+            completed_paid[idx] = prev_paid + prev_case * r_p;
+            completed_case[idx] = prev_case * r_c;
         }
     }
 
@@ -245,6 +253,8 @@ pub fn project_from_paid_incurred(
     incurred: &TriangleView<'_>,
     options: &CaseOutstandingOptions,
 ) -> Result<CaseOutstandingProjection, ValidationError> {
+    validate_triangle(paid)?;
+    validate_triangle(incurred)?;
     if paid.n_origins != incurred.n_origins || paid.n_devs != incurred.n_devs {
         return Err(ValidationError::ShapeMismatch);
     }

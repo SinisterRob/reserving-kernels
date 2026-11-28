@@ -95,7 +95,11 @@ fn decompose_origin_variance(t: &TriangleView<'_>, mack: &Mack) -> Vec<MackOrigi
         }
 
         let total_variance = process_term + parameter_term;
-        let standard_error = total_variance.max(0.0).sqrt();
+        let standard_error = if total_variance.is_finite() {
+            total_variance.max(0.0).sqrt()
+        } else {
+            f64::NAN
+        };
         let coefficient_of_variation = if reserve > 0.0 {
             standard_error / reserve
         } else {

@@ -61,7 +61,10 @@ pub(crate) fn validate_asymmetric_cumulative(
     if grid.n_origins == 0 || grid.n_devs < 2 {
         return Err(ValidationError::ShapeMismatch);
     }
-    if cum.len() != grid.n_origins * grid.n_devs || grid.observed_counts.len() != grid.n_origins {
+    if cum.len() != grid.n_origins * grid.n_devs
+        || grid.observed_counts.len() != grid.n_origins
+        || grid.cell_ages_months.len() != grid.n_origins * grid.n_devs
+    {
         return Err(ValidationError::ShapeMismatch);
     }
     for i in 0..grid.n_origins {

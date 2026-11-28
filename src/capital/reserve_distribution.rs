@@ -197,16 +197,39 @@ pub fn rvar(values: &[f64], p_low: f64, p_high: f64) -> Result<f64, ValidationEr
             "rvar requires p_low < p_high",
         ));
     }
-    let ordered = sorted(values)?;
-    let n = ordered.len() as f64;
-    // Exact integral ∫_{p_low}^{p_high} F^-(s) ds over piecewise-constant step function
-    // where F^-(s) = ordered[j] on [j/N, (j+1)/N).
+    validate_finite_slice(values)?;
+    if values.is_empty() {
+        return Err(ValidationError::ShapeMismatch);
+    }
+    let n_len = values.len();
+    let n = n_len as f64;
+    let lo_idx = ((p_low * n).floor() as usize).min(n_len - 1);
+    let hi_idx = ((p_high * n).ceil() as usize)
+        .saturating_sub(1)
+        .min(n_len - 1);
+    let mut work = values.to_vec();
+    // Cascading O(n) partial selection isolates the exact [lo_idx..=hi_idx] band.
+    let (_, hi_val_ref, _) = work.select_nth_unstable_by(hi_idx, f64::total_cmp);
+    let hi_val = *hi_val_ref;
+    let (lo_val, mid_slice) = if lo_idx == hi_idx {
+        (hi_val, &work[0..0])
+    } else {
+        let (_, lo_val_ref, right) = work[..hi_idx].select_nth_unstable_by(lo_idx, f64::total_cmp);
+        (*lo_val_ref, &*right)
+    };
     let mut integral = 0.0;
-    for (j, &x) in ordered.iter().enumerate() {
-        let lo = (j as f64 / n).max(p_low);
-        let hi = ((j + 1) as f64 / n).min(p_high);
-        if hi > lo {
-            integral += (hi - lo) * x;
+    let lo_w = ((lo_idx + 1) as f64 / n).min(p_high) - (lo_idx as f64 / n).max(p_low);
+    if lo_w > 0.0 {
+        integral += lo_w * lo_val;
+    }
+    if hi_idx > lo_idx {
+        let hi_w = ((hi_idx + 1) as f64 / n).min(p_high) - (hi_idx as f64 / n).max(p_low);
+        if hi_w > 0.0 {
+            integral += hi_w * hi_val;
+        }
+        let inv_n = 1.0 / n;
+        for &x in mid_slice {
+            integral += inv_n * x;
         }
     }
     Ok(integral / (p_high - p_low))
@@ -392,10 +415,11 @@ pub fn crps_empirical(draws: &[f64], observed: f64) -> Result<f64, ValidationErr
     let xs = sorted(draws)?;
     let n = xs.len() as f64;
     let term1 = xs.iter().map(|&x| (x - observed).abs()).sum::<f64>() / n;
+    let shift = xs[0];
     let spread = xs
         .iter()
         .enumerate()
-        .map(|(k, &x)| (2.0 * k as f64 - n + 1.0) * x)
+        .map(|(k, &x)| (2.0 * k as f64 - n + 1.0) * (x - shift))
         .sum::<f64>()
         / (n * n);
     Ok((term1 - spread).max(0.0))
@@ -430,9 +454,23 @@ pub fn interval_score(draws: &[f64], observed: f64, alpha: f64) -> Result<f64, V
     if alpha <= 0.0 || alpha >= 1.0 {
         return Err(ValidationError::InvalidProbability { value: alpha });
     }
-    let xs = sorted(draws)?;
-    let lower = xs[quantile_rank_index(xs.len(), 0.5 * alpha)];
-    let upper = xs[quantile_rank_index(xs.len(), 1.0 - 0.5 * alpha)];
+    validate_finite_slice(draws)?;
+    if draws.is_empty() {
+        return Err(ValidationError::ShapeMismatch);
+    }
+    let n = draws.len();
+    let idx_lo = quantile_rank_index(n, 0.5 * alpha);
+    let idx_hi = quantile_rank_index(n, 1.0 - 0.5 * alpha);
+    let mut work = draws.to_vec();
+    let (_, upper_ref, _) = work.select_nth_unstable_by(idx_hi, f64::total_cmp);
+    let upper = *upper_ref;
+    let lower = if idx_lo == idx_hi {
+        upper
+    } else {
+        *work[..idx_hi]
+            .select_nth_unstable_by(idx_lo, f64::total_cmp)
+            .1
+    };
     let width = upper - lower;
     let penalty = (2.0 / alpha) * ((lower - observed).max(0.0) + (observed - upper).max(0.0));
     Ok(width + penalty)

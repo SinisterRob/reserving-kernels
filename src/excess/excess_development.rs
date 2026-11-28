@@ -248,8 +248,19 @@ pub fn project_split_losses(
     factors: &ExcessDevelopmentFactors,
 ) -> Result<ExcessProjection, ValidationError> {
     let n = latest_limited.len();
-    if n == 0 || latest_excess.len() != n || factors.ground_up_cdf.len() != n {
+    if n == 0
+        || latest_excess.len() != n
+        || factors.ground_up_cdf.len() != n
+        || factors.limited_cdf.len() != n
+        || factors.excess_cdf.len() != n
+    {
         return Err(ValidationError::ShapeMismatch);
+    }
+    if factors.ground_up_cdf.iter().any(|v| !v.is_finite())
+        || factors.limited_cdf.iter().any(|v| !v.is_finite())
+        || factors.excess_cdf.iter().any(|v| !v.is_finite())
+    {
+        return Err(ValidationError::NotFinite);
     }
 
     let mut ground_up_ultimate = Vec::with_capacity(n);

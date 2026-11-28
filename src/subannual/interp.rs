@@ -182,6 +182,9 @@ pub fn interp_linear_cdf(
         let k = find_bracket(anchor_ages, tc);
         let w = (tc - anchor_ages[k]) / (anchor_ages[k + 1] - anchor_ages[k]);
         let cdf = (1.0 - w) * anchor_cdfs[k] + w * anchor_cdfs[k + 1];
+        if !cdf.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
         cdfs.push(cdf);
     }
     Ok(build_pattern(
@@ -409,6 +412,9 @@ pub fn interp_inverse_power(
             };
             ((1.0 - w) * anchor_cdfs[k].ln() + w * anchor_cdfs[k + 1].ln()).exp()
         };
+        if !cdf.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
         cdfs.push(cdf);
     }
 
@@ -520,9 +526,11 @@ pub fn interp_swimon(
     // monotonically non-increasing across the entire domain (zero sawtooth!).
     let is_concave_data = s.windows(2).all(|w| w[0] >= w[1] - 1e-12 && w[1] >= -1e-12);
     if is_concave_data {
-        // Clamp interior tangents into [s[k], s[k-1]] first.
+        // Clamp interior tangents into [s[k], s[k-1]] first (guarding lo <= hi against 1e-12 slack).
         for k in 1..n_seg {
-            m[k] = m[k].clamp(s[k].max(0.0), s[k - 1].max(0.0));
+            let lo = s[k].max(0.0);
+            let hi = s[k - 1].max(lo);
+            m[k] = m[k].clamp(lo, hi);
         }
         m[0] = m[0].clamp(s[0].max(0.0), (2.0 * s[0]).max(0.0));
         m[n_knots - 1] = m[n_knots - 1].clamp(0.0, s[last].max(0.0));
@@ -535,7 +543,7 @@ pub fn interp_swimon(
                 if m[k] + 2.0 * m[k + 1] > 3.0 * sk {
                     let target_m_next = 0.5 * (3.0 * sk - m[k]);
                     let lo_next = if k + 1 < n_seg {
-                        s[k + 1].max(0.0)
+                        s[k + 1].max(0.0).min(sk)
                     } else {
                         0.0
                     };
@@ -544,7 +552,7 @@ pub fn interp_swimon(
                 // Enforce 2 m[k] + m[k+1] >= 3 s_k (raise m[k] within [s_k, s_{k-1}]).
                 if 2.0 * m[k] + m[k + 1] < 3.0 * sk {
                     let target_m_cur = 0.5 * (3.0 * sk - m[k + 1]);
-                    let hi_cur = if k > 0 { s[k - 1].max(0.0) } else { 2.0 * sk };
+                    let hi_cur = if k > 0 { s[k - 1].max(sk) } else { 2.0 * sk };
                     m[k] = target_m_cur.clamp(sk, hi_cur);
                 }
             }
@@ -708,6 +716,7 @@ pub fn interp_ivf12(
     let t_min = anchor_ages[0];
     let t_max = anchor_ages[m - 1];
     let tol = 1e-9 * t_max;
+    let step_tol = tol.min(1e-6 * step);
 
     // 12-month volume factors at each knot: F(t_k) = CDF(t_k) / CDF(t_{k+1}),
     // with F(t_{m-1}) = 1.0 (beyond the final knot, incremental annual development is 1.0).
@@ -734,7 +743,7 @@ pub fn interp_ivf12(
         let mut prod = 1.0;
         let mut cur = t;
         let last_window_start = anchor_ages[m - 2];
-        while cur < last_window_start - tol {
+        while cur < last_window_start - step_tol {
             prod *= eval_f12(cur);
             cur += step;
         }

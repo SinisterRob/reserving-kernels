@@ -385,6 +385,9 @@ pub fn analyze(
         } else {
             0.0
         };
+        if !ult.is_finite() || !var_i.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
         ultimates[i] = ult;
         reserves[i] = res;
         msep[i] = var_i.max(0.0);
@@ -435,6 +438,9 @@ pub fn analyze(
 
     let total_ultimate: f64 = ultimates.iter().sum();
     let total_reserve: f64 = reserves.iter().sum();
+    if !total_ultimate.is_finite() || !total_reserve.is_finite() || !total_msep.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
     let total_standard_error = total_msep.max(0.0).sqrt();
     let total_cv = if total_reserve > 0.0 {
         total_standard_error / total_reserve

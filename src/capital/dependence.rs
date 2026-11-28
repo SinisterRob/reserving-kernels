@@ -611,9 +611,13 @@ pub fn synchronized_odp_bootstrap(
         }
         if all_ok {
             let agg: f64 = draw_totals.iter().sum();
-            aggregate_totals.push(agg);
-            for (line, &tot) in draw_totals.iter().enumerate() {
-                line_totals[line].push(tot);
+            if agg.is_finite() {
+                aggregate_totals.push(agg);
+                for (line, &tot) in draw_totals.iter().enumerate() {
+                    line_totals[line].push(tot);
+                }
+            } else {
+                failed_iterations += 1;
             }
         } else {
             failed_iterations += 1;

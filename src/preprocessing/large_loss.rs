@@ -27,6 +27,9 @@ where
     let mut data = vec![f64::NAN; triangle.n_origins * triangle.n_devs];
     for origin in 0..triangle.n_origins {
         for dev in 0..triangle.n_devs {
+            if !triangle.is_scheduled_observed(origin, dev) {
+                continue;
+            }
             let value = triangle.get(origin, dev);
             if value.is_finite() {
                 data[origin * triangle.n_devs + dev] = f(value);
@@ -53,10 +56,17 @@ where
     let mut data = vec![f64::NAN; left.n_origins * left.n_devs];
     for origin in 0..left.n_origins {
         for dev in 0..left.n_devs {
+            if !left.is_scheduled_observed(origin, dev) {
+                continue;
+            }
             let a = left.get(origin, dev);
             let b = right.get(origin, dev);
             if a.is_finite() && b.is_finite() {
-                data[origin * left.n_devs + dev] = f(a, b);
+                let out = f(a, b);
+                if !out.is_finite() {
+                    return Err(ValidationError::NotFinite);
+                }
+                data[origin * left.n_devs + dev] = out;
             }
         }
     }

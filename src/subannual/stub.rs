@@ -65,6 +65,9 @@ pub fn stub_plus12(
     let exponent = (24.0 / (s + 12.0)).ln() / (36.0_f64 / 24.0_f64).ln();
     let stub_to_12_ldf = f12_24.powf(exponent);
     let stub_cdf = cdf_12 * stub_to_12_ldf;
+    if !stub_to_12_ldf.is_finite() || !stub_cdf.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
 
     Ok(StubExtrapolationResult {
         stub_age_months: s,
@@ -117,6 +120,9 @@ pub fn stub_power_ratio(
     let base_factor = ldf_12_24 * (ldf_12_24 / ldf_24_36);
     let stub_to_12_ldf = base_factor.powf(exponent);
     let stub_cdf = cdf_12 * stub_to_12_ldf;
+    if !stub_to_12_ldf.is_finite() || !stub_cdf.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
 
     Ok(StubExtrapolationResult {
         stub_age_months: s,
@@ -161,6 +167,9 @@ pub fn stub_natural_log(
     let exponent = (12.0 / s).ln() / 2.0_f64.ln();
     let stub_to_12_ldf = f12_24.powf(exponent);
     let stub_cdf = cdf_12 * stub_to_12_ldf;
+    if !stub_to_12_ldf.is_finite() || !stub_cdf.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
 
     Ok(StubExtrapolationResult {
         stub_age_months: s,

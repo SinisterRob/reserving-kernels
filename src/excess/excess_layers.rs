@@ -36,11 +36,15 @@ impl LognormalLayerModel {
         if sigma <= 0.0 {
             return Err(ValidationError::NonPositive("lognormal sigma"));
         }
+        let log_mean = mean.ln() - 0.5 * sigma * sigma;
+        if !log_mean.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
         Ok(Self {
             mean,
             sigma,
             inv_sigma: 1.0 / sigma,
-            log_mean: mean.ln() - 0.5 * sigma * sigma,
+            log_mean,
             pdf_scale: INV_SQRT_TAU / sigma,
         })
     }
@@ -111,11 +115,15 @@ impl LognormalLayerModel {
     /// Lognormal probability density function $f_X(x)$ at loss amount `x`.
     #[inline]
     pub fn pdf(&self, x: f64) -> f64 {
+        if x.is_nan() {
+            return f64::NAN;
+        }
         if x <= 0.0 || !x.is_finite() {
             return 0.0;
         }
-        let z = (x.ln() - self.log_mean) * self.inv_sigma;
-        (self.pdf_scale / x) * (-0.5 * z * z).exp()
+        let ln_x = x.ln();
+        let z = (ln_x - self.log_mean) * self.inv_sigma;
+        (self.pdf_scale.ln() - ln_x - 0.5 * z * z).exp()
     }
 }
 
@@ -146,7 +154,7 @@ impl LognormalLayerSampler {
             ));
         }
         let half = n_samples.div_ceil(2);
-        let total = half * 2;
+        let total = half.checked_mul(2).ok_or(ValidationError::ShapeMismatch)?;
         let mut state = seed;
         let mut pos = Vec::with_capacity(half);
         while pos.len() < half {
@@ -175,6 +183,9 @@ impl LognormalLayerSampler {
         for &z in &sorted_normals {
             acc += (model.log_mean + model.sigma * z).exp();
             prefix_sums.push(acc);
+        }
+        if !acc.is_finite() {
+            return Err(ValidationError::NotFinite);
         }
 
         Ok(Self {

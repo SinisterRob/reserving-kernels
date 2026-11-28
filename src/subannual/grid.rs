@@ -362,19 +362,37 @@ impl CalendarDiagonalMap {
 pub fn calendar_diagonal_index(
     grid: &AsymmetricAgeGrid,
 ) -> Result<CalendarDiagonalMap, ValidationError> {
-    if grid.n_origins == 0 || grid.n_devs == 0 {
+    if grid.n_origins == 0
+        || grid.n_devs == 0
+        || grid.observed_counts.len() != grid.n_origins
+        || grid.origin_start_months.len() != grid.n_origins
+        || grid.n_origins.checked_mul(grid.n_devs) != Some(grid.cell_ages_months.len())
+    {
         return Err(ValidationError::ShapeMismatch);
+    }
+    if !grid.origin_months.is_finite() || !grid.dev_months.is_finite() {
+        return Err(ValidationError::NotFinite);
+    }
+    if grid.origin_months <= 0.0 || grid.dev_months <= 0.0 {
+        return Err(ValidationError::NonPositive("grid period months"));
     }
     let tol = 1e-6 * grid.dev_months.max(1.0);
 
     // Collect all observed (origin, dev, calendar_month) triples.
     let mut observed: Vec<(usize, usize, f64)> = Vec::new();
     for i in 0..grid.n_origins {
+        let origin_start = grid.origin_start_months[i];
+        if !origin_start.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
         let count = grid.observed_counts[i].min(grid.n_devs);
         for j in 0..count {
             let age = grid.cell_ages_months[i * grid.n_devs + j];
             if age.is_finite() {
-                let cal_m = grid.origin_start_months[i] + age;
+                let cal_m = origin_start + age;
+                if !cal_m.is_finite() {
+                    return Err(ValidationError::NotFinite);
+                }
                 observed.push((i, j, cal_m));
             }
         }
@@ -401,7 +419,9 @@ pub fn calendar_diagonal_index(
         let diag_idx = diagonal_months
             .iter()
             .position(|&dm| (dm - cal_m).abs() <= tol)
-            .expect("calendar month must match a bucket");
+            .ok_or(ValidationError::InvalidParameter(
+                "calendar month failed to match any diagonal bucket",
+            ))?;
         let cal_period = ((cal_m - 1e-9).max(0.0) / grid.origin_months).floor() as usize;
 
         let flat = origin * grid.n_devs + dev;

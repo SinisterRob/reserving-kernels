@@ -295,40 +295,64 @@ fn optimize_exact_age_params(
     let mut v = best_v;
     let mut ll = best_ll;
     let mut max_grad = f64::INFINITY;
-    let h = 1e-5;
+    let h_grad = 1e-5;
+    let h_hess = 1e-4;
 
     for _iter in 0..80 {
-        let f_pu = profile_log_lik(data, exposure_weights, curve, u + h, v);
-        let f_mu = profile_log_lik(data, exposure_weights, curve, u - h, v);
-        let f_pv = profile_log_lik(data, exposure_weights, curve, u, v + h);
-        let f_mv = profile_log_lik(data, exposure_weights, curve, u, v - h);
-        let f_pp = profile_log_lik(data, exposure_weights, curve, u + h, v + h);
-        let f_pm = profile_log_lik(data, exposure_weights, curve, u + h, v - h);
-        let f_mp = profile_log_lik(data, exposure_weights, curve, u - h, v + h);
-        let f_mm = profile_log_lik(data, exposure_weights, curve, u - h, v - h);
+        let f_pu = profile_log_lik(data, exposure_weights, curve, u + h_grad, v);
+        let f_mu = profile_log_lik(data, exposure_weights, curve, u - h_grad, v);
+        let f_pv = profile_log_lik(data, exposure_weights, curve, u, v + h_grad);
+        let f_mv = profile_log_lik(data, exposure_weights, curve, u, v - h_grad);
 
-        if !f_pu.is_finite()
-            || !f_mu.is_finite()
-            || !f_pv.is_finite()
-            || !f_mv.is_finite()
-            || !f_pp.is_finite()
-            || !f_pm.is_finite()
-            || !f_mp.is_finite()
-            || !f_mm.is_finite()
-        {
+        let gu = if f_pu.is_finite() && f_mu.is_finite() {
+            (f_pu - f_mu) / (2.0 * h_grad)
+        } else if f_pu.is_finite() {
+            (f_pu - ll) / h_grad
+        } else if f_mu.is_finite() {
+            (ll - f_mu) / h_grad
+        } else {
             break;
-        }
-
-        let gu = (f_pu - f_mu) / (2.0 * h);
-        let gv = (f_pv - f_mv) / (2.0 * h);
+        };
+        let gv = if f_pv.is_finite() && f_mv.is_finite() {
+            (f_pv - f_mv) / (2.0 * h_grad)
+        } else if f_pv.is_finite() {
+            (f_pv - ll) / h_grad
+        } else if f_mv.is_finite() {
+            (ll - f_mv) / h_grad
+        } else {
+            break;
+        };
         max_grad = gu.abs().max(gv.abs());
         if max_grad < 1e-9 {
             break;
         }
 
-        let huu = (f_pu - 2.0 * ll + f_mu) / (h * h);
-        let hvv = (f_pv - 2.0 * ll + f_mv) / (h * h);
-        let huv = (f_pp - f_pm - f_mp + f_mm) / (4.0 * h * h);
+        let h_pu = profile_log_lik(data, exposure_weights, curve, u + h_hess, v);
+        let h_mu = profile_log_lik(data, exposure_weights, curve, u - h_hess, v);
+        let h_pv = profile_log_lik(data, exposure_weights, curve, u, v + h_hess);
+        let h_mv = profile_log_lik(data, exposure_weights, curve, u, v - h_hess);
+        let f_pp = profile_log_lik(data, exposure_weights, curve, u + h_hess, v + h_hess);
+        let f_pm = profile_log_lik(data, exposure_weights, curve, u + h_hess, v - h_hess);
+        let f_mp = profile_log_lik(data, exposure_weights, curve, u - h_hess, v + h_hess);
+        let f_mm = profile_log_lik(data, exposure_weights, curve, u - h_hess, v - h_hess);
+
+        let (huu, hvv, huv) = if h_pu.is_finite()
+            && h_mu.is_finite()
+            && h_pv.is_finite()
+            && h_mv.is_finite()
+            && f_pp.is_finite()
+            && f_pm.is_finite()
+            && f_mp.is_finite()
+            && f_mm.is_finite()
+        {
+            (
+                (h_pu - 2.0 * ll + h_mu) / (h_hess * h_hess),
+                (h_pv - 2.0 * ll + h_mv) / (h_hess * h_hess),
+                (f_pp - f_pm - f_mp + f_mm) / (4.0 * h_hess * h_hess),
+            )
+        } else {
+            (-1.0, -1.0, 0.0)
+        };
 
         // We maximize ll, so negative Hessian N = -H should be SPD.
         let mut n00 = -huu;

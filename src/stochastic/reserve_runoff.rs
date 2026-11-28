@@ -104,8 +104,15 @@ impl ChainLadderRollForward {
     ) -> Result<Self, ValidationError> {
         validate_tail(opening_tail)?;
         let n = triangle.n_origins;
-        if n < 2 || n != triangle.n_devs || opening_origin_reserves.len() != n {
+        if n < 2
+            || n != triangle.n_devs
+            || triangle.data.len() != n * triangle.n_devs
+            || opening_origin_reserves.len() != n
+        {
             return Err(ValidationError::ShapeMismatch);
+        }
+        if opening_origin_reserves.iter().any(|v| !v.is_finite()) {
+            return Err(ValidationError::NotFinite);
         }
         let m = n - 1;
         let mut obs_den = vec![0.0; m];

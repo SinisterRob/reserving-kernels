@@ -84,6 +84,17 @@ impl std::fmt::Display for SchnieperResult {
 }
 
 fn validate_square_signed_triangle(t: &TriangleView<'_>) -> Result<(), ValidationError> {
+    validate_square_signed_triangle_from_col(t, 0)
+}
+
+fn validate_square_signed_triangle_skip_col0(t: &TriangleView<'_>) -> Result<(), ValidationError> {
+    validate_square_signed_triangle_from_col(t, 1)
+}
+
+fn validate_square_signed_triangle_from_col(
+    t: &TriangleView<'_>,
+    start_col: usize,
+) -> Result<(), ValidationError> {
     if t.data.len() != t.n_origins * t.n_devs {
         return Err(ValidationError::ShapeMismatch);
     }
@@ -92,7 +103,7 @@ fn validate_square_signed_triangle(t: &TriangleView<'_>) -> Result<(), Validatio
     }
     let n = t.n_origins;
     for i in 0..n {
-        for j in 0..(n - i) {
+        for j in start_col..(n - i) {
             if !t.get(i, j).is_finite() {
                 return Err(ValidationError::NotFinite);
             }
@@ -138,7 +149,7 @@ pub fn analyze(
     exposures: &[f64],
 ) -> Result<SchnieperResult, ValidationError> {
     validate_square_signed_triangle(new_claims)?;
-    validate_square_signed_triangle(known_development)?;
+    validate_square_signed_triangle_skip_col0(known_development)?;
     let n = new_claims.n_origins;
     if n < 2 {
         return Err(ValidationError::InvalidParameter(

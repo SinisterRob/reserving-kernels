@@ -113,8 +113,11 @@ impl FrequencyDistribution {
                 "Negative Binomial requires 0 < mean < variance",
             ));
         }
-        let beta = variance / mean - 1.0;
+        let beta = (variance - mean) / mean;
         let r = mean / beta;
+        if !beta.is_finite() || !(beta > 0.0) || !r.is_finite() || !(r > 0.0) {
+            return Err(ValidationError::NotFinite);
+        }
         Ok(Self::NegativeBinomial { r, beta })
     }
 
@@ -473,6 +476,9 @@ pub fn fft_aggregate_loss(
     // Compound PGF evaluation in frequency domain: phi_S(u) = P_N(phi_X(u)).
     for u in 0..fft_size {
         let (gr, gi) = frequency.pgf_complex(re[u], im[u]);
+        if !gr.is_finite() || !gi.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
         re[u] = gr;
         im[u] = gi;
     }

@@ -44,9 +44,9 @@ cd "$WORK_DIR"
 
 echo "pre-push: [1/6] Formatting & Clippy gates..."
 cargo fmt --all -- --check
-cargo clippy --all-targets --no-default-features -- -D warnings
-cargo clippy --all-targets --all-features -- -D warnings
-cargo clippy --lib --all-features -- -D warnings -D clippy::unwrap_used -D clippy::panic
+cargo clippy --all-targets --no-default-features -- -D warnings -D clippy::approx_constant
+cargo clippy --all-targets --all-features -- -D warnings -D clippy::approx_constant
+cargo clippy --lib --all-features -- -D warnings -D clippy::approx_constant -D clippy::unwrap_used -D clippy::panic
 
 echo "pre-push: [2/6] Rustdoc (-D warnings)..."
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features

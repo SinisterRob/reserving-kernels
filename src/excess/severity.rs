@@ -420,13 +420,17 @@ impl SeverityDistribution {
 
     /// Probability density function `f(x)`.
     pub fn pdf(&self, x: f64) -> f64 {
-        if x <= 0.0 {
+        if x.is_nan() {
+            return f64::NAN;
+        }
+        if x <= 0.0 || !x.is_finite() {
             return 0.0;
         }
         match self {
             Self::Lognormal { mu, sigma } => {
-                let z = (x.ln() - mu) / sigma;
-                (-0.5 * z * z).exp() / (x * sigma * TAU.sqrt())
+                let ln_x = x.ln();
+                let z = (ln_x - mu) / sigma;
+                (-0.5 * z * z - ln_x - (sigma * TAU.sqrt()).ln()).exp()
             }
             Self::Pareto { alpha, theta } => {
                 // Avoid intermediate theta^alpha overflow on realistic dollar scales.
@@ -458,7 +462,7 @@ impl SeverityDistribution {
     /// Ground-up unlimited mean `E[X]`, or `None` when the first moment diverges
     /// (Pareto `alpha <= 1` or GPD `xi >= 1`).
     pub fn unbounded_mean(&self) -> Option<f64> {
-        match self {
+        let mean = match self {
             Self::Lognormal { mu, sigma } => Some((mu + 0.5 * sigma * sigma).exp()),
             Self::Pareto { alpha, theta } => {
                 if *alpha > 1.0 {
@@ -485,7 +489,8 @@ impl SeverityDistribution {
                     None
                 }
             }
-        }
+        };
+        mean.filter(|m| m.is_finite())
     }
 
     /// Exact closed-form Limited Expected Value `E[X ∧ limit]`
@@ -505,13 +510,27 @@ impl SeverityDistribution {
         let lev = match self {
             Self::Lognormal { mu, sigma } => {
                 let z = (limit.ln() - mu) / sigma;
-                let cdf_shifted = normal_cdf_exact(z - sigma);
-                let term1 = if cdf_shifted == 0.0 {
-                    0.0
+                let log_mean = mu + 0.5 * sigma * sigma;
+                let term1 = if log_mean <= 700.0 {
+                    let cdf_shifted = normal_cdf_exact(z - sigma);
+                    if cdf_shifted == 0.0 {
+                        0.0
+                    } else {
+                        log_mean.exp() * cdf_shifted
+                    }
                 } else {
-                    (mu + 0.5 * sigma * sigma).exp() * cdf_shifted
+                    // Asymptotic Mills-ratio expansion: exp(mu + sigma^2/2) * Phi(z - sigma)
+                    // cancels exp(sigma^2/2) analytically against exp(-(z - sigma)^2 / 2).
+                    let t = sigma - z;
+                    if t > 0.0 {
+                        let inv_t2 = 1.0 / (t * t);
+                        let series = 1.0 - inv_t2 * (1.0 - 3.0 * inv_t2);
+                        (limit * (-0.5 * z * z).exp() / (TAU.sqrt() * t) * series).max(0.0)
+                    } else {
+                        limit
+                    }
                 };
-                term1 + limit * normal_cdf_exact(-z)
+                (term1 + limit * normal_cdf_exact(-z)).min(limit)
             }
             Self::Pareto { alpha, theta } => {
                 let ln_ratio = (limit / theta).ln_1p();

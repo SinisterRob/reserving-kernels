@@ -1,8 +1,6 @@
 //! Reserve roll-forward kernels.
 
-use crate::validate::{
-    ValidationError, validate_nonnegative_finite_slice, validate_nonnegative_finite_vector,
-};
+use crate::validate::{ValidationError, validate_nonnegative_finite_vector};
 
 /// Basic reserve movement decomposition.
 #[derive(Debug, Clone, PartialEq)]
@@ -93,9 +91,6 @@ pub fn rollforward_by_origin(
     validate_nonnegative_finite_vector(new_ultimate, n)?;
     validate_nonnegative_finite_vector(old_latest, n)?;
     validate_nonnegative_finite_vector(new_latest, n)?;
-    if new_ultimate.len() != n || old_latest.len() != n || new_latest.len() != n {
-        return Err(ValidationError::ShapeMismatch);
-    }
 
     Ok((0..n)
         .map(|index| {
@@ -113,21 +108,34 @@ pub fn rollforward_by_origin(
 pub fn aggregate_rollforward(
     rows: &[ReserveRollForward],
 ) -> Result<ReserveRollForward, ValidationError> {
-    let old_ultimate: Vec<f64> = rows.iter().map(|row| row.old_ultimate).collect();
-    let new_ultimate: Vec<f64> = rows.iter().map(|row| row.new_ultimate).collect();
-    let old_latest: Vec<f64> = rows.iter().map(|row| row.old_latest).collect();
-    let new_latest: Vec<f64> = rows.iter().map(|row| row.new_latest).collect();
+    let mut old_ultimate = 0.0;
+    let mut new_ultimate = 0.0;
+    let mut old_latest = 0.0;
+    let mut new_latest = 0.0;
 
-    validate_nonnegative_finite_slice(&old_ultimate)?;
-    validate_nonnegative_finite_slice(&new_ultimate)?;
-    validate_nonnegative_finite_slice(&old_latest)?;
-    validate_nonnegative_finite_slice(&new_latest)?;
+    for row in rows {
+        validate_scalar(row.old_ultimate)?;
+        validate_scalar(row.new_ultimate)?;
+        validate_scalar(row.old_latest)?;
+        validate_scalar(row.new_latest)?;
+        old_ultimate += row.old_ultimate;
+        new_ultimate += row.new_ultimate;
+        old_latest += row.old_latest;
+        new_latest += row.new_latest;
+    }
+    if !old_ultimate.is_finite()
+        || !new_ultimate.is_finite()
+        || !old_latest.is_finite()
+        || !new_latest.is_finite()
+    {
+        return Err(ValidationError::NotFinite);
+    }
 
     Ok(build_one(
-        old_ultimate.iter().sum(),
-        new_ultimate.iter().sum(),
-        old_latest.iter().sum(),
-        new_latest.iter().sum(),
+        old_ultimate,
+        new_ultimate,
+        old_latest,
+        new_latest,
     ))
 }
 

@@ -234,11 +234,11 @@ pub fn fit_from_claims(
         for (&r, &cap) in delays.iter().zip(truncs.iter()) {
             let x = (rho * cap).min(500.0);
             let ex = (-x).exp();
-            let one_minus_ex = (1.0 - ex).max(1e-15);
+            let one_minus_ex = (-(-x).exp_m1()).max(1e-15);
             grad += 1.0 / rho - r - (cap * ex) / one_minus_ex;
             hess += -1.0 / (rho * rho) + (cap * cap * ex) / (one_minus_ex * one_minus_ex);
         }
-        if hess.abs() < 1e-15 {
+        if !hess.is_finite() || hess >= -1e-15 {
             break;
         }
         let step = (grad / hess).clamp(-0.5 * rho, 0.5 * rho);
@@ -293,7 +293,7 @@ pub fn fit_from_claims(
         let settled_at = c.settlement_time.filter(|&ts| ts <= valuation_time);
         let mut had_close_pay = false;
         for p in &c.payments {
-            if p.time > valuation_time || p.amount <= 0.0 {
+            if p.time > valuation_time || !p.amount.is_finite() || p.amount <= 0.0 {
                 continue;
             }
             if let Some(ts) = settled_at
@@ -466,6 +466,9 @@ pub fn simulate_synthetic_portfolio(
     seed: u64,
 ) -> Result<(Vec<ClaimRecord>, f64, f64), ValidationError> {
     model.validate()?;
+    if !valuation_time.is_finite() || valuation_time <= 0.0 {
+        return Err(ValidationError::NonPositive("valuation_time"));
+    }
     let mut rng = DeterministicRng::from_seed(seed);
     let mut observed = Vec::new();
     let mut true_rbns = 0.0;
@@ -474,6 +477,11 @@ pub fn simulate_synthetic_portfolio(
 
     let total_rate = model.interim_payment_hazard + model.settlement_hazard;
     let p_interim = model.interim_payment_hazard / total_rate;
+    if !(p_interim < 1.0) {
+        return Err(ValidationError::InvalidParameter(
+            "interim_payment_hazard / settlement_hazard ratio is too large to simulate",
+        ));
+    }
 
     for (k, &lam) in model.occurrence_intensities.iter().enumerate() {
         let a = k as f64;
@@ -481,7 +489,11 @@ pub fn simulate_synthetic_portfolio(
         if b <= a {
             continue;
         }
-        let n_occ = rng.sample_poisson(lam * (b - a)).round() as usize;
+        let expected_occ = lam * (b - a);
+        if !expected_occ.is_finite() || expected_occ > 1.0e9 {
+            return Err(ValidationError::NotFinite);
+        }
+        let n_occ = rng.sample_poisson(expected_occ).round() as usize;
         for _ in 0..n_occ {
             let t_occ = a + (b - a) * rng.next_open01();
             let rep_delay = -rng.next_open01().ln() / model.reporting_delay_rate;
@@ -579,6 +591,9 @@ impl OnlineMoments {
 fn five_quantiles(xs: &[f64]) -> [f64; 5] {
     const PROBS: [f64; 5] = [0.50, 0.75, 0.90, 0.95, 0.99];
     let n = xs.len();
+    if n == 0 {
+        return [0.0; 5];
+    }
     if n == 1 {
         return [xs[0]; 5];
     }

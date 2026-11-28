@@ -352,8 +352,8 @@ pub fn estimate_collective_parameters(
         sigma_sq[k] = s2;
 
         // Bühlmann–Straub between-risk structural variance estimator \hat{\tau}_k^2.
-        let sum_sq_vol: f64 = vols.iter().map(|&v| v * v).sum();
-        let c_star = total_vol - sum_sq_vol / total_vol;
+        // Sum v_r * (1 - v_r / total_vol) to avoid catastrophic cancellation when one peer dominates.
+        let c_star: f64 = vols.iter().map(|&v| v * (1.0 - v / total_vol)).sum();
         let weighted_ss: f64 = (0..m)
             .map(|r| vols[r] * (macks[r].ldf[k] - f0).powi(2))
             .sum();

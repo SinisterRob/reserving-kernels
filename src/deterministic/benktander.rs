@@ -218,7 +218,12 @@ impl BenktanderEngine {
             reserves[i] = res;
         }
 
-        validate_nonnegative_finite_slice(&ultimates)?;
+        match policy {
+            MonotonicityPolicy::Strict => validate_nonnegative_finite_slice(&ultimates)?,
+            MonotonicityPolicy::AllowNegativeIncrements => {
+                crate::validate::validate_finite_slice(&ultimates)?;
+            }
+        }
         let total_latest: f64 = latest.iter().sum();
         let total_expected_ultimate: f64 = expected_ultimate.iter().sum();
         let total_reserve: f64 = reserves.iter().sum();

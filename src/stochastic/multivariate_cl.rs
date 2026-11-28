@@ -114,6 +114,8 @@ pub fn analyze_multivariate_cl(
     let mut b_mats: Vec<Vec<f64>> = Vec::with_capacity(n_steps);
     let mut sigma_mats: Vec<Vec<f64>> = Vec::with_capacity(n_steps);
     let mut s_col: Vec<Vec<f64>> = vec![vec![0.0; k_lines]; n_steps];
+    // Per-step, per-line WLS Gram matrices X_k^T W_{k,a} X_k for exact GMCL parameter covariance.
+    let mut gmcl_xtx: Vec<Vec<Option<Vec<f64>>>> = vec![vec![None; k_lines]; n_steps];
 
     let mut resid = vec![0.0; k_lines];
     // 1. Estimate development matrices B_k and residual covariance Sigma_k.
@@ -161,6 +163,7 @@ pub fn analyze_multivariate_cl(
                         match solve_general(&xtx, k_lines, &xty) {
                             Ok(beta) => {
                                 bk[a * k_lines..(a + 1) * k_lines].copy_from_slice(&beta);
+                                gmcl_xtx[k][a] = Some(xtx.clone());
                             }
                             Err(_) => {
                                 // Ridge/diagonal fallback on collinear lines.
@@ -247,6 +250,11 @@ pub fn analyze_multivariate_cl(
                 sigma_mats[last][b * k_lines + a] = cov;
             }
         }
+    } else if n_steps == 2 {
+        // 3x3 triangle: only one prior step exists; copy sigma_mats[0] into sigma_mats[1]
+        // matching univariate Mack (1993) and multivariate_mack.rs.
+        let prev = sigma_mats[0].clone();
+        sigma_mats[1].copy_from_slice(&prev);
     }
 
     // 2. Project cumulative triangles jointly into a flat n × n × K buffer.
@@ -355,9 +363,15 @@ pub fn analyze_multivariate_cl(
     }
 
     // Parameter covariance summed across all origins (including cross-origin pairs i, j):
-    //   P_{k+1->ult} [ (Z_k Z_k^T) ∘ Cov(f_k) ] P_{k+1->ult}^T.
+    // - DiagonalMcl: P_{k+1->ult} [ (Z_k Z_k^T) ∘ Cov(f_k) ] P_{k+1->ult}^T (Braun 2004).
+    // - GeneralGmcl: exact Zhang (2010) sandwich covariance using (X_k^T W_{k,a} X_k)^{-1}:
+    //     Cov((B_k Z_k)_a, (B_k Z_k)_b) = Sigma_{k,ab} * sum_i s_{i,a} s_{i,b}
+    //   where u_a = (X_k^T W_{k,a} X_k)^{-1} Z_k and s_{i,a} = (u_a^T x_i) / sqrt(C_{i,k,a}).
+    let mut u_vecs: Vec<Vec<f64>> = vec![vec![0.0; k_lines]; k_lines];
+    let mut s_weights: Vec<f64> = Vec::new();
     for k in 0..n_steps {
         let first_origin = n - 1 - k;
+        let nk = n - 1 - k;
         z_k.fill(0.0);
         for i in first_origin..n {
             let base = (i * n + k) * k_lines;
@@ -365,11 +379,54 @@ pub fn analyze_multivariate_cl(
                 z_k[a] += proj[base + a];
             }
         }
-        let ps_base = k * kk;
-        for a in 0..k_lines {
-            let za = z_k[a];
-            for b in 0..k_lines {
-                step_mat[a * k_lines + b] = za * z_k[b] * param_scale[ps_base + a * k_lines + b];
+        let has_gmcl = options.model == MultivariateModel::GeneralGmcl
+            && gmcl_xtx[k].iter().any(Option::is_some);
+        if has_gmcl {
+            for a in 0..k_lines {
+                u_vecs[a].fill(0.0);
+                if let Some(ref xtx_a) = gmcl_xtx[k][a]
+                    && let Ok(sol) = solve_general(xtx_a, k_lines, &z_k)
+                {
+                    u_vecs[a].copy_from_slice(&sol);
+                } else if s_col[k][a] > 0.0 {
+                    u_vecs[a][a] = z_k[a] / s_col[k][a];
+                }
+            }
+            s_weights.resize(nk * k_lines, 0.0);
+            for i in 0..nk {
+                for a in 0..k_lines {
+                    let y_a = triangles[a].get(i, k);
+                    if y_a > 0.0 {
+                        let mut dot = 0.0;
+                        for b in 0..k_lines {
+                            dot += u_vecs[a][b] * triangles[b].get(i, k);
+                        }
+                        s_weights[i * k_lines + a] = dot / y_a.sqrt();
+                    } else {
+                        s_weights[i * k_lines + a] = 0.0;
+                    }
+                }
+            }
+            let sig_k = &sigma_mats[k];
+            for a in 0..k_lines {
+                for b in a..k_lines {
+                    let mut inner = 0.0;
+                    for i in 0..nk {
+                        inner += s_weights[i * k_lines + a] * s_weights[i * k_lines + b];
+                    }
+                    let val = sig_k[a * k_lines + b] * inner;
+                    step_mat[a * k_lines + b] = val;
+                    step_mat[b * k_lines + a] = val;
+                }
+            }
+        } else {
+            let ps_base = k * kk;
+            for a in 0..k_lines {
+                let za = z_k[a];
+                for b in 0..k_lines {
+                    step_mat[a * k_lines + b] =
+                        za * z_k[b] * param_scale[ps_base + a * k_lines + b];
+                }
             }
         }
         add_mat_mul_ab_at(

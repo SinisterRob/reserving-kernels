@@ -168,10 +168,9 @@ fn exact_min_binomial_moments(n: usize) -> (f64, f64) {
         - crate::stochastic::bootstrap_odp::ln_gamma((m + 1) as f64)
         - crate::stochastic::bootstrap_odp::ln_gamma((n - m) as f64);
     let comb_over_2n = (log_comb - nf * std::f64::consts::LN_2).exp();
-    let expected = 0.5 * nf - comb_over_2n * nf;
-    let variance = (0.25 * nf * (nf - 1.0) - comb_over_2n * nf * (nf - 1.0) + expected
-        - expected * expected)
-        .max(0.0);
+    let d = comb_over_2n * nf;
+    let expected = 0.5 * nf - d;
+    let variance = (0.25 * nf - d * d).max(0.0);
     (expected, variance)
 }
 

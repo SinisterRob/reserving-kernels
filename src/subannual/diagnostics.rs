@@ -185,6 +185,16 @@ pub fn subannual_product_parity(
     validate_positive_finite_slice(annual_ldfs, "annual_ldfs")?;
     validate_positive_finite_slice(subannual_ages_months, "subannual_ages_months")?;
     validate_positive_finite_slice(subannual_ldfs, "subannual_ldfs")?;
+    if annual_ages_months.windows(2).any(|w| w[1] <= w[0]) {
+        return Err(ValidationError::InvalidParameter(
+            "annual_ages_months must be strictly increasing",
+        ));
+    }
+    if subannual_ages_months.windows(2).any(|w| w[1] <= w[0]) {
+        return Err(ValidationError::InvalidParameter(
+            "subannual_ages_months must be strictly increasing",
+        ));
+    }
     if !tolerance.is_finite() || tolerance < 0.0 {
         return Err(ValidationError::InvalidParameter(
             "tolerance must be finite and non-negative",

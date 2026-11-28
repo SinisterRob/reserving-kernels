@@ -106,10 +106,7 @@ pub fn euler_tvar_allocation(
         return Err(ValidationError::NotFinite);
     }
     if !(0.0..=1.0).contains(&alpha) {
-        return Err(ValidationError::InvalidMaturity {
-            index: 0,
-            value: alpha,
-        });
+        return Err(ValidationError::InvalidProbability { value: alpha });
     }
     let (d, n, total) = validate_and_sum_lines(lines)?;
     let (sparse_weights, portfolio_risk_measure) =
@@ -142,16 +139,10 @@ pub fn euler_rvar_allocation(
         return Err(ValidationError::NotFinite);
     }
     if !(0.0..=1.0).contains(&p_low) {
-        return Err(ValidationError::InvalidMaturity {
-            index: 0,
-            value: p_low,
-        });
+        return Err(ValidationError::InvalidProbability { value: p_low });
     }
     if !(0.0..=1.0).contains(&p_high) {
-        return Err(ValidationError::InvalidMaturity {
-            index: 1,
-            value: p_high,
-        });
+        return Err(ValidationError::InvalidProbability { value: p_high });
     }
     if !(p_low < p_high) {
         return Err(ValidationError::InvalidParameter(
@@ -422,6 +413,7 @@ fn validate_and_sum_lines(lines: &[&[f64]]) -> Result<(usize, usize, Vec<f64>), 
             total[k] += col[k];
         }
     }
+    validate_finite_slice(&total)?;
     Ok((lines.len(), n, total))
 }
 

@@ -2416,7 +2416,8 @@ pub fn select_tweedie_power(
             "p_grid must contain at least one power in [1, 2]",
         ));
     }
-    let n = triangle.n_origins.min(triangle.n_devs);
+    crate::validate::validate_triangle(triangle)?;
+    let n = triangle.n_origins;
     let mut sum_log_y = 0.0;
     let mut n_pos = 0usize;
     for i in 0..n {
@@ -2438,6 +2439,7 @@ pub fn select_tweedie_power(
     let mut best_score = f64::INFINITY;
     let mut best_power = f64::NAN;
     let mut best_fit: Option<GlmReservingResult> = None;
+    let mut first_err: Option<ValidationError> = None;
 
     for &p in p_grid {
         if !p.is_finite() || !(1.0..=2.0).contains(&p) {
@@ -2446,29 +2448,36 @@ pub fn select_tweedie_power(
             ));
         }
         let opts = GlmOptions::tweedie(p).with_design(design.clone());
-        if let Ok(fit) = fit_glm(triangle, &opts) {
-            let phi = fit.deviance_dispersion.max(1e-12);
-            let n_obs = fit.n_observed as f64;
-            let eql_score = 0.5
-                * (n_obs * (2.0 * std::f64::consts::PI * phi).ln()
-                    + p * sum_log_y
-                    + fit.deviance / phi);
-            candidates.push(TweediePowerCandidate {
-                power: p,
-                eql_score,
-                pearson_dispersion: fit.pearson_dispersion,
-                total_reserve: fit.total_reserve,
-                total_prediction_error: fit.total_prediction_error,
-            });
-            if eql_score < best_score {
-                best_score = eql_score;
-                best_power = p;
-                best_fit = Some(fit);
+        match fit_glm(triangle, &opts) {
+            Ok(fit) => {
+                let phi = fit.deviance_dispersion.max(1e-12);
+                let n_obs = fit.n_observed as f64;
+                let eql_score = 0.5
+                    * (n_obs * (2.0 * std::f64::consts::PI * phi).ln()
+                        + p * sum_log_y
+                        + fit.deviance / phi);
+                candidates.push(TweediePowerCandidate {
+                    power: p,
+                    eql_score,
+                    pearson_dispersion: fit.pearson_dispersion,
+                    total_reserve: fit.total_reserve,
+                    total_prediction_error: fit.total_prediction_error,
+                });
+                if eql_score < best_score {
+                    best_score = eql_score;
+                    best_power = p;
+                    best_fit = Some(fit);
+                }
+            }
+            Err(err) => {
+                if first_err.is_none() {
+                    first_err = Some(err);
+                }
             }
         }
     }
 
-    let best_fit = best_fit.ok_or(ValidationError::NotFinite)?;
+    let best_fit = best_fit.ok_or(first_err.unwrap_or(ValidationError::NotFinite))?;
     Ok(TweediePowerSelection {
         best_power,
         best_fit,
@@ -2602,6 +2611,13 @@ fn fit_log_normal_glm(
                 param_var_origin[ia] += two_cov_ab;
             }
         }
+    }
+    if !total_proc_var.is_finite()
+        || !total_param_var.is_finite()
+        || proc_var_origin.iter().any(|v| !v.is_finite())
+        || param_var_origin.iter().any(|v| !v.is_finite())
+    {
+        return Err(ValidationError::NotFinite);
     }
 
     let process_se: Vec<f64> = proc_var_origin.iter().map(|v| v.max(0.0).sqrt()).collect();

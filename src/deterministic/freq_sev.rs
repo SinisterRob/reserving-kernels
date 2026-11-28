@@ -250,20 +250,24 @@ pub fn adler_kline_reserve(
                 CountProjectionMode::ExactConservation => {
                     let d_last_sel = selected_disposal_rates[last_obs_j];
                     let unscaled_rem = 1.0 - d_last_sel;
-                    let scale = if unscaled_rem > 1e-15 {
-                        remaining_counts / (u * unscaled_rem)
-                    } else {
-                        0.0
-                    };
-                    for j in (last_obs_j + 1)..n {
-                        let dd = selected_disposal_rates[j] - selected_disposal_rates[j - 1];
-                        let c_hat = u * dd * scale;
-                        projected_closed_counts[i * n + j] = c_hat;
-                        reserves[i] += c_hat * selected_trended_severities[j] * detrend;
+                    if unscaled_rem > 1e-15 {
+                        let scale = remaining_counts / (u * unscaled_rem);
+                        for j in (last_obs_j + 1)..n {
+                            let dd = selected_disposal_rates[j] - selected_disposal_rates[j - 1];
+                            let c_hat = u * dd * scale;
+                            projected_closed_counts[i * n + j] = c_hat;
+                            reserves[i] += c_hat * selected_trended_severities[j] * detrend;
+                        }
+                        let tail_c = u * (1.0 - selected_disposal_rates[n - 1]) * scale;
+                        tail_closed_counts[i] = tail_c;
+                        reserves[i] += tail_c * tail_severity * detrend;
+                    } else if remaining_counts > 0.0 {
+                        // Selected disposal already reached 1.0 at `last_obs_j`, yet open claims
+                        // remain for this slower-closing origin: route them to the tail so exact
+                        // count conservation holds.
+                        tail_closed_counts[i] = remaining_counts;
+                        reserves[i] += remaining_counts * tail_severity * detrend;
                     }
-                    let tail_c = u * (1.0 - selected_disposal_rates[n - 1]) * scale;
-                    tail_closed_counts[i] = tail_c;
-                    reserves[i] += tail_c * tail_severity * detrend;
                 }
                 CountProjectionMode::AnchoredToActual => {
                     let d_actual_last = observed_disposal_rates[i * n + last_obs_j];
@@ -472,13 +476,40 @@ pub fn wright_operational_time_reserve(
         }
     }
 
-    let mut theta = solve_symmetric_system(&xtwx, &rhs0, p)?;
+    // Factor constant X^T W X once before IRLS iterations.
+    let chol = crate::linalg::cholesky_lower(&xtwx, p).ok();
+    let solve_with_xtwx = |rhs_vec: &[f64]| -> Result<Vec<f64>, ValidationError> {
+        if let Some(ref l) = chol {
+            let mut y = vec![0.0; p];
+            for i in 0..p {
+                let mut sum = rhs_vec[i];
+                for j in 0..i {
+                    sum -= l[i * p + j] * y[j];
+                }
+                y[i] = sum / l[i * p + i];
+            }
+            let mut x = vec![0.0; p];
+            for i in (0..p).rev() {
+                let mut sum = y[i];
+                for j in (i + 1)..p {
+                    sum -= l[j * p + i] * x[j];
+                }
+                x[i] = sum / l[i * p + i];
+            }
+            Ok(x)
+        } else {
+            solve_symmetric_system(&xtwx, rhs_vec, p)
+        }
+    };
+
+    let mut theta = solve_with_xtwx(&rhs0)?;
     let mut converged = false;
     let mut iterations = 0usize;
+    let mut rhs = vec![0.0; p];
 
     for iter in 0..options.max_iterations {
         iterations = iter + 1;
-        let mut rhs = vec![0.0; p];
+        rhs.fill(0.0);
         for ((x, &s), &w) in x_rows.iter().zip(s_vals.iter()).zip(w_vals.iter()) {
             let mut eta = 0.0;
             for a in 0..p {
@@ -491,7 +522,7 @@ pub fn wright_operational_time_reserve(
                 rhs[a] += w * x[a] * z;
             }
         }
-        let next_theta = solve_symmetric_system(&xtwx, &rhs, p)?;
+        let next_theta = solve_with_xtwx(&rhs)?;
         let max_diff = theta
             .iter()
             .zip(next_theta.iter())

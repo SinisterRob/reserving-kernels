@@ -38,15 +38,18 @@ fn selector_ldfs(t: &TriangleView<'_>, selector: &CandidateSelector) -> Vec<f64>
 }
 
 fn stability_score(diagnostics: &[LinkRatioDiagnostics]) -> f64 {
-    let finite: Vec<f64> = diagnostics
-        .iter()
-        .map(|diag| diag.coeff_var)
-        .filter(|value| value.is_finite())
-        .collect();
-    if finite.is_empty() {
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for diag in diagnostics {
+        if diag.coeff_var.is_finite() {
+            sum += diag.coeff_var.abs();
+            count += 1;
+        }
+    }
+    if count == 0 {
         return 0.0;
     }
-    let avg_cv = finite.iter().sum::<f64>() / finite.len() as f64;
+    let avg_cv = sum / count as f64;
     1.0 / (1.0 + avg_cv)
 }
 
@@ -69,18 +72,22 @@ fn smoothness_score(ldfs: &[f64]) -> f64 {
 }
 
 fn outlier_penalty(diagnostics: &[LinkRatioDiagnostics]) -> f64 {
-    let mut deltas = Vec::new();
+    let mut sum = 0.0;
+    let mut count = 0usize;
     for diag in diagnostics {
-        for loo in &diag.leave_one_out_factors {
-            if loo.is_finite() && diag.selected_factor.is_finite() {
-                deltas.push((diag.selected_factor - loo).abs());
+        if diag.selected_factor.is_finite() {
+            for loo in &diag.leave_one_out_factors {
+                if loo.is_finite() {
+                    sum += (diag.selected_factor - loo).abs();
+                    count += 1;
+                }
             }
         }
     }
-    if deltas.is_empty() {
+    if count == 0 {
         return 0.0;
     }
-    deltas.iter().sum::<f64>() / deltas.len() as f64
+    sum / count as f64
 }
 
 fn backtest_component(score: &BacktestScore) -> f64 {

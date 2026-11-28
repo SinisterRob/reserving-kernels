@@ -48,6 +48,9 @@ pub fn case_triangle(
     let mut data = vec![f64::NAN; paid.n_origins * paid.n_devs];
     for origin in 0..paid.n_origins {
         for dev in 0..paid.n_devs {
+            if !paid.is_scheduled_observed(origin, dev) {
+                continue;
+            }
             let paid_value = paid.get(origin, dev);
             let incurred_value = incurred.get(origin, dev);
             if paid_value.is_finite() && incurred_value.is_finite() {
@@ -68,6 +71,9 @@ pub fn paid_to_incurred_ratio_triangle(
     let mut data = vec![f64::NAN; paid.n_origins * paid.n_devs];
     for origin in 0..paid.n_origins {
         for dev in 0..paid.n_devs {
+            if !paid.is_scheduled_observed(origin, dev) {
+                continue;
+            }
             let paid_value = paid.get(origin, dev);
             let incurred_value = incurred.get(origin, dev);
             if paid_value.is_finite() && incurred_value.is_finite() && incurred_value != 0.0 {

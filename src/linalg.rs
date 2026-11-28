@@ -101,36 +101,42 @@ pub(crate) fn invert_spd(a: &[f64], dim: usize) -> Result<Vec<f64>, ValidationEr
 /// Solve a general `dim × dim` linear system `A x = b` via Gaussian elimination
 /// with partial pivoting.
 pub(crate) fn solve_general(a: &[f64], dim: usize, b: &[f64]) -> Result<Vec<f64>, ValidationError> {
-    if a.len() != dim * dim || b.len() != dim || dim == 0 {
+    if dim == 0 || dim.checked_mul(dim) != Some(a.len()) || b.len() != dim {
         return Err(ValidationError::ShapeMismatch);
     }
-    let mut max_entry = 0.0_f64;
-    for &v in a {
-        if !v.is_finite() {
-            return Err(ValidationError::NotFinite);
+    if b.iter().any(|v| !v.is_finite()) {
+        return Err(ValidationError::NotFinite);
+    }
+    let mut row_scale = vec![0.0_f64; dim];
+    for r in 0..dim {
+        let mut r_max = 0.0_f64;
+        for &v in &a[r * dim..(r + 1) * dim] {
+            if !v.is_finite() {
+                return Err(ValidationError::NotFinite);
+            }
+            r_max = r_max.max(v.abs());
         }
-        max_entry = max_entry.max(v.abs());
+        if r_max == 0.0 {
+            return Err(ValidationError::InvalidParameter(
+                "linear system is singular or rank-deficient",
+            ));
+        }
+        row_scale[r] = r_max;
     }
-    if max_entry == 0.0 {
-        return Err(ValidationError::InvalidParameter(
-            "linear system is singular or rank-deficient",
-        ));
-    }
-    let piv_tol = 1e-14 * max_entry;
     let mut mat = a.to_vec();
     let mut rhs = b.to_vec();
 
     for col in 0..dim {
         let mut pivot_row = col;
-        let mut max_abs = mat[col * dim + col].abs();
+        let mut max_scaled = mat[col * dim + col].abs() / row_scale[col];
         for row in (col + 1)..dim {
-            let candidate = mat[row * dim + col].abs();
-            if candidate > max_abs {
-                max_abs = candidate;
+            let candidate = mat[row * dim + col].abs() / row_scale[row];
+            if candidate > max_scaled {
+                max_scaled = candidate;
                 pivot_row = row;
             }
         }
-        if !max_abs.is_finite() || max_abs <= piv_tol {
+        if !max_scaled.is_finite() || max_scaled <= 1e-14 {
             return Err(ValidationError::InvalidParameter(
                 "linear system is singular or rank-deficient",
             ));
@@ -140,6 +146,7 @@ pub(crate) fn solve_general(a: &[f64], dim: usize, b: &[f64]) -> Result<Vec<f64>
                 mat.swap(col * dim + k, pivot_row * dim + k);
             }
             rhs.swap(col, pivot_row);
+            row_scale.swap(col, pivot_row);
         }
         let pivot = mat[col * dim + col];
         for row in (col + 1)..dim {
@@ -159,7 +166,7 @@ pub(crate) fn solve_general(a: &[f64], dim: usize, b: &[f64]) -> Result<Vec<f64>
             sum -= mat[row * dim + k] * x[k];
         }
         let diag = mat[row * dim + row];
-        if !diag.is_finite() || diag.abs() <= piv_tol {
+        if !diag.is_finite() || diag.abs() <= 1e-14 * row_scale[row] {
             return Err(ValidationError::InvalidParameter(
                 "linear system is singular or rank-deficient",
             ));
@@ -595,6 +602,9 @@ pub(crate) fn weighted_least_squares_qr_cm_beta_into(
     ws: &mut QrWorkspace,
     beta_out: &mut [f64],
 ) -> Result<(), ValidationError> {
+    if beta_out.len() != p {
+        return Err(ValidationError::ShapeMismatch);
+    }
     qr_factorize_weighted_cm_into(x_cm, Some(y), weights, n, p, ws)?;
     for i in (0..p).rev() {
         let mut sum = ws.b[i];
@@ -630,6 +640,9 @@ pub(crate) fn weighted_least_squares_qr_beta_into(
     ws: &mut QrWorkspace,
     beta_out: &mut [f64],
 ) -> Result<(), ValidationError> {
+    if beta_out.len() != p {
+        return Err(ValidationError::ShapeMismatch);
+    }
     qr_factorize_weighted_into(x, y, weights, n, p, ws)?;
     for i in (0..p).rev() {
         let mut sum = ws.b[i];
@@ -735,11 +748,15 @@ pub(crate) fn jacobi_eigen_symmetric(
     a: &[f64],
     dim: usize,
 ) -> Result<(Vec<f64>, Vec<f64>), ValidationError> {
-    if a.len() != dim * dim || dim == 0 {
+    if dim == 0 || dim.checked_mul(dim) != Some(a.len()) {
         return Err(ValidationError::ShapeMismatch);
     }
-    if a.iter().any(|v| !v.is_finite()) {
-        return Err(ValidationError::NotFinite);
+    let mut scale = 0.0_f64;
+    for &v in a {
+        if !v.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        scale = scale.max(v.abs());
     }
     let mut mat = vec![0.0; dim * dim];
     for i in 0..dim {
@@ -754,7 +771,12 @@ pub(crate) fn jacobi_eigen_symmetric(
     for i in 0..dim {
         q[i * dim + i] = 1.0;
     }
+    if scale == 0.0 {
+        return Ok((vec![0.0; dim], q));
+    }
 
+    let off_tol = 1e-13 * scale;
+    let pivot_tol = 1e-15 * scale;
     let max_sweeps = 64 * dim.max(1);
     for _sweep in 0..max_sweeps {
         let mut max_off = 0.0_f64;
@@ -763,24 +785,24 @@ pub(crate) fn jacobi_eigen_symmetric(
                 max_off = max_off.max(mat[p * dim + r].abs());
             }
         }
-        if max_off <= 1e-13 {
+        if max_off <= off_tol {
             break;
         }
         for p in 0..dim {
             for r in (p + 1)..dim {
                 let apr = mat[p * dim + r];
-                if apr.abs() <= 1e-15 {
+                if apr.abs() <= pivot_tol {
                     continue;
                 }
                 let app = mat[p * dim + p];
                 let arr = mat[r * dim + r];
                 let tau = (arr - app) / (2.0 * apr);
                 let t = if tau >= 0.0 {
-                    1.0 / (tau + (1.0 + tau * tau).sqrt())
+                    1.0 / (tau + tau.hypot(1.0))
                 } else {
-                    -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                    -1.0 / (-tau + tau.hypot(1.0))
                 };
-                let c = 1.0 / (1.0 + t * t).sqrt();
+                let c = 1.0 / t.hypot(1.0);
                 let s = t * c;
 
                 mat[p * dim + p] = app - t * apr;

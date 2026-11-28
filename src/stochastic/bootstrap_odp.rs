@@ -687,6 +687,13 @@ impl DeterministicRng {
                 }
             }
         }
+        if lambda >= 1.0e9 {
+            // Avoid catastrophic cancellation in `-lambda + k * ln(lambda) - ln_gamma(k + 1)`
+            // for huge rates; Normal(lambda, lambda) is indistinguishable to > 4.5 digits.
+            return (lambda + lambda.sqrt() * self.next_standard_normal())
+                .max(0.0)
+                .round();
+        }
         // Hörmann (1993), Insurance: Mathematics and Economics 12(1), pp. 39–45.
         // Exact for all lambda >= 10.
         let s = lambda.sqrt();
@@ -978,6 +985,15 @@ impl FastIndexSampler {
     pub(crate) fn next(&mut self, rng: &mut DeterministicRng) -> usize {
         if self.bound <= 1 {
             return 0;
+        }
+        if self.bound <= 1024 {
+            let bound = self.bound as u32;
+            let threshold = self.threshold;
+            let prod = ((rng.next_u64() & 0xFFFF) as u32) * bound;
+            if (prod & 0xFFFF) >= threshold {
+                return (prod >> 16) as usize;
+            }
+            return Self::sample_16_slow(rng, bound, threshold);
         }
         if u32::try_from(self.bound).is_ok() {
             let bound = self.bound as u64;

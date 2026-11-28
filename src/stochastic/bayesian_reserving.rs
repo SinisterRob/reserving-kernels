@@ -194,15 +194,20 @@ fn fit_odp_map(
         let dir_deriv: f64 = grad.iter().zip(step.iter()).map(|(g, s)| g * s).sum();
         let mut alpha_step = 1.0;
         let mut candidate = vec![0.0; p];
+        let mut accepted = false;
         for _ in 0..25 {
             for k in 0..p {
                 candidate[k] = theta[k] + alpha_step * step[k];
             }
             let fc = eval_log_post(&candidate);
             if fc.is_finite() && fc >= f0 + 1e-4 * alpha_step * dir_deriv {
+                accepted = true;
                 break;
             }
             alpha_step *= 0.5;
+        }
+        if !accepted {
+            break;
         }
         theta = candidate;
     }
@@ -620,7 +625,7 @@ where
     let m = 10usize;
     let eps = 1e-6;
 
-    let grad_fn = |pt: &[f64]| -> Vec<f64> {
+    let grad_fn = |pt: &[f64], f_pt: f64| -> Vec<f64> {
         let mut g = vec![0.0; p];
         let mut work = pt.to_vec();
         for k in 0..p {
@@ -630,13 +635,21 @@ where
             work[k] = xk - eps;
             let fm = f(&work);
             work[k] = xk;
-            g[k] = (fp - fm) / (2.0 * eps);
+            g[k] = if fp.is_finite() && fm.is_finite() {
+                (fp - fm) / (2.0 * eps)
+            } else if fp.is_finite() && f_pt.is_finite() {
+                (fp - f_pt) / eps
+            } else if fm.is_finite() && f_pt.is_finite() {
+                (f_pt - fm) / eps
+            } else {
+                0.0
+            };
         }
         g
     };
 
     let mut fx = f(&x);
-    let mut gx = grad_fn(&x);
+    let mut gx = grad_fn(&x, fx);
     let mut s_hist: Vec<Vec<f64>> = Vec::with_capacity(m);
     let mut y_hist: Vec<Vec<f64>> = Vec::with_capacity(m);
     let mut rho_hist: Vec<f64> = Vec::with_capacity(m);
@@ -709,7 +722,7 @@ where
             break;
         }
 
-        let g_next = grad_fn(&x_next);
+        let g_next = grad_fn(&x_next, f_next);
         let s_vec: Vec<f64> = x_next.iter().zip(x.iter()).map(|(a, b)| a - b).collect();
         let step_norm = s_vec.iter().map(|z| z.abs()).fold(0.0_f64, f64::max);
         // For minimizing -f, y_vec = (-g_next) - (-gx) = gx - g_next.
@@ -757,7 +770,12 @@ where
         work[i] = xi - h;
         let fm = f(&work);
         work[i] = xi;
-        neg_h[i * p + i] = -(fp - 2.0 * f0 + fm) / (h * h);
+        let diag = if fp.is_finite() && fm.is_finite() && f0.is_finite() {
+            -(fp - 2.0 * f0 + fm) / (h * h)
+        } else {
+            1.0
+        };
+        neg_h[i * p + i] = diag;
 
         for j in (i + 1)..p {
             let xj = work[j];
@@ -773,7 +791,11 @@ where
             let fmm = f(&work);
             work[i] = xi;
             work[j] = xj;
-            let val = -(fpp - fpm - fmp + fmm) / (4.0 * h * h);
+            let val = if fpp.is_finite() && fpm.is_finite() && fmp.is_finite() && fmm.is_finite() {
+                -(fpp - fpm - fmp + fmm) / (4.0 * h * h)
+            } else {
+                0.0
+            };
             neg_h[i * p + j] = val;
             neg_h[j * p + i] = val;
         }
@@ -895,6 +917,15 @@ pub fn meyers_laplace_snis(
     cumulative: &TriangleView<'_>,
     options: &MeyersOptions,
 ) -> Result<MeyersResult, ValidationError> {
+    let (res, _, _, _) = meyers_laplace_snis_internal(cumulative, options)?;
+    Ok(res)
+}
+
+#[allow(clippy::type_complexity)]
+fn meyers_laplace_snis_internal(
+    cumulative: &TriangleView<'_>,
+    options: &MeyersOptions,
+) -> Result<(MeyersResult, Vec<f64>, Vec<Vec<f64>>, Vec<f64>), ValidationError> {
     let n = cumulative.n_origins;
     let is_ccl = options.model == MeyersModel::Ccl;
     let MeyersInitData {
@@ -977,6 +1008,7 @@ pub fn meyers_laplace_snis(
     let half_nu_p = f64::midpoint(nu_q, p as f64);
 
     let mut log_weights = Vec::with_capacity(m_draws);
+    let mut psi_draws: Vec<Vec<f64>> = Vec::with_capacity(m_draws);
     let mut draw_rhos = Vec::with_capacity(m_draws);
     let mut draw_totals = Vec::with_capacity(m_draws);
     let mut draw_origins: Vec<Vec<f64>> = (0..n).map(|_| Vec::with_capacity(m_draws)).collect();
@@ -984,6 +1016,7 @@ pub fn meyers_laplace_snis(
     let mut z = vec![0.0; p];
     let mut diff = vec![0.0; p];
     let mut psi_draw = vec![0.0; p];
+    let mut prev_resid = vec![0.0; n];
 
     for _ in 0..m_draws {
         for zi in &mut z {
@@ -1000,6 +1033,7 @@ pub fn meyers_laplace_snis(
             diff[i] = scale * lx;
             psi_draw[i] = psi_map[i] + diff[i];
         }
+        psi_draws.push(psi_draw.clone());
 
         let lp = obj(&psi_draw);
         let qf = quad_form(&diff, &neg_hess, p).max(0.0);
@@ -1027,11 +1061,11 @@ pub fn meyers_laplace_snis(
         };
         draw_rhos.push(rho);
 
-        // Simulate full future log-triangle propagating rho along columns.
-        let mut full_y = log_y.clone();
-        let mut prev_resid = vec![0.0; n];
+        // Simulate future log-triangle propagating rho along columns (only y_last needed).
+        prev_resid.fill(0.0);
         let mut tot_r = 0.0;
         for i in 0..n {
+            let mut y_last = 0.0;
             for j in 0..n {
                 let b_j = if j == n - 1 { 0.0 } else { betas[j] };
                 let mu = if i == 0 || !is_ccl {
@@ -1040,17 +1074,19 @@ pub fn meyers_laplace_snis(
                     alphas[i] + b_j + rho * prev_resid[j]
                 };
                 if j < n - i {
-                    prev_resid[j] = full_y[i * n + j] - mu;
+                    prev_resid[j] = log_y[i * n + j] - mu;
                 } else {
                     let eps_draw = sigmas[j] * rng.next_standard_normal();
-                    full_y[i * n + j] = mu + eps_draw;
                     prev_resid[j] = eps_draw;
+                    if j == n - 1 {
+                        y_last = mu + eps_draw;
+                    }
                 }
             }
             let r_i = if i == 0 {
                 0.0
             } else {
-                let ult = full_y[i * n + (n - 1)].clamp(-40.0, 40.0).exp();
+                let ult = y_last.clamp(-40.0, 40.0).exp();
                 ult - cumulative.get(i, n - 1 - i)
             };
             draw_origins[i].push(r_i);
@@ -1126,7 +1162,7 @@ pub fn meyers_laplace_snis(
         0.0
     };
 
-    Ok(MeyersResult {
+    let result = MeyersResult {
         model: options.model,
         alpha_map,
         beta_map,
@@ -1141,11 +1177,40 @@ pub fn meyers_laplace_snis(
         low_ess_warning,
         map_log_posterior,
         converged,
-    })
+    };
+    Ok((result, log_y, psi_draws, weights))
+}
+
+/// Systematic resampling of `m` indices from normalized importance weights `weights`.
+fn systematic_resample_indices(
+    weights: &[f64],
+    m: usize,
+    rng: &mut DeterministicRng,
+) -> Vec<usize> {
+    let mut indices = Vec::with_capacity(m);
+    if weights.is_empty() || m == 0 {
+        return indices;
+    }
+    let u0 = rng.next_open01() / m as f64;
+    let mut cdf = weights[0];
+    let mut j = 0usize;
+    let last = weights.len() - 1;
+    for k in 0..m {
+        let u = u0 + k as f64 / m as f64;
+        while j < last && cdf < u {
+            j += 1;
+            cdf += weights[j];
+        }
+        indices.push(j);
+    }
+    indices
 }
 
 /// Bivariate Correlated Chain Ladder (Meyers CAS Monograph 1) for two aligned
 /// lines of business with cross-line residual correlation `ρ_12 ∈ (-1, 1)`.
+///
+/// Propagates both posterior parameter uncertainty (via systematic resampling
+/// from each line's SNIS posterior) and cross-line correlated process shocks.
 pub fn meyers_bivariate_ccl(
     line1: &TriangleView<'_>,
     line2: &TriangleView<'_>,
@@ -1154,12 +1219,13 @@ pub fn meyers_bivariate_ccl(
     if line1.n_origins != line2.n_origins || line1.n_devs != line2.n_devs {
         return Err(ValidationError::ShapeMismatch);
     }
-    let fit1 = meyers_laplace_snis(line1, options)?;
-    let fit2 = meyers_laplace_snis(line2, options)?;
+    let (fit1, log_y1, psi1_draws, w1) = meyers_laplace_snis_internal(line1, options)?;
+    let (fit2, log_y2, psi2_draws, w2) = meyers_laplace_snis_internal(line2, options)?;
     let n = line1.n_origins;
+    let is_ccl = options.model == MeyersModel::Ccl;
 
     // Estimate cross-line standardized residual correlation rho_12 from observed cells.
-    let extract_std_resids = |tri: &TriangleView<'_>, fit: &MeyersResult| -> Vec<f64> {
+    let extract_std_resids = |log_y: &[f64], fit: &MeyersResult| -> Vec<f64> {
         let mut resids = Vec::with_capacity(n * (n + 1) / 2);
         let mut prev_r = vec![0.0; n];
         for i in 0..n {
@@ -1169,7 +1235,7 @@ pub fn meyers_bivariate_ccl(
                 } else {
                     fit.alpha_map[i] + fit.beta_map[j] + fit.rho_map * prev_r[j]
                 };
-                let r = tri.get(i, j).ln() - mu;
+                let r = log_y[i * n + j] - mu;
                 prev_r[j] = r;
                 resids.push(r / fit.sigma_map[j].max(1e-8));
             }
@@ -1177,8 +1243,8 @@ pub fn meyers_bivariate_ccl(
         resids
     };
 
-    let r1 = extract_std_resids(line1, &fit1);
-    let r2 = extract_std_resids(line2, &fit2);
+    let r1 = extract_std_resids(&log_y1, &fit1);
+    let r2 = extract_std_resids(&log_y2, &fit2);
     let cross_line_rho =
         crate::capital::dependence::pearson_correlation(&r1, &r2).clamp(-0.99, 0.99);
     let cross_line_rho = if cross_line_rho.is_finite() {
@@ -1187,38 +1253,73 @@ pub fn meyers_bivariate_ccl(
         0.0
     };
 
-    // Simulate joint predictive portfolio reserves with bivariate Normal cell shocks.
+    // Simulate joint predictive portfolio reserves propagating SNIS posterior parameter
+    // draws for both lines together with correlated bivariate Normal cell shocks.
     let mut rng = DeterministicRng::from_seed(options.seed.wrapping_add(1));
     let m = options.n_samples;
+    let idx1 = systematic_resample_indices(&w1, m, &mut rng);
+    let mut idx2 = systematic_resample_indices(&w2, m, &mut rng);
+    // Shuffle line 2 parameter pairing so marginal parameter draws are independent
+    // while future cell shocks carry cross-line correlation rho_12.
+    for k in (1..m).rev() {
+        let swap_idx = rng.next_index(k + 1);
+        idx2.swap(k, swap_idx);
+    }
+
     let cond_sd_factor = (1.0 - cross_line_rho * cross_line_rho).max(0.0).sqrt();
     let mut port_totals = Vec::with_capacity(m);
+    let mut prev1 = vec![0.0; n];
+    let mut prev2 = vec![0.0; n];
 
-    for _ in 0..m {
-        let mut prev1 = vec![0.0; n];
-        let mut prev2 = vec![0.0; n];
+    for draw_k in 0..m {
+        let p1 = &psi1_draws[idx1[draw_k]];
+        let p2 = &psi2_draws[idx2[draw_k]];
+        let a1 = &p1[0..n];
+        let b1 = &p1[n..(2 * n - 1)];
+        let a2 = &p2[0..n];
+        let b2 = &p2[n..(2 * n - 1)];
+        let sig1 = unpack_sigmas(&p1[(2 * n - 1)..(3 * n - 1)])
+            .map_or_else(|| fit1.sigma_map.clone(), |(s, _)| s);
+        let sig2 = unpack_sigmas(&p2[(2 * n - 1)..(3 * n - 1)])
+            .map_or_else(|| fit2.sigma_map.clone(), |(s, _)| s);
+        let rho1 = if is_ccl {
+            p1[3 * n - 1].clamp(-10.0, 10.0).tanh()
+        } else {
+            0.0
+        };
+        let rho2 = if is_ccl {
+            p2[3 * n - 1].clamp(-10.0, 10.0).tanh()
+        } else {
+            0.0
+        };
+
+        prev1.fill(0.0);
+        prev2.fill(0.0);
         let mut tot = 0.0;
         for i in 0..n {
             let mut y1_last = 0.0;
             let mut y2_last = 0.0;
             for j in 0..n {
-                let mu1 = if i == 0 || fit1.model == MeyersModel::Lcl {
-                    fit1.alpha_map[i] + fit1.beta_map[j]
+                let bj1 = if j == n - 1 { 0.0 } else { b1[j] };
+                let bj2 = if j == n - 1 { 0.0 } else { b2[j] };
+                let mu1 = if i == 0 || !is_ccl {
+                    a1[i] + bj1
                 } else {
-                    fit1.alpha_map[i] + fit1.beta_map[j] + fit1.rho_map * prev1[j]
+                    a1[i] + bj1 + rho1 * prev1[j]
                 };
-                let mu2 = if i == 0 || fit2.model == MeyersModel::Lcl {
-                    fit2.alpha_map[i] + fit2.beta_map[j]
+                let mu2 = if i == 0 || !is_ccl {
+                    a2[i] + bj2
                 } else {
-                    fit2.alpha_map[i] + fit2.beta_map[j] + fit2.rho_map * prev2[j]
+                    a2[i] + bj2 + rho2 * prev2[j]
                 };
                 if j < n - i {
-                    prev1[j] = line1.get(i, j).ln() - mu1;
-                    prev2[j] = line2.get(i, j).ln() - mu2;
+                    prev1[j] = log_y1[i * n + j] - mu1;
+                    prev2[j] = log_y2[i * n + j] - mu2;
                 } else {
                     let z1 = rng.next_standard_normal();
                     let z2 = cross_line_rho * z1 + cond_sd_factor * rng.next_standard_normal();
-                    let e1 = fit1.sigma_map[j] * z1;
-                    let e2 = fit2.sigma_map[j] * z2;
+                    let e1 = sig1[j] * z1;
+                    let e2 = sig2[j] * z2;
                     prev1[j] = e1;
                     prev2[j] = e2;
                     if j == n - 1 {

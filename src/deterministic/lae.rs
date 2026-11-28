@@ -718,13 +718,14 @@ pub fn clark_alae_mle(
         return Err(ValidationError::NonPositive("total observed paid ALAE"));
     }
 
-    let neg_profile_ll = |log_omega: f64, log_theta: f64| -> (f64, f64) {
+    let mut g_vals = vec![0.0; n + 1];
+    let mut neg_profile_ll = |log_omega: f64, log_theta: f64| -> (f64, f64) {
         if log_omega < -8.0 || log_omega > 6.0 || log_theta < -8.0 || log_theta > 8.0 {
             return (f64::INFINITY, f64::NAN);
         }
         let omega = log_omega.exp();
         let theta = log_theta.exp();
-        let mut g_vals = vec![0.0; n + 1];
+        g_vals[0] = 0.0;
         for j in 1..=n {
             g_vals[j] = eval_emergence(options.curve, j as f64, omega, theta);
         }

@@ -563,11 +563,16 @@ pub fn weighted_volume_ldfs(
     t: &TriangleView<'_>,
     weights: &[f64],
 ) -> Result<Vec<f64>, ValidationError> {
-    if weights.len() != t.n_origins * t.n_devs {
+    if t.data.len() != t.n_origins * t.n_devs || weights.len() != t.n_origins * t.n_devs {
         return Err(ValidationError::ShapeMismatch);
     }
-    if weights.iter().any(|&w| !w.is_finite() || w < 0.0) {
-        return Err(ValidationError::Negative);
+    for &w in weights {
+        if !w.is_finite() {
+            return Err(ValidationError::NotFinite);
+        }
+        if w < 0.0 {
+            return Err(ValidationError::Negative);
+        }
     }
     let m = t.n_devs.saturating_sub(1);
     let mut out = vec![1.0; m];
@@ -575,13 +580,16 @@ pub fn weighted_volume_ldfs(
         let mut num = 0.0;
         let mut den = 0.0;
         for i in 0..t.n_origins {
+            if !t.is_scheduled_observed(i, j + 1) {
+                continue;
+            }
             let w = weights[i * t.n_devs + j];
             if w <= 0.0 {
                 continue;
             }
             let a = t.get(i, j);
             let b = t.get(i, j + 1);
-            if a.is_finite() && b.is_finite() && a > 0.0 {
+            if a.is_finite() && b.is_finite() && a >= 0.0 {
                 num += w * b;
                 den += w * a;
             }

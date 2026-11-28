@@ -51,9 +51,11 @@ fn select_ldfs(t: &TriangleView<'_>, selector: &CandidateSelector) -> Vec<f64> {
     }
 
     let mut out = Vec::with_capacity(n - 1);
+    let mut ratios = Vec::with_capacity(n);
+    let mut weighted_pairs = Vec::with_capacity(n);
     for dev in 0..n - 1 {
-        let mut ratios = Vec::new();
-        let mut weighted_pairs = Vec::new();
+        ratios.clear();
+        weighted_pairs.clear();
         for origin in 0..n - dev - 1 {
             let current = t.get(origin, dev);
             let next = t.get(origin, dev + 1);

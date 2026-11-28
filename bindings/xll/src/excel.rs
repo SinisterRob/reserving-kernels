@@ -87,14 +87,17 @@ impl Xloper12 {
     }
 
     pub fn return_array<const COLS: usize>(rows: Vec<[f64; COLS]>) -> *mut Self {
-        let row_count = rows.len() as i32;
+        let (Ok(row_count), Ok(col_count)) = (i32::try_from(rows.len()), i32::try_from(COLS))
+        else {
+            return Self::return_error(XLERR_NUM);
+        };
         let cells: Box<[_]> = rows.into_iter().flatten().map(Self::number).collect();
         Box::into_raw(Box::new(Self {
             value: XlValue {
                 array: XlArray {
                     cells: Box::into_raw(cells).cast(),
                     rows: row_count,
-                    cols: COLS as i32,
+                    cols: col_count,
                 },
             },
             kind: XLTYPE_MULTI | XL_BIT_DLL_FREE,
@@ -111,20 +114,27 @@ impl Xloper12 {
 
 #[unsafe(no_mangle)]
 unsafe extern "system" fn xlAutoFree12(result: *mut Xloper12) {
-    if result.is_null() {
-        return;
-    }
-    // SAFETY: Excel calls this once for each value returned with xlbitDLLFree.
-    let result = unsafe { Box::from_raw(result) };
-    if result.kind() == XLTYPE_MULTI {
-        // SAFETY: Our worksheet functions only return arrays of numeric cells. The
-        // pointer and dimensions are those from the boxed slice in return_array.
-        let array = unsafe { result.value.array };
-        let cells =
-            std::ptr::slice_from_raw_parts_mut(array.cells, (array.rows * array.cols) as usize);
-        // SAFETY: The original slice allocation belongs to this result alone.
-        drop(unsafe { Box::from_raw(cells) });
-    }
+    let _ = std::panic::catch_unwind(|| {
+        if result.is_null() {
+            return;
+        }
+        // SAFETY: Excel calls this once for each value returned with xlbitDLLFree.
+        let result = unsafe { Box::from_raw(result) };
+        if result.kind() == XLTYPE_MULTI {
+            // SAFETY: Our worksheet functions only return arrays of numeric cells. The
+            // pointer and dimensions are those from the boxed slice in return_array.
+            let array = unsafe { result.value.array };
+            if !array.cells.is_null()
+                && array.rows >= 0
+                && array.cols >= 0
+                && let Some(len) = (array.rows as usize).checked_mul(array.cols as usize)
+            {
+                let cells = std::ptr::slice_from_raw_parts_mut(array.cells, len);
+                // SAFETY: The original slice allocation belongs to this result alone.
+                drop(unsafe { Box::from_raw(cells) });
+            }
+        }
+    });
 }
 
 pub unsafe fn triangle(input: *const Xloper12) -> Result<Triangle, i32> {
@@ -261,9 +271,14 @@ fn register(call: ExcelCallback, module: &mut Xloper12, function: &Function) -> 
             &mut result,
         )
     };
-    (status == 0 && result.kind() == XLTYPE_NUM)
+    let reg_id = (status == 0 && result.kind() == XLTYPE_NUM)
         .then(|| result.read_number().ok())
-        .flatten()
+        .flatten();
+    if result.kind & XL_BIT_XL_FREE != 0 {
+        // SAFETY: Excel set xlbitXLFree on `result`, so it must be released via xlFree.
+        unsafe { call(XL_FREE, 1, &mut std::ptr::from_mut(&mut result), null_mut()) };
+    }
+    reg_id
 }
 
 fn unregister(call: ExcelCallback, ids: &mut [Option<f64>; FUNCTIONS.len()]) {
@@ -293,45 +308,51 @@ fn unregister(call: ExcelCallback, ids: &mut [Option<f64>; FUNCTIONS.len()]) {
 
 #[unsafe(no_mangle)]
 extern "system" fn xlAutoOpen() -> i32 {
-    let Some(call) = excel_callback() else {
-        return 0;
-    };
-    let mut ids = REGISTRATIONS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if ids.iter().all(Option::is_some) {
-        return 1;
-    }
-    let mut module = Xloper12::nil();
-    // SAFETY: Excel calls xlAutoOpen on its main thread. xlGetName takes no arguments.
-    if unsafe { call(XL_GET_NAME, 0, null_mut(), &mut module) } != 0 {
-        return 0;
-    }
-    if module.kind() == XLTYPE_STR {
-        for (id, function) in ids.iter_mut().zip(&FUNCTIONS) {
-            *id = register(call, &mut module, function);
-            if id.is_none() {
-                break;
+    std::panic::catch_unwind(|| {
+        let Some(call) = excel_callback() else {
+            return 0;
+        };
+        let mut ids = REGISTRATIONS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ids.iter().all(Option::is_some) {
+            return 1;
+        }
+        let mut module = Xloper12::nil();
+        // SAFETY: Excel calls xlAutoOpen on its main thread. xlGetName takes no arguments.
+        if unsafe { call(XL_GET_NAME, 0, null_mut(), &mut module) } != 0 {
+            return 0;
+        }
+        if module.kind() == XLTYPE_STR {
+            for (id, function) in ids.iter_mut().zip(&FUNCTIONS) {
+                *id = register(call, &mut module, function);
+                if id.is_none() {
+                    break;
+                }
             }
         }
-    }
-    // SAFETY: xlFree releases the Excel-owned result of the successful xlGetName call.
-    unsafe { call(XL_FREE, 1, &mut std::ptr::from_mut(&mut module), null_mut()) };
-    if ids.iter().all(Option::is_some) {
-        1
-    } else {
-        unregister(call, &mut ids);
-        0
-    }
+        // SAFETY: xlFree releases the Excel-owned result of the successful xlGetName call.
+        unsafe { call(XL_FREE, 1, &mut std::ptr::from_mut(&mut module), null_mut()) };
+        if ids.iter().all(Option::is_some) {
+            1
+        } else {
+            unregister(call, &mut ids);
+            0
+        }
+    })
+    .unwrap_or(0)
 }
 
 #[unsafe(no_mangle)]
 extern "system" fn xlAutoClose() -> i32 {
-    if let Some(call) = excel_callback() {
-        let mut ids = REGISTRATIONS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        unregister(call, &mut ids);
-    }
-    1
+    std::panic::catch_unwind(|| {
+        if let Some(call) = excel_callback() {
+            let mut ids = REGISTRATIONS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            unregister(call, &mut ids);
+        }
+        1
+    })
+    .unwrap_or(0)
 }

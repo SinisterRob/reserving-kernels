@@ -607,6 +607,9 @@ pub fn analyze_with_tail_uncertainty_and_policy(
     if result.ldf.iter().any(|&v| !v.is_finite() || v <= 0.0) {
         return Err(ValidationError::DivideByZero("development denominator"));
     }
+    if result.sigma_sq.iter().any(|v| !v.is_finite()) {
+        return Err(ValidationError::NotFinite);
+    }
     Ok(result)
 }
 
