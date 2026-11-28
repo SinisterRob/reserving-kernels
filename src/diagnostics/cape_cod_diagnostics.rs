@@ -7,6 +7,7 @@ use crate::types::TriangleView;
 
 /// Diagnostic decomposition of a Cape Cod ELR fit.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct CapeCodDiagnostics {
     /// Fitted Cape Cod ELR using all origins.
     pub elr: f64,

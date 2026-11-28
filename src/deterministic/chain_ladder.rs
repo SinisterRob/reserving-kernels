@@ -17,9 +17,10 @@
 
 use crate::deterministic::ldf::{DevelopmentFactors, cdf_from_ldf};
 use crate::error::ReservingError;
+use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, validate_development_factor_slices, validate_finite_slice,
+    MonotonicityPolicy, validate_development_factor_slices_with_policy, validate_finite_slice,
     validate_latest_and_dev, validate_monotone_cumulative, validate_triangle,
 };
 
@@ -53,76 +54,50 @@ pub struct ChainLadderProjection {
 
 /// Project latest observed values to ultimate using CDFs indexed by latest dev.
 ///
-/// # Safety Contract
-///
-/// This is a raw L0 kernel. Callers must ensure:
-///
-/// * `latest.len() == latest_dev.len() == out.len()`
-/// * every `latest_dev[i] < cdfs.len()`
-/// * `latest` and `cdfs` contain finite values
-///
-/// Use [`ChainLadderEngine::project`] for checked projection.
-pub fn project_ultimates(latest: &[f64], latest_dev: &[usize], cdfs: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(latest.len(), latest_dev.len());
-    debug_assert_eq!(latest.len(), out.len());
+/// Returns `ShapeMismatch` unless `latest.len() == latest_dev.len() == out.len()`
+/// and every `latest_dev[i] < cdfs.len()`. Finiteness is not checked; use
+/// [`ChainLadderEngine::project`] for fully validated projection.
+pub fn project_ultimates(
+    latest: &[f64],
+    latest_dev: &[usize],
+    cdfs: &[f64],
+    out: &mut [f64],
+) -> Result<(), ReservingError> {
+    if latest.len() != latest_dev.len() || latest.len() != out.len() {
+        return Err(ReservingError::ShapeMismatch);
+    }
+    if latest_dev.iter().any(|&d| d >= cdfs.len()) {
+        return Err(ReservingError::ShapeMismatch);
+    }
 
     for i in 0..latest.len() {
         out[i] = latest[i] * cdfs[latest_dev[i]];
     }
+    Ok(())
 }
 
 /// Reserve by origin: ultimate minus latest.
 ///
-/// # Safety Contract
-///
-/// This is a raw L0 kernel. Callers must ensure
-/// `latest.len() == ultimates.len() == out.len()` and finite inputs. Use
-/// [`ChainLadderEngine::project`] for checked projection.
-pub fn reserves(latest: &[f64], ultimates: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(latest.len(), ultimates.len());
-    debug_assert_eq!(latest.len(), out.len());
+/// Returns `ShapeMismatch` unless `latest.len() == ultimates.len() == out.len()`.
+pub fn reserves(latest: &[f64], ultimates: &[f64], out: &mut [f64]) -> Result<(), ReservingError> {
+    if latest.len() != ultimates.len() || latest.len() != out.len() {
+        return Err(ReservingError::ShapeMismatch);
+    }
 
     for i in 0..latest.len() {
         out[i] = ultimates[i] - latest[i];
     }
+    Ok(())
 }
 
-/// Extract latest observed values and development indices under right-triangle geometry.
-///
-/// # Safety Contract
-///
-/// This is a raw L0 kernel. Callers must ensure `cum.len() == n_origin * n_dev`,
-/// `latest.len() == n_origin`, and `latest_dev.len() == n_origin`.
-pub fn latest_observed_by_origin(
-    cum: &[f64],
-    n_origin: usize,
-    n_dev: usize,
-    latest: &mut [f64],
-    latest_dev: &mut [usize],
-) {
-    debug_assert_eq!(cum.len(), n_origin * n_dev);
-    debug_assert_eq!(latest.len(), n_origin);
-    debug_assert_eq!(latest_dev.len(), n_origin);
-
-    for i in 0..n_origin {
-        if i >= n_dev {
-            latest[i] = f64::NAN;
-            latest_dev[i] = 0;
-            continue;
-        }
-        let dev = n_dev - 1 - i;
-        latest_dev[i] = dev;
-        latest[i] = cum[i * n_dev + dev];
-    }
-}
+pub use crate::preprocessing::triangle_algebra::latest_observed_by_origin;
 
 /// Extract latest observed values and development indices from observed row widths.
 ///
-/// # Safety Contract
-///
-/// This is a raw L0 kernel. Callers must ensure `cum.len() == n_origin * n_dev`,
-/// `observed_counts.len() == n_origin`, output lengths match `n_origin`, and
-/// each non-zero observed count is at most `n_dev`.
+/// Origins with `observed_counts[i] == 0` receive `(NaN, 0)`. Returns
+/// `ShapeMismatch` unless `cum.len() == n_origin * n_dev`, all of
+/// `observed_counts`, `latest`, `latest_dev` have length `n_origin`, and every
+/// count is at most `n_dev`.
 pub fn latest_observed_by_origin_observed_counts(
     cum: &[f64],
     n_origin: usize,
@@ -130,11 +105,15 @@ pub fn latest_observed_by_origin_observed_counts(
     observed_counts: &[usize],
     latest: &mut [f64],
     latest_dev: &mut [usize],
-) {
-    debug_assert_eq!(cum.len(), n_origin * n_dev);
-    debug_assert_eq!(observed_counts.len(), n_origin);
-    debug_assert_eq!(latest.len(), n_origin);
-    debug_assert_eq!(latest_dev.len(), n_origin);
+) -> Result<(), ReservingError> {
+    if n_origin.checked_mul(n_dev) != Some(cum.len())
+        || observed_counts.len() != n_origin
+        || latest.len() != n_origin
+        || latest_dev.len() != n_origin
+        || observed_counts.iter().any(|&c| c > n_dev)
+    {
+        return Err(ReservingError::ShapeMismatch);
+    }
 
     for i in 0..n_origin {
         if observed_counts[i] == 0 {
@@ -143,10 +122,10 @@ pub fn latest_observed_by_origin_observed_counts(
             continue;
         }
         let dev = observed_counts[i] - 1;
-        debug_assert!(dev < n_dev);
         latest_dev[i] = dev;
         latest[i] = cum[i * n_dev + dev];
     }
+    Ok(())
 }
 
 // ===========================================================================
@@ -160,23 +139,24 @@ pub fn latest_observed_by_origin_observed_counts(
 /// from development age `n − 1` to ultimate; pass `1.0` if fully developed.
 ///
 /// Prefer [`ChainLadderEngine::project`] at external ingress boundaries.
+/// Never panics: origins whose latest development age has no CDF (because
+/// `ldfs` is too short) receive `NaN` ultimates and reserves.
 pub fn project_unchecked(t: &TriangleView<'_>, ldfs: &[f64], tail: f64) -> ChainLadderProjection {
     let n = t.n_origins.min(t.n_devs);
     let cdfs = cdf_from_ldf(ldfs, tail);
+    let latest = latest_diagonal(t);
+    let latest_dev: Vec<usize> = (0..n).map(|i| n - 1 - i).collect();
 
-    let mut latest = vec![0.0; n];
-    let mut latest_dev = vec![0; n];
-    for i in 0..n {
-        let d = n - 1 - i;
-        latest[i] = t.get(i, d);
-        latest_dev[i] = d;
-    }
-
-    let mut ultimates = vec![0.0; n];
-    project_ultimates(&latest, &latest_dev, &cdfs, &mut ultimates);
-
-    let mut reserve_values = vec![0.0; n];
-    reserves(&latest, &ultimates, &mut reserve_values);
+    let ultimates: Vec<f64> = latest
+        .iter()
+        .zip(&latest_dev)
+        .map(|(&c, &d)| cdfs.get(d).map_or(f64::NAN, |&cdf| c * cdf))
+        .collect();
+    let reserve_values: Vec<f64> = ultimates
+        .iter()
+        .zip(&latest)
+        .map(|(&u, &c)| u - c)
+        .collect();
 
     let total_latest: f64 = latest.iter().sum();
     let total_ultimate: f64 = ultimates.iter().sum();
@@ -216,7 +196,7 @@ impl ChainLadderEngine {
         factors: &DevelopmentFactors,
         policy: MonotonicityPolicy,
     ) -> Result<ChainLadderProjection, ReservingError> {
-        validate_projection_inputs_with_policy(cumulative, factors, policy)?;
+        validate_cumulative_with_factors(cumulative, factors, policy, "projection factor")?;
 
         let n = cumulative.n_origins;
         let mut latest = vec![0.0; n];
@@ -227,15 +207,15 @@ impl ChainLadderEngine {
             cumulative.n_devs,
             &mut latest,
             &mut latest_dev,
-        );
+        )?;
         validate_latest_and_dev(&latest, &latest_dev, &factors.cdfs)?;
 
         let mut ultimates = vec![0.0; n];
-        project_ultimates(&latest, &latest_dev, &factors.cdfs, &mut ultimates);
+        project_ultimates(&latest, &latest_dev, &factors.cdfs, &mut ultimates)?;
         validate_finite_slice(&ultimates)?;
 
         let mut reserve_values = vec![0.0; n];
-        reserves(&latest, &ultimates, &mut reserve_values);
+        reserves(&latest, &ultimates, &mut reserve_values)?;
         validate_finite_slice(&reserve_values)?;
 
         let total_latest: f64 = latest.iter().sum();
@@ -258,21 +238,26 @@ impl ChainLadderEngine {
     }
 }
 
-fn validate_projection_inputs_with_policy(
+/// Shared projection-input validation for every CDF-driven method (CL, BF):
+/// triangle shape/sign, policy-gated monotonicity, and policy-aware
+/// LDF/CDF/tail checks. `zero_context` labels non-positive factors.
+pub(crate) fn validate_cumulative_with_factors(
     cumulative: &TriangleView<'_>,
     factors: &DevelopmentFactors,
     policy: MonotonicityPolicy,
+    zero_context: &'static str,
 ) -> Result<(), ReservingError> {
     validate_triangle(cumulative)?;
     if policy == MonotonicityPolicy::Strict {
         validate_monotone_cumulative(cumulative)?;
     }
-    validate_development_factor_slices(
+    validate_development_factor_slices_with_policy(
         &factors.ldfs,
         &factors.cdfs,
         factors.tail,
         cumulative.n_devs,
-        "projection factor",
+        zero_context,
+        policy,
     )
 }
 
@@ -303,7 +288,7 @@ mod tests {
         let cdfs = [1.8, 1.2, 1.0];
         let mut out = [0.0; 3];
 
-        project_ultimates(&latest, &latest_dev, &cdfs, &mut out);
+        project_ultimates(&latest, &latest_dev, &cdfs, &mut out).expect("project");
 
         assert_eq!(out, [180.0, 216.0, 252.0]);
     }
@@ -314,7 +299,7 @@ mod tests {
         let ultimates = [180.0, 216.0, 252.0];
         let mut out = [0.0; 3];
 
-        reserves(&latest, &ultimates, &mut out);
+        reserves(&latest, &ultimates, &mut out).expect("reserves");
 
         assert_eq!(out, [0.0, 36.0, 112.0]);
     }
@@ -338,10 +323,76 @@ mod tests {
             &observed_counts,
             &mut latest,
             &mut latest_dev,
-        );
+        )
+        .expect("latest");
 
         assert_eq!(latest, [198.0, 180.0, 140.0]);
         assert_eq!(latest_dev, [3, 1, 0]);
+    }
+
+    #[test]
+    fn l0_kernels_return_shape_errors_instead_of_panicking() {
+        let mut out = [0.0; 2];
+        assert_eq!(
+            project_ultimates(&[1.0, 2.0], &[0, 5], &[1.0, 1.0], &mut out),
+            Err(ReservingError::ShapeMismatch)
+        );
+        assert_eq!(
+            project_ultimates(&[1.0, 2.0, 3.0], &[0, 0, 0], &[1.0], &mut out),
+            Err(ReservingError::ShapeMismatch)
+        );
+        assert_eq!(
+            reserves(&[1.0], &[1.0, 2.0], &mut out),
+            Err(ReservingError::ShapeMismatch)
+        );
+        let mut latest = [0.0; 2];
+        let mut dev = [0_usize; 2];
+        assert_eq!(
+            latest_observed_by_origin_observed_counts(
+                &[0.0; 4],
+                2,
+                2,
+                &[3, 1],
+                &mut latest,
+                &mut dev
+            ),
+            Err(ReservingError::ShapeMismatch)
+        );
+        assert_eq!(
+            latest_observed_by_origin(&[0.0; 3], 2, 2, &mut latest, &mut dev),
+            Err(ReservingError::ShapeMismatch)
+        );
+    }
+
+    #[test]
+    fn project_unchecked_short_ldfs_yields_nan_not_panic() {
+        let tri = tiny_triangle();
+        let projected = project_unchecked(&tri.view(), &[1.5], 1.0);
+        assert!(projected.ultimates[0].is_nan());
+        assert!(projected.ultimates[2].is_finite());
+    }
+
+    #[test]
+    fn project_with_policy_accepts_sub_unity_tail_only_when_allowed() {
+        let tri = tiny_triangle();
+        let factors = DevelopmentFactorEngine::volume_weighted_with_policy(
+            &tri.view(),
+            0.95,
+            MonotonicityPolicy::AllowNegativeIncrements,
+        )
+        .expect("factors");
+        assert_eq!(
+            ChainLadderEngine::project(&tri.view(), &factors),
+            Err(ReservingError::InvalidTail { tail: 0.95 })
+        );
+        let projected = ChainLadderEngine::project_with_policy(
+            &tri.view(),
+            &factors,
+            MonotonicityPolicy::AllowNegativeIncrements,
+        )
+        .expect("projection");
+        assert!(close(projected.ultimates[0], 180.0 * 0.95));
+        assert!(projected.reserves[0] < 0.0);
     }
 
     #[test]

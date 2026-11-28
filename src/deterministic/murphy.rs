@@ -96,6 +96,7 @@ impl MurphyOptions {
 
 /// Fitted weighted-regression diagnostics for a single development link.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct MurphyLinkFit {
     /// Development link start index $j$.
     pub dev: usize,
@@ -117,6 +118,7 @@ pub struct MurphyLinkFit {
 
 /// Full Murphy (1994) weighted-regression reserving result with analytical MSE.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct MurphyResult {
     /// Options used to fit the model.
     pub options: MurphyOptions,

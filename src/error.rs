@@ -76,7 +76,10 @@ impl fmt::Display for ReservingError {
                 f,
                 "non-monotone cumulative triangle at origin {origin}, dev {dev}: {value} < {previous}"
             ),
-            Self::InvalidTail { tail } => write!(f, "invalid tail factor {tail} (must be >= 1.0)"),
+            Self::InvalidTail { tail } => write!(
+                f,
+                "invalid tail factor {tail} (must be >= 1.0 under strict monotonicity, > 0.0 otherwise)"
+            ),
             Self::InvalidMaturity { index, value } => {
                 write!(f, "invalid maturity/probability {value} at index {index}")
             }

@@ -5,6 +5,7 @@ use crate::validate::validate_nonnegative_finite_vector;
 
 /// Basic reserve movement decomposition.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ReserveRollForward {
     /// Prior ultimate indication.
     pub old_ultimate: f64,

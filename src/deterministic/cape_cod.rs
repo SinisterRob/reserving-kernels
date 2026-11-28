@@ -20,14 +20,17 @@ use crate::error::ReservingError;
 use crate::preprocessing::triangle::latest_diagonal;
 use crate::types::TriangleView;
 use crate::validate::{
-    MonotonicityPolicy, validate_development_factor_slices, validate_latest_and_dev,
+    MonotonicityPolicy, validate_development_factor_slices_with_policy, validate_latest_and_dev,
     validate_monotone_cumulative, validate_premium, validate_triangle,
 };
 
-/// Cape Cod ELR (scalar). Returns `NaN` when the used-premium total is zero.
+/// Cape Cod ELR (scalar). Returns `NaN` when the used-premium total is zero
+/// or when `premium.len()` / `ldf.len()` do not match the triangle (never panics).
 pub fn elr(t: &TriangleView<'_>, ldf: &[f64], tail: f64, premium: &[f64]) -> f64 {
     let n = t.n_origins.min(t.n_devs);
-    debug_assert_eq!(premium.len(), n);
+    if premium.len() != n || ldf.len() + 1 != n {
+        return f64::NAN;
+    }
     let cdf = cdf_from_ldf(ldf, tail);
     let pct = pct_reported(&cdf);
     let latest = latest_diagonal(t);
@@ -112,7 +115,7 @@ impl CapeCodEngine {
             cumulative.n_devs,
             &mut latest,
             &mut latest_dev,
-        );
+        )?;
         validate_latest_and_dev(&latest, &latest_dev, &factors.cdfs)?;
 
         let mut reported_percentage = vec![0.0; n];
@@ -173,12 +176,13 @@ fn validate_cape_cod_inputs(
         validate_monotone_cumulative(cumulative)?;
     }
     validate_premium(premium, cumulative.n_origins)?;
-    validate_development_factor_slices(
+    validate_development_factor_slices_with_policy(
         &factors.ldfs,
         &factors.cdfs,
         factors.tail,
         cumulative.n_devs,
         "Cape Cod factor",
+        policy,
     )
 }
 

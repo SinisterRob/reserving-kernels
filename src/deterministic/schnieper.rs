@@ -35,6 +35,7 @@ use crate::validate::validate_positive_finite_slice;
 
 /// Result of Schnieper (1991) / Liu & Verrall (2009) True IBNR & IBNER separation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SchnieperResult {
     /// True IBNR emergence factors $\hat{\lambda}_j$ per development $j = 1..n-1$, length $n - 1$.
     pub lambda: Vec<f64>,

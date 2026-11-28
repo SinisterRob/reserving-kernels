@@ -28,6 +28,7 @@ use crate::validate::{MonotonicityPolicy, validate_monotone_cumulative, validate
 
 /// Result of Martínez-Miranda, Nielsen & Verrall (2012) Double Chain Ladder.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct DoubleChainLadderResult {
     /// Ultimate reported claim counts $\hat{\alpha}_i$ from count CL, length $n$.
     pub count_ultimate: Vec<f64>,

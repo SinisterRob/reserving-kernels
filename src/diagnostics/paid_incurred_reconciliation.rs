@@ -8,6 +8,7 @@ use crate::validate::validate_triangle;
 
 /// Paid-versus-incurred reserve reconciliation by origin.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct PaidIncurredReconciliation {
     /// Latest paid cumulative values by origin.
     pub paid_latest: Vec<f64>,
